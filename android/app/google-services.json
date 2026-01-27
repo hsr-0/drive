@@ -1,0 +1,107 @@
+{
+  "project_info": {
+    "project_number": "266994090766",
+    "firebase_url": "https://beytei-me-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "beytei-me",
+    "storage_bucket": "beytei-me.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:266994090766:android:7fc6f7c4449bd346894d5f",
+        "android_client_info": {
+          "package_name": "co.beytei.android.taxi"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "266994090766-ai3vunlb92gi4uvql9g1ti9p6lfm7366.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "co.beytei.android.taxi",
+            "certificate_hash": "037ab32e01723b40a6107f2f6b3265e8b1d011d7"
+          }
+        },
+        {
+          "client_id": "266994090766-dlupqfj9u0obbs51npbi9h5tlbgfdblf.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "co.beytei.android.taxi",
+            "certificate_hash": "285d0133655a1954b4dea42f3e02ef350fe510ae"
+          }
+        },
+        {
+          "client_id": "266994090766-6c1kpde2if3ume5i7l6hkubmtc72859l.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbc0WkBM46odXzxAHLjZjN4ePIC4vTCI4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "266994090766-6c1kpde2if3ume5i7l6hkubmtc72859l.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "266994090766-4obbtt1tbg9me7pl02f1oggfg15eitoc.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.ovosolution.ovorideuser"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:266994090766:android:1e27051386bb09f7894d5f",
+        "android_client_info": {
+          "package_name": "co.median.android.wqwnby"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "266994090766-ckp6fmse2a2svmv8hv46h6k9crfjhmer.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "co.median.android.wqwnby",
+            "certificate_hash": "285d0133655a1954b4dea42f3e02ef350fe510ae"
+          }
+        },
+        {
+          "client_id": "266994090766-6c1kpde2if3ume5i7l6hkubmtc72859l.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbc0WkBM46odXzxAHLjZjN4ePIC4vTCI4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "266994090766-6c1kpde2if3ume5i7l6hkubmtc72859l.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "266994090766-4obbtt1tbg9me7pl02f1oggfg15eitoc.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.ovosolution.ovorideuser"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
