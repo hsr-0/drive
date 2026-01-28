@@ -1,20 +1,22 @@
 import java.util.Properties
 import java.io.FileInputStream
 
-// 1. تحميل خصائص مفتاح التوقيع من ملف key.properties
 val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(FileInputStream(localPropertiesFile))
+}
+
 plugins {
     id("com.android.application")
-    // START: FlutterFire Configuration
     id("com.google.gms.google-services")
-    // END: FlutterFire Configuration
     id("kotlin-android")
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
@@ -33,13 +35,12 @@ android {
         jvmTarget = JavaVersion.VERSION_11.toString()
     }
 
-    // 2. إعدادات التوقيع للمشروع
     signingConfigs {
         create("release") {
-            keyAlias = keystoreProperties["keyAlias"] as String
-            keyPassword = keystoreProperties["keyPassword"] as String
+            keyAlias = keystoreProperties["keyAlias"] as String?
+            keyPassword = keystoreProperties["keyPassword"] as String?
             storeFile = keystoreProperties["storeFile"]?.let { file(it) }
-            storePassword = keystoreProperties["storePassword"] as String
+            storePassword = keystoreProperties["storePassword"] as String?
         }
     }
 
@@ -49,15 +50,16 @@ android {
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // 3. تمرير مفتاح Mapbox إلى التطبيق ليتم استخدامه داخلياً
+        val mapboxToken = localProperties.getProperty("MAPBOX_DOWNLOADS_TOKEN") ?: ""
+        resValue("string", "MAPBOX_DOWNLOADS_TOKEN", mapboxToken)
     }
 
     buildTypes {
         release {
-            // تحسين الأداء والحماية
             isMinifyEnabled = false
             isShrinkResources = false
-
-            // 3. ربط نسخة الـ Release بمفتاح التوقيع الفعلي بدلاً من الـ debug
             signingConfig = signingConfigs.getByName("release")
         }
     }
