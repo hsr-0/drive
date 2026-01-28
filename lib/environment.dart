@@ -1,7 +1,7 @@
 class Environment {
   // ATTENTION Please update your desired data.
   static const String appName = 'OvoRide Driver';
-  static const String version = '1.0.1';
+  static const String version = '1.0.2';
 
   // Ride and Bids
   static const int bidAcceptSecond = 30; //Bid ACCEPT second
