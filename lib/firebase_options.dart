@@ -47,7 +47,7 @@ class DefaultFirebaseOptions {
     projectId: 'beytei-me',
     databaseURL: 'https://beytei-me-default-rtdb.asia-southeast1.firebasedatabase.app',
     storageBucket: 'beytei-me.firebasestorage.app',
-    androidClientId: '266994090766-ckp6fmse2a2svmv8hv46h6k9crfjhmer.apps.googleusercontent.com',
+    androidClientId: '266994090766-ai3vunlb92gi4uvql9g1ti9p6lfm7366.apps.googleusercontent.com',
     iosClientId: '266994090766-aqbjrt1nfrfo0c13a6hfopi398v7t0de.apps.googleusercontent.com',
     iosBundleId: 'co.beytei.ios.taxi',
   );

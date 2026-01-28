@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CLIENT_ID</key>
+	<string>266994090766-aqbjrt1nfrfo0c13a6hfopi398v7t0de.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.266994090766-aqbjrt1nfrfo0c13a6hfopi398v7t0de</string>
+	<key>ANDROID_CLIENT_ID</key>
+	<string>266994090766-ai3vunlb92gi4uvql9g1ti9p6lfm7366.apps.googleusercontent.com</string>
+	<key>API_KEY</key>
+	<string>AIzaSyD7cRZeGlqv1LqeCNfkeQUiasGmg8aStj4</string>
+	<key>GCM_SENDER_ID</key>
+	<string>266994090766</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>co.beytei.ios.taxi</string>
+	<key>PROJECT_ID</key>
+	<string>beytei-me</string>
+	<key>STORAGE_BUCKET</key>
+	<string>beytei-me.firebasestorage.app</string>
+	<key>IS_ADS_ENABLED</key>
+	<false></false>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false></false>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true></true>
+	<key>IS_GCM_ENABLED</key>
+	<true></true>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true></true>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:266994090766:ios:93b4e1702b37dc65894d5f</string>
+	<key>DATABASE_URL</key>
+	<string>https://beytei-me-default-rtdb.asia-southeast1.firebasedatabase.app</string>
+</dict>
+</plist>
