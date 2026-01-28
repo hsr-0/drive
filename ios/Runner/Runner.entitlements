@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>aps-environment</key>
+	<string>production</string>
+</dict>
+</plist>
+```
+
+**شرح مهم:**
+-   **`aps-environment`**: هذا هو المفتاح الذي يخبر نظام iOS أن تطبيقك يستقبل إشعارات.
+-   **`production`**: استخدم هذه القيمة للإصدارات التي سترفعها لـ TestFlight أو App Store.
+-   **`development`**: استخدم هذه القيمة فقط إذا كنت تبني إصدار `debug` وترسل إشعارات اختبارية من Firebase إلى جهاز تطوير محدد. بما أنك تستخدم Codemagic للتصدير النهائي، فـ **`production`** هي القيمة الصحيحة.
+
+#### **الخطوة 2: التأكد من ربط الملف في Codemagic (اختياري ولكنه موصى به)**
+
+في معظم الحالات، يتعرف Xcode تلقائياً على ملف `Runner.entitlements` الموجود في مجلد `Runner`. ولكن لضمان ذلك 100%، يمكنك إضافة سكربت بسيط في إعدادات Codemagic ليقوم بربط الملف بشكل صريح.
+
+1.  اذهب إلى إعدادات مشروعك في Codemagic.
+2.  اذهب إلى قسم `Build`.
+3.  ابحث عن قسم **"Pre-build script"**.
+4.  الصق فيه الأوامر التالية:
+
+```bash
+#!/bin/sh
+set -e
+set -x
+
+# This script ensures the entitlements file is correctly linked in the Xcode project.
+XCODE_PROJ_PATH="ios/Runner.xcodeproj"
+ENTITLEMENTS_PATH="Runner/Runner.entitlements"
+
+/usr/local/bin/xcode-project set-build-setting --project-path "$XCODE_PROJ_PATH" --target "Runner" --build-configuration "Release" "CODE_SIGN_ENTITLEMENTS" "$ENTITLEMENTS_PATH"
+/usr/local/bin/xcode-project set-build-setting --project-path "$XCODE_PROJ_PATH" --target "Runner" --build-configuration "Debug" "CODE_SIGN_ENTITLEMENTS" "$ENTITLEMENTS_PATH"
+
+echo "✅ Entitlements file linked successfully for all configurations.">
