@@ -14,14 +14,16 @@ import 'api_client.dart';
 import 'package:get/get.dart' as getx;
 
 // تعريف القناة الصوتية
+// التعديل هنا: غيرنا الـ id والـ name لنجبر الهاتف على نسيان الإعدادات القديمة
 const AndroidNotificationChannel channel = AndroidNotificationChannel(
-  'high_importance_channel', // id
-  'High Importance Notifications', // title
+  'beytei_urgent_call', // غيرنا الاسم هنا (ID)
+  'Beytei Urgent Alerts', // غيرنا العنوان هنا
   description: 'This channel is used for important notifications.',
-  importance: Importance.max,
+  importance: Importance.max, // هذا السطر سيتم تفعيله بقوة الآن
   playSound: true,
-  sound: RawResourceAndroidNotificationSound('notification'), // الصوت المخصص
+  sound: RawResourceAndroidNotificationSound('notification'),
 );
+
 
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
@@ -150,7 +152,7 @@ class PushNotificationService {
       body,
       NotificationDetails(
         android: AndroidNotificationDetails(
-          channel.id,
+          channel.id, // سيأخذ الاسم الجديد تلقائياً من المتغير بالأعلى
           channel.name,
           channelDescription: channel.description,
           icon: '@mipmap/ic_launcher',
