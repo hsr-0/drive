@@ -2,12 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>aps-environment</key>
-	<string>production</string>
+    <key>aps-environment</key>
+    <string>production</string>
+
+    <key>com.apple.developer.applesignin</key>
+    <array>
+        <string>Default</string>
+    </array>
 </dict>
 </plist>
-```
-
 **شرح مهم:**
 -   **`aps-environment`**: هذا هو المفتاح الذي يخبر نظام iOS أن تطبيقك يستقبل إشعارات.
 -   **`production`**: استخدم هذه القيمة للإصدارات التي سترفعها لـ TestFlight أو App Store.
