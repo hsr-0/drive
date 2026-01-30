@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:ovoride_driver/core/helper/string_format_helper.dart';
 import 'package:ovoride_driver/core/theme/light/light.dart';
@@ -18,6 +19,7 @@ import 'package:ovoride_driver/environment.dart';
 import 'data/services/api_client.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:toastification/toastification.dart';
+import 'package:firebase_messaging/firebase_messaging.dart'; // تأكد من وجود هذا الاستيراد
 
 //APP ENTRY POINT
 Future<void> main() async {
@@ -64,7 +66,8 @@ void startForgroundTask() {
 class MyHttpOverrides extends HttpOverrides {
   @override
   HttpClient createHttpClient(SecurityContext? context) {
-    return super.createHttpClient(context)..badCertificateCallback = (X509Certificate cert, String host, int port) => false;
+    return super.createHttpClient(context)
+      ..badCertificateCallback = (X509Certificate cert, String host, int port) => false;
   }
 }
 
@@ -103,13 +106,149 @@ class _OvoAppState extends State<OvoApp> {
             localizeController.locale.languageCode,
             localizeController.locale.countryCode,
           ),
-          builder: (context, child) => ForGroundTaskWidget(
-            key: foregroundTaskKey,
-            onWillStart: () {
-              return Future.value(true);
-            },
-            callback: startForgroundTask,
-            child: child ?? Container(),
+          builder: (context, child) => Stack(
+            children: [
+              ForGroundTaskWidget(
+                key: foregroundTaskKey,
+                onWillStart: () {
+                  return Future.value(true);
+                },
+                callback: startForgroundTask,
+                child: child ?? Container(),
+              ),
+              // !!! زر التشخيص الذكي المضاف !!!
+              if (Platform.isIOS) // يظهر فقط في الآيفون لأن المشكلة هناك
+                const Positioned(
+                  bottom: 100,
+                  left: 20,
+                  child: SmartNotificationDebugger(),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// -------------------------------------------------------------------------
+/// Smart Notification Debugger Widget
+/// هذا الودجت سيساعدك في معرفة مكان الخلل بالضبط
+/// -------------------------------------------------------------------------
+class SmartNotificationDebugger extends StatefulWidget {
+  const SmartNotificationDebugger({super.key});
+
+  @override
+  State<SmartNotificationDebugger> createState() => _SmartNotificationDebuggerState();
+}
+
+class _SmartNotificationDebuggerState extends State<SmartNotificationDebugger> {
+  String status = "اضغط للفحص";
+  Color statusColor = Colors.red;
+  bool isLoading = false;
+
+  Future<void> runDiagnostics() async {
+    setState(() {
+      isLoading = true;
+      status = "جاري الفحص...";
+    });
+
+    StringBuffer report = StringBuffer();
+
+    try {
+      // 1. فحص الصلاحيات
+      NotificationSettings settings = await FirebaseMessaging.instance.requestPermission(
+        alert: true, badge: true, sound: true,
+      );
+
+      report.writeln("1. Permission: ${settings.authorizationStatus}");
+
+      if (settings.authorizationStatus != AuthorizationStatus.authorized) {
+        throw "لم يتم منح صلاحية الإشعارات من إعدادات الهاتف!";
+      }
+
+      // 2. فحص APNS Token (الأهم بالنسبة للآيفون)
+      // إذا كان هذا null، فهذا يعني أن التطبيق لا يتصل بسيرفرات أبل
+      String? apnsToken = await FirebaseMessaging.instance.getAPNSToken();
+      report.writeln("2. APNS Token: ${apnsToken != null ? 'OK (Found)' : 'NULL (Error!)'}");
+
+      if (apnsToken == null) {
+        throw "مشكلة كارثية: APNS Token غير موجود.\n"
+            "السبب: CodeMagic لم يقم بتوقيع التطبيق بصلاحية 'Push Notifications' أو ملف Provisioning Profile خطأ.\n"
+            "الحل: تأكد من تفعيل Push Notifications في Apple Developer Portal للـ Identifier الخاص بك.";
+      }
+
+      // 3. فحص FCM Token
+      // إذا فشل هذا، فالمشكلة في ملف GoogleService-Info.plist
+      String? fcmToken = await FirebaseMessaging.instance.getToken();
+      report.writeln("3. FCM Token: ${fcmToken != null ? 'OK' : 'NULL'}");
+
+      if (fcmToken == null) {
+        throw "APNS يعمل ولكن الاتصال بـ Firebase فشل.\nتأكد من أن GoogleService-Info.plist موجود وصحيح.";
+      }
+
+      print("--- MY FCM TOKEN ---");
+      print(fcmToken);
+      print("--------------------");
+
+      // نسخ التوكين للحافظة
+      await Clipboard.setData(ClipboardData(text: fcmToken));
+
+      setState(() {
+        status = "نجح الفحص!\nالتوكين تم نسخه للحافظة.\nAPNS: OK\nFCM: OK";
+        statusColor = Colors.green;
+      });
+
+      Get.defaultDialog(
+        title: "تقرير الفحص",
+        content: SelectableText(
+          "كل شيء يبدو سليماً من جانب التطبيق!\n\nToken:\n$fcmToken\n\nإذا لم تصل الإشعارات الآن، فالمشكلة في 'Server Key' في لوحة تحكم Firebase أو شهادة p8.",
+          style: const TextStyle(fontSize: 12),
+        ),
+      );
+
+    } catch (e) {
+      setState(() {
+        status = "خطأ: $e";
+        statusColor = Colors.orange;
+      });
+      Get.defaultDialog(
+        title: "تم اكتشاف الخطأ",
+        content: Text(e.toString()),
+        confirm: ElevatedButton(onPressed: () => Get.back(), child: const Text("حسناً")),
+      );
+    } finally {
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: runDiagnostics,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: statusColor,
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: const [BoxShadow(blurRadius: 5, color: Colors.black26)],
+          ),
+          child: isLoading
+              ? const CircularProgressIndicator(color: Colors.white)
+              : Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.bug_report, color: Colors.white),
+              const SizedBox(width: 8),
+              Text(
+                "فحص الإشعارات (iOS)",
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+            ],
           ),
         ),
       ),
