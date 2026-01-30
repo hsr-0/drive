@@ -107,11 +107,8 @@ class DashBoardController extends GetxController {
     final street = placemark.street ?? '';
     final subLocality = placemark.subLocality ?? '';
     final locality = placemark.locality ?? '';
-    // final subAdministrativeArea = placemark.subAdministrativeArea ?? '';
-    // final administrativeArea = placemark.administrativeArea ?? '';
     final country = placemark.country ?? '';
 
-    // return [street, subLocality, locality, subAdministrativeArea, administrativeArea, country].where((part) => part.isNotEmpty).join(', ');
     return [
       street,
       subLocality,
@@ -189,12 +186,13 @@ class DashBoardController extends GetxController {
     return nextPageUrl != null && nextPageUrl!.isNotEmpty && nextPageUrl != 'null' ? true : false;
   }
 
+  // 🔥🔥🔥 تم تحديث دالة sendBid لتنقلك مباشرة لإدخال OTP 🔥🔥🔥
   bool isSendBidLoading = false;
   Future<void> sendBid(
-    String rideId, {
-    String? amount,
-    VoidCallback? onActon,
-  }) async {
+      String rideId, {
+        String? amount,
+        VoidCallback? onActon,
+      }) async {
     isSendBidLoading = true;
     update();
 
@@ -209,16 +207,18 @@ class DashBoardController extends GetxController {
         );
 
         if (model.status == "success") {
+          // 1. إغلاق النافذة المنبثقة لتقديم العرض إذا كانت مفتوحة
           if (onActon != null) {
             onActon();
           }
+
+          // 2. الانتقال المباشر والفوري لصفحة تفاصيل الرحلة
+          // (حيث سيتمكن السائق من رؤية الخريطة وإدخال OTP)
+          Get.toNamed(RouteHelper.rideDetailsScreen, arguments: rideId);
+
+          // 3. تحديث البيانات في الخلفية لتكون جاهزة عند العودة
           initialData(shouldLoad: false);
-          // CustomSnackBar.success(successList: model.message ?? [MyStrings.somethingWentWrong], dismissAll: false);
-          Get.toNamed(RouteHelper.rideDetailsScreen, arguments: rideId)?.then((
-            v,
-          ) {
-            initialData(shouldLoad: false);
-          });
+
         } else {
           CustomSnackBar.error(
             errorList: model.message ?? [MyStrings.somethingWentWrong],
@@ -233,9 +233,10 @@ class DashBoardController extends GetxController {
       }
     } catch (e) {
       printX(e);
+    } finally {
+      isSendBidLoading = false;
+      update();
     }
-    isSendBidLoading = false;
-    update();
   }
 
   void updateMainAmount(double amount) {

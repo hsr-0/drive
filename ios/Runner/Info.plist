@@ -10,25 +10,22 @@
             <key>CFBundleURLSchemes</key>
             <array>
                 <string>com.googleusercontent.apps.266994090766-aqbjrt1nfrfo0c13a6hfopi398v7t0de</string>
+                <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
             </array>
         </dict>
     </array>
 
     <key>NSCameraUsageDescription</key>
     <string>This App needs access to your camera to take profile photos, verify identity, and capture trip-related images.</string>
-
     <key>NSPhotoLibraryUsageDescription</key>
     <string>This App needs access to your photo library to upload profile pictures, documents, and trip-related images.</string>
-
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>This App needs permission to save photos and documents related to your trips to your photo library.</string>
-
     <key>NSMicrophoneUsageDescription</key>
     <string>This App uses the microphone for in-app voice communication and support during rides.</string>
 
     <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
     <string>This App uses your location in the background to update trip progress, match you with nearby ride requests, and ensure accurate navigation and fare calculation even when the app is not in the foreground.</string>
-
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>This App uses your location to show nearby ride requests, navigate to pickup and drop-off points, and calculate trip distance and fare.</string>
 
@@ -75,7 +72,8 @@
 
     <key>NSAppTransportSecurity</key>
     <dict>
-        <key>NSAllowsArbitraryLoads</key><true/>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
     </dict>
 
     <key>UILaunchStoryboardName</key>
@@ -86,15 +84,11 @@
     <key>UISupportedInterfaceOrientations</key>
     <array>
        <string>UIInterfaceOrientationPortrait</string>
-       <string>UIInterfaceOrientationLandscapeLeft</string>
-       <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
     <key>UISupportedInterfaceOrientations~ipad</key>
     <array>
        <string>UIInterfaceOrientationPortrait</string>
        <string>UIInterfaceOrientationPortraitUpsideDown</string>
-       <string>UIInterfaceOrientationLandscapeLeft</string>
-       <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
 
     <key>CADisableMinimumFrameDurationOnPhone</key>
