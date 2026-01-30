@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:ovoride_driver/core/helper/string_format_helper.dart';
@@ -19,39 +20,21 @@ import 'package:ovoride_driver/environment.dart';
 import 'data/services/api_client.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:toastification/toastification.dart';
-import 'package:firebase_messaging/firebase_messaging.dart'; // تأكد من وجود هذا الاستيراد
 
-//APP ENTRY POINT
 Future<void> main() async {
-  // Ensures that widget binding is initialized before calling native code
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Initialize the API client for network communication
   await ApiClient.init();
-
-  // Load and initialize localization/language support
   Map<String, Map<String, String>> languages = await di_service.init();
-
-  // Configure app UI to support all screen sizes
   MyUtils.allScreen();
-
-  // Lock device orientation to portrait mode
   MyUtils().stopLandscape();
-
-  // Initialize audio utilities (e.g., background music, sound effects)
   AudioUtils();
 
   try {
-    // Initialize push notification service and handle interaction messages
-    await PushNotificationService(
-      apiClient: Get.find(),
-    ).setupInteractedMessage();
+    await PushNotificationService(apiClient: Get.find()).setupInteractedMessage();
   } catch (e) {
-    // Print error to console if FCM setup fails
-    printX(e);
+    printX("FCM Setup Error: $e");
   }
 
-  // Override HTTP settings (e.g., SSL certificate handling)
   HttpOverrides.global = MyHttpOverrides();
   tz.initializeTimeZones();
   FlutterForegroundTask.initCommunicationPort();
@@ -73,7 +56,6 @@ class MyHttpOverrides extends HttpOverrides {
 
 class OvoApp extends StatefulWidget {
   final Map<String, Map<String, String>> languages;
-
   const OvoApp({super.key, required this.languages});
 
   @override
@@ -102,26 +84,21 @@ class _OvoAppState extends State<OvoApp> {
           getPages: RouteHelper().routes,
           locale: localizeController.locale,
           translations: Messages(languages: widget.languages),
-          fallbackLocale: Locale(
-            localizeController.locale.languageCode,
-            localizeController.locale.countryCode,
-          ),
+          fallbackLocale: Locale(localizeController.locale.languageCode, localizeController.locale.countryCode),
           builder: (context, child) => Stack(
             children: [
               ForGroundTaskWidget(
                 key: foregroundTaskKey,
-                onWillStart: () {
-                  return Future.value(true);
-                },
+                onWillStart: () => Future.value(true),
                 callback: startForgroundTask,
                 child: child ?? Container(),
               ),
-              // !!! زر التشخيص الذكي المضاف !!!
-              if (Platform.isIOS) // يظهر فقط في الآيفون لأن المشكلة هناك
-                const Positioned(
-                  bottom: 100,
-                  left: 20,
-                  child: SmartNotificationDebugger(),
+              // زر التشخيص الاحترافي
+              if (Platform.isIOS)
+                Positioned(
+                  bottom: 120,
+                  right: 20,
+                  child: ProfessionalNotificationDebugger(),
                 ),
             ],
           ),
@@ -132,126 +109,102 @@ class _OvoAppState extends State<OvoApp> {
 }
 
 /// -------------------------------------------------------------------------
-/// Smart Notification Debugger Widget
-/// هذا الودجت سيساعدك في معرفة مكان الخلل بالضبط
+/// ويدجت التشخيص الاحترافي - يحلل المشكلة ويعطيك التوكين
 /// -------------------------------------------------------------------------
-class SmartNotificationDebugger extends StatefulWidget {
-  const SmartNotificationDebugger({super.key});
+class ProfessionalNotificationDebugger extends StatefulWidget {
+  const ProfessionalNotificationDebugger({super.key});
 
   @override
-  State<SmartNotificationDebugger> createState() => _SmartNotificationDebuggerState();
+  State<ProfessionalNotificationDebugger> createState() => _ProfessionalNotificationDebuggerState();
 }
 
-class _SmartNotificationDebuggerState extends State<SmartNotificationDebugger> {
-  String status = "اضغط للفحص";
-  Color statusColor = Colors.red;
-  bool isLoading = false;
+class _ProfessionalNotificationDebuggerState extends State<ProfessionalNotificationDebugger> {
+  bool _isChecking = false;
 
-  Future<void> runDiagnostics() async {
-    setState(() {
-      isLoading = true;
-      status = "جاري الفحص...";
-    });
+  Future<void> runFullCheck() async {
+    setState(() => _isChecking = true);
 
-    StringBuffer report = StringBuffer();
+    String report = "";
+    String? fcmToken;
+    bool hasApns = false;
 
     try {
-      // 1. فحص الصلاحيات
+      // 1. طلب الصلاحيات بشكل صريح
       NotificationSettings settings = await FirebaseMessaging.instance.requestPermission(
-        alert: true, badge: true, sound: true,
+        alert: true, badge: true, sound: true, provisional: false,
       );
+      report += "• الصلاحيات: ${settings.authorizationStatus.name}\n";
 
-      report.writeln("1. Permission: ${settings.authorizationStatus}");
-
-      if (settings.authorizationStatus != AuthorizationStatus.authorized) {
-        throw "لم يتم منح صلاحية الإشعارات من إعدادات الهاتف!";
-      }
-
-      // 2. فحص APNS Token (الأهم بالنسبة للآيفون)
-      // إذا كان هذا null، فهذا يعني أن التطبيق لا يتصل بسيرفرات أبل
+      // 2. محاولة جلب APNS Token
       String? apnsToken = await FirebaseMessaging.instance.getAPNSToken();
-      report.writeln("2. APNS Token: ${apnsToken != null ? 'OK (Found)' : 'NULL (Error!)'}");
-
-      if (apnsToken == null) {
-        throw "مشكلة كارثية: APNS Token غير موجود.\n"
-            "السبب: CodeMagic لم يقم بتوقيع التطبيق بصلاحية 'Push Notifications' أو ملف Provisioning Profile خطأ.\n"
-            "الحل: تأكد من تفعيل Push Notifications في Apple Developer Portal للـ Identifier الخاص بك.";
+      if (apnsToken != null) {
+        hasApns = true;
+        report += "• APNS Token: ✅ موجود\n";
+      } else {
+        report += "• APNS Token: ❌ غير موجود (Null)\n";
       }
 
-      // 3. فحص FCM Token
-      // إذا فشل هذا، فالمشكلة في ملف GoogleService-Info.plist
-      String? fcmToken = await FirebaseMessaging.instance.getToken();
-      report.writeln("3. FCM Token: ${fcmToken != null ? 'OK' : 'NULL'}");
-
-      if (fcmToken == null) {
-        throw "APNS يعمل ولكن الاتصال بـ Firebase فشل.\nتأكد من أن GoogleService-Info.plist موجود وصحيح.";
+      // 3. جلب FCM Token (حتى لو APNS مفقود لنرى الاستجابة)
+      fcmToken = await FirebaseMessaging.instance.getToken();
+      if (fcmToken != null) {
+        report += "• FCM Token: ✅ تم استخراجه بنجاح\n";
+        await Clipboard.setData(ClipboardData(text: fcmToken));
+      } else {
+        report += "• FCM Token: ❌ فشل الجلب\n";
       }
-
-      print("--- MY FCM TOKEN ---");
-      print(fcmToken);
-      print("--------------------");
-
-      // نسخ التوكين للحافظة
-      await Clipboard.setData(ClipboardData(text: fcmToken));
-
-      setState(() {
-        status = "نجح الفحص!\nالتوكين تم نسخه للحافظة.\nAPNS: OK\nFCM: OK";
-        statusColor = Colors.green;
-      });
-
-      Get.defaultDialog(
-        title: "تقرير الفحص",
-        content: SelectableText(
-          "كل شيء يبدو سليماً من جانب التطبيق!\n\nToken:\n$fcmToken\n\nإذا لم تصل الإشعارات الآن، فالمشكلة في 'Server Key' في لوحة تحكم Firebase أو شهادة p8.",
-          style: const TextStyle(fontSize: 12),
-        ),
-      );
 
     } catch (e) {
-      setState(() {
-        status = "خطأ: $e";
-        statusColor = Colors.orange;
-      });
-      Get.defaultDialog(
-        title: "تم اكتشاف الخطأ",
-        content: Text(e.toString()),
-        confirm: ElevatedButton(onPressed: () => Get.back(), child: const Text("حسناً")),
-      );
-    } finally {
-      setState(() {
-        isLoading = false;
-      });
+      report += "• خطأ تقني: $e\n";
     }
+
+    _showResult(report, fcmToken, hasApns);
+    setState(() => _isChecking = false);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: runDiagnostics,
-        child: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: statusColor,
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: const [BoxShadow(blurRadius: 5, color: Colors.black26)],
-          ),
-          child: isLoading
-              ? const CircularProgressIndicator(color: Colors.white)
-              : Row(
+  void _showResult(String report, String? token, bool hasApns) {
+    Get.bottomSheet(
+      Container(
+        padding: const EdgeInsets.all(20),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: SingleChildScrollView(
+          child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.bug_report, color: Colors.white),
-              const SizedBox(width: 8),
-              Text(
-                "فحص الإشعارات (iOS)",
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
+              const Text("تقرير تشخيص الإشعارات", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              const Divider(),
+              Text(report, textAlign: TextAlign.right),
+              if (!hasApns) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  "تحذير: مشكلة الـ APNS تعني أن CodeMagic لم يرفق ملف الـ Entitlements الصحيح. تأكد من وجود ملف Runner.entitlements في مشروعك.",
+                  style: TextStyle(color: Colors.red, fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+              if (token != null) ...[
+                const SizedBox(height: 15),
+                const Text("تم نسخ التوكين للحافظة تلقائياً:", style: TextStyle(color: Colors.green)),
+                SelectableText(token, style: const TextStyle(fontSize: 10, color: Colors.blueGrey)),
+              ],
+              const SizedBox(height: 20),
+              ElevatedButton(onPressed: () => Get.back(), child: const Text("إغلاق")),
             ],
           ),
         ),
       ),
+      isScrollControlled: true,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FloatingActionButton(
+      backgroundColor: Colors.blueAccent,
+      onPressed: _isChecking ? null : runFullCheck,
+      child: _isChecking ? const CircularProgressIndicator(color: Colors.white) : const Icon(Icons.flash_on),
     );
   }
 }
