@@ -13,23 +13,53 @@ import '../../firebase_options.dart';
 import 'api_client.dart';
 import 'package:get/get.dart' as getx;
 
-// تعريف القناة الصوتية
-// التعديل هنا: غيرنا الـ id والـ name لنجبر الهاتف على نسيان الإعدادات القديمة
+// تعريف المتغيرات لتكون متاحة للنظام في الخلفية
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+
 const AndroidNotificationChannel channel = AndroidNotificationChannel(
-  'beytei_urgent_call', // غيرنا الاسم هنا (ID)
-  'Beytei Urgent Alerts', // غيرنا العنوان هنا
+  'beytei_urgent_call',
+  'Beytei Urgent Alerts',
   description: 'This channel is used for important notifications.',
-  importance: Importance.max, // هذا السطر سيتم تفعيله بقوة الآن
+  importance: Importance.max,
   playSound: true,
   sound: RawResourceAndroidNotificationSound('notification'),
 );
 
-
-final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
-
+// 🔥 دالة المعالجة في الخلفية (تمت إضافة المنطق المفقود) 🔥
 @pragma('vm:entry-point')
 Future<void> _messageHandler(RemoteMessage message) async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // إعادة إنشاء القناة في هذه العملية المنفصلة
+  await flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(channel);
+
+  // إظهار الإشعار يدوياً
+  String title = message.notification?.title ?? message.data['title']?.toString() ?? 'طلب جديد';
+  String body = message.notification?.body ?? message.data['body']?.toString() ?? 'يوجد رحلة جديدة بانتظارك';
+
+  await flutterLocalNotificationsPlugin.show(
+    message.hashCode,
+    title,
+    body,
+    NotificationDetails(
+      android: AndroidNotificationDetails(
+        channel.id,
+        channel.name,
+        channelDescription: channel.description,
+        icon: '@mipmap/ic_launcher',
+        playSound: true,
+        // ✅ الصوت يعمل الآن في الخلفية
+        sound: const RawResourceAndroidNotificationSound('notification'),
+        importance: Importance.max,
+        priority: Priority.high,
+        fullScreenIntent: true,
+        category: AndroidNotificationCategory.call,
+      ),
+    ),
+    payload: jsonEncode(message.data),
+  );
 }
 
 class PushNotificationService {
@@ -37,7 +67,9 @@ class PushNotificationService {
   PushNotificationService({required this.apiClient});
 
   Future<void> setupInteractedMessage() async {
+    // ربط دالة الخلفية
     FirebaseMessaging.onBackgroundMessage(_messageHandler);
+
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
@@ -120,7 +152,6 @@ class PushNotificationService {
     AndroidNotification? android = message.notification?.android;
     Map<String, dynamic> data = message.data;
 
-    // إصلاح الخطأ: استخدام String بدلاً من String? وقيم افتراضية
     String title = notification?.title ?? data['title']?.toString() ?? 'رحلة بالقرب منك ';
     String body = notification?.body ?? data['body']?.toString() ?? 'لديك طلب رحلة جديد';
 
@@ -152,11 +183,10 @@ class PushNotificationService {
       body,
       NotificationDetails(
         android: AndroidNotificationDetails(
-          channel.id, // سيأخذ الاسم الجديد تلقائياً من المتغير بالأعلى
+          channel.id,
           channel.name,
           channelDescription: channel.description,
           icon: '@mipmap/ic_launcher',
-          // إعدادات الصوت والرنين
           playSound: true,
           sound: const RawResourceAndroidNotificationSound('notification'),
           enableVibration: true,
