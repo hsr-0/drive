@@ -45,13 +45,14 @@ import '../../presentation/screens/two_factor_screen/two_factor_setup_screen.dar
 import '../../presentation/screens/withdraw/add_withdraw_screen/add_withdraw_method_screen.dart';
 import '../../presentation/screens/withdraw/confirm_withdraw_screen/withdraw_confirm_screen.dart';
 import '../../presentation/screens/withdraw/withdraw_history/withdraw_screen.dart';
+import '../../sectionserves.dart'; // تأكد أن ملف الشاشة موجود في هذا المسار
 import '../helper/shared_preference_helper.dart';
 
 class RouteHelper {
   static const String splashScreen = "/splash_screen";
 
   static const String onboardScreen = "/onboard_screen";
-
+  static const String sectionsScreen = "/ServicesSelectionScreen"; // 1. أضف هذا السطر
   static const String loginScreen = "/login_screen";
 
   static const String phoneNumberLoginScreen = "/phone_number_login_screen";
@@ -147,6 +148,10 @@ class RouteHelper {
   List<GetPage> routes = [
     GetPage(name: splashScreen, page: () => const SplashScreen()),
     GetPage(name: onboardScreen, page: () => const OnBoardIntroScreen()),
+
+    // ✅ هنا تم تسجيل صفحة الأقسام لكي يتعرف عليها التطبيق
+    GetPage(name: sectionsScreen, page: () => const ServicesSelectionScreen()),
+
     GetPage(name: loginScreen, page: () => const LoginScreen()),
     GetPage(
       name: forgotPasswordScreen,
@@ -277,11 +282,11 @@ class RouteHelper {
   ];
 
   static Future<void> checkUserStatusAndGoToNextStep(
-    GlobalDriverInfoModel? user, {
-    bool isRemember = false,
-    String accessToken = "",
-    String tokenType = "",
-  }) async {
+      GlobalDriverInfoModel? user, {
+        bool isRemember = false,
+        String accessToken = "",
+        String tokenType = "",
+      }) async {
     bool needEmailVerification = user?.ev == "1" ? false : true;
     bool needSmsVerification = user?.sv == '1' ? false : true;
     bool isTwoFactorEnable = user?.tv == '1' ? false : true;
@@ -340,7 +345,10 @@ class RouteHelper {
       Get.offAndToNamed(RouteHelper.twoFactorScreen);
     } else {
       PushNotificationService(apiClient: Get.find()).sendUserToken();
-      Get.offAndToNamed(RouteHelper.dashboard);
+
+      // 🔥🔥🔥 التغيير الأساسي هنا 🔥🔥🔥
+      // تم تغيير التوجيه النهائي من الداشبورد إلى شاشة الأقسام
+      Get.offAndToNamed(RouteHelper.sectionsScreen);
     }
   }
 }

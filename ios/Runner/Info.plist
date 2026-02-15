@@ -17,24 +17,31 @@
 
     <key>NSCameraUsageDescription</key>
     <string>This App needs access to your camera to take profile photos, verify identity, and capture trip-related images.</string>
+
     <key>NSPhotoLibraryUsageDescription</key>
     <string>This App needs access to your photo library to upload profile pictures, documents, and trip-related images.</string>
+
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>This App needs permission to save photos and documents related to your trips to your photo library.</string>
+
     <key>NSMicrophoneUsageDescription</key>
     <string>This App uses the microphone for in-app voice communication and support during rides.</string>
 
     <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
     <string>This App uses your location in the background to update trip progress, match you with nearby ride requests, and ensure accurate navigation and fare calculation even when the app is not in the foreground.</string>
+
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>This App uses your location to show nearby ride requests, navigate to pickup and drop-off points, and calculate trip distance and fare.</string>
+
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>This App needs access to your local network to ensure high-quality voice calls via Agora.</string>
 
     <key>UIBackgroundModes</key>
     <array>
        <string>fetch</string>
        <string>remote-notification</string>
        <string>location</string>
-    </array>
+       <string>audio</string> <string>voip</string>  </array>
 
     <key>BGTaskSchedulerPermittedIdentifiers</key>
     <array>

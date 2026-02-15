@@ -95,7 +95,11 @@ class _OvoAppState extends State<OvoApp> {
           theme: lightThemeData,
           defaultTransition: Transition.fadeIn,
           transitionDuration: const Duration(milliseconds: 300),
-          initialRoute: RouteHelper.splashScreen,
+
+          // 🔥🔥🔥 التعديل الجوهري هنا 🔥🔥🔥
+          // جعلنا نقطة البداية هي شاشة الأقسام بدلاً من السبلاش
+          initialRoute: RouteHelper.sectionsScreen,
+
           getPages: RouteHelper().routes,
           locale: localizeController.locale,
           translations: Messages(languages: widget.languages),
