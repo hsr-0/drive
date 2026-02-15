@@ -1496,21 +1496,6 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
 // =============================================================================
 // شاشة الطلبات المتاحة (بدون تحديث تلقائي + تحديث يدوي محسّن)
 // =============================================================================
-class DriverAvailableDeliveriesV3Screen extends StatefulWidget {
-  final AuthResult authResult;
-  final Function(Map<String, dynamic>) onDeliveryAccepted;
-  final VoidCallback onRefresh; // 🔥 إضافة callback للتحديث اليدوي
-
-  const DriverAvailableDeliveriesV3Screen({
-    super.key,
-    required this.authResult,
-    required this.onDeliveryAccepted,
-    required this.onRefresh, // 🔥 تمرير الدالة من الـ MainLayout
-  });
-
-  @override
-  State<DriverAvailableDeliveriesV3Screen> createState() => _DriverAvailableDeliveriesV3ScreenState();
-}
 
 // =============================================================================
 // شاشة الطلبات المتاحة (خصم 1 نقطة فقط + إصلاح الوقت والتفاصيل)
