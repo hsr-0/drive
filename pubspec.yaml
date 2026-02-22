@@ -3,7 +3,7 @@ description: OvoRide is a complete ride-sharing solution.
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.2+13
+version: 1.0.2+14
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -32,7 +32,7 @@ dependencies:
   flutter_widget_from_html: ^0.17.1
   geocoding: ^4.0.0
   geolocator: ^14.0.2
-
+  google_fonts: ^6.2.1
   get: ^4.7.2
   latlong2: ^0.9.1 # ✅ أضف هذا السطر
   flutter_secure_storage: any
