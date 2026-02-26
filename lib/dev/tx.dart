@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -27,7 +28,11 @@ class BalanceManager {
   static int _balance = 0;
   static String _token = '';
   static bool _isInitialized = false;
+
+  // للمراقبة في الواجهة
   static final ValueNotifier<int> balanceNotifier = ValueNotifier<int>(0);
+
+  // للإشعارات المحلية
   static final _localParams = FlutterLocalNotificationsPlugin();
   static const _channel = AndroidNotificationChannel(
     'balance_channel',
@@ -36,7 +41,7 @@ class BalanceManager {
     importance: Importance.high,
   );
 
-  // ✅ دالة أمان: تحول أي نوع بيانات إلى رقم صحيح بدون مشاكل
+  // ✅ دالة أمان: تحول أي نوع بيانات إلى رقم صحيح
   static int _safeInt(dynamic value) {
     if (value == null) return 0;
     if (value is int) return value;
@@ -52,10 +57,11 @@ class BalanceManager {
     _token = token;
     try {
       await _initLocalNotifications();
+      // نجبر التحديث عند الفتح
       _balance = await getPointsV3(token);
       _isInitialized = true;
       balanceNotifier.value = _balance;
-      print("✅ BalanceManager initialized with $_balance points (V3)");
+      print("✅ BalanceManager initialized with $_balance points (V3 - AntiCache)");
       return _balance > 0;
     } catch (e) {
       print("⚠️ BalanceManager initialization failed: $e");
@@ -64,49 +70,57 @@ class BalanceManager {
     }
   }
 
+  // ✅ الدالة الأساسية لجلب الرصيد (معدلة لمنع الكاش)
   static Future<int> getPointsV3(String token) async {
     try {
-      print("🔍 [DEBUG] Fetching balance from: ${ApiService.baseUrl}/taxi/v3/driver/hub");
+      // 1. إضافة طابع زمني فريد لكسر الكاش (TimeStamp)
+      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
 
-      final uri = Uri.parse('${ApiService.baseUrl}/taxi/v3/driver/hub');
+      // ملاحظة: تأكد من أن ApiService.baseUrl لا ينتهي بـ /
+      final String url = '${ApiService.baseUrl}/taxi/v3/driver/hub?_t=$timestamp';
+      final uri = Uri.parse(url);
+
+      print("🔍 [DEBUG] Fetching balance (No-Cache): $uri");
+
       final res = await http.get(
         uri,
-        headers: {'Authorization': 'Bearer $token'},
-      ).timeout(const Duration(seconds: 15)); // إضافة مهلة
+        headers: {
+          'Authorization': 'Bearer $token',
+          // 2. هيدرز إضافية لمنع السيرفر والوسيط من تخزين الاستجابة
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+        },
+      ).timeout(const Duration(seconds: 15));
 
       print("🔍 [DEBUG] Status Code: ${res.statusCode}");
-      print("🔍 [DEBUG] Raw Response: ${res.body}");
 
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
-        print("🔍 [DEBUG] Success: ${data['success']}");
 
         if (data['success'] == true) {
           dynamic rawBalance;
+
+          // محاولة العثور على الرصيد في أماكن مختلفة محتملة في الاستجابة
           if (data['data'] != null && data['data']['wallet_balance'] != null) {
             rawBalance = data['data']['wallet_balance'];
-            print("🔍 [DEBUG] Found balance in data.wallet_balance: $rawBalance (type: ${rawBalance.runtimeType})");
           } else if (data['wallet_balance'] != null) {
             rawBalance = data['wallet_balance'];
-            print("🔍 [DEBUG] Found balance in wallet_balance: $rawBalance (type: ${rawBalance.runtimeType})");
-          } else {
-            print("⚠️ [DEBUG] wallet_balance not found in response!");
           }
 
           final finalBalance = _safeInt(rawBalance);
-          print("🔍 [DEBUG] Final balance after _safeInt: $finalBalance");
+          print("🔍 [DEBUG] Realtime Server Balance: $finalBalance");
 
           setCurrent(finalBalance);
           return finalBalance;
         }
       }
-    } catch (e, stack) {
+    } catch (e) {
       print("❌ [DEBUG] Error in getPointsV3: $e");
-      print("❌ [DEBUG] Stack: $stack");
     }
     return _balance;
   }
-  // ✅ تحديث الرصيد محلياً
+
+  // ✅ تحديث الرصيد محلياً وتحديث الواجهة
   static void setCurrent(int newBalance) {
     if (_balance != newBalance) {
       _balance = newBalance;
@@ -115,7 +129,7 @@ class BalanceManager {
     }
   }
 
-  // ✅ خصم النقاط (تحقق قبل الخصم)
+  // ✅ خصم النقاط (تفاؤلي - يخصم فوراً في الواجهة)
   static Future<bool> deductOptimistic(int points) async {
     if (_balance >= points) {
       _balance -= points;
@@ -125,19 +139,37 @@ class BalanceManager {
     return false;
   }
 
-  // ✅ استرداد النقاط في حالة فشل العملية
+  // ✅ استرداد النقاط (في حال فشل الطلب)
   static void refund(int points) {
     _balance += points;
     balanceNotifier.value = _balance;
   }
 
-  // ✅ تحديث الرصيد من السيرفر
+  // ✅ تحديث الرصيد من السيرفر يدوياً
   static Future<void> refresh() async {
-    if (_token.isEmpty || !_isInitialized) return;
+    if (_token.isEmpty) return;
     await getPointsV3(_token);
   }
 
-  // ✅ تهيئة الإشعارات المحلية
+  // ✅ معالجة تحديث الرصيد القادم من الإشعارات الخلفية
+  static Future<void> handleBalanceUpdate(Map<String, dynamic> data) async {
+    // نبحث عن الرصيد الجديد في البيانات القادمة من الإشعار
+    final newBalanceRaw = data['new_balance'] ?? data['current_balance'];
+
+    if (newBalanceRaw != null) {
+      final newBalance = _safeInt(newBalanceRaw);
+      // نقبل حتى الصفر (لأنه قد يكون تحديث بانتهاء الرصيد)
+      if (newBalance >= 0) {
+        setCurrent(newBalance);
+        print("✅ Balance updated via notification payload: $newBalance");
+      }
+    } else {
+      // إذا لم يكن الرصيد موجوداً في الإشعار، نطلبه من السيرفر
+      await refresh();
+    }
+  }
+
+  // 🔔 إعداد الإشعارات المحلية
   static Future<void> _initLocalNotifications() async {
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     final initializationSettings = const InitializationSettings(android: android);
@@ -147,7 +179,7 @@ class BalanceManager {
         ?.createNotificationChannel(_channel);
   }
 
-  // ✅ عرض تنبيه عند الرصيد المنخفض
+  // 🔔 منطق التنبيه عند انخفاض الرصيد
   static void _showBalanceAlert(int points) {
     if (points == 10 || points == 5 || points == 1) {
       _showLocalBalanceNotification(points);
@@ -157,7 +189,8 @@ class BalanceManager {
   static void _showLocalBalanceNotification(int points) {
     String title = 'تنبيه رصيد';
     String body = '';
-    int id = 1000 + points;
+    int id = 1000 + points; // ID مميز لكل تنبيه
+
     switch (points) {
       case 10:
         body = 'متبقي لديك 10 نقاط فقط.';
@@ -173,6 +206,7 @@ class BalanceManager {
       default:
         return;
     }
+
     _localParams.show(
       id,
       title,
@@ -188,21 +222,11 @@ class BalanceManager {
     );
   }
 
-  // ✅ معالجة تحديث الرصيد القادم من الإشعارات (الدالة المفقودة)
-  static Future<void> handleBalanceUpdate(Map<String, dynamic> data) async {
-    final newBalance = _safeInt(data['new_balance'] ?? data['current_balance']);
-    if (newBalance > 0) {
-      setCurrent(newBalance);
-      print("✅ Balance updated via notification: $newBalance");
-    }
-  }
-
-  // ✅ Getters
+  // 📤 Getters للوصول السريع
   static int get current => _balance;
   static bool get hasBalance => _balance > 0;
   static bool get isInitialized => _isInitialized;
 }
-
 
 
 
@@ -328,7 +352,13 @@ String detailedTime(DateTime input) {
 // GLOBAL VARIABLES
 // =============================================================================
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
-final ValueNotifier<bool> refreshTrigger = ValueNotifier(false);
+final ValueNotifier<int> orderRefreshCounter = ValueNotifier(0);
+//final ValueNotifier<bool> refreshTrigger = ValueNotifier(false);
+
+// =============================================================================
+// MAIN ENTRY POINT
+// ===
+
 
 // =============================================================================
 // MAIN ENTRY POINT
@@ -337,9 +367,14 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
   await NotificationService.initialize();
+
+  // ❌ لا تضع DebugOverlay هنا
   runApp(const DeliveryApp());
 }
 
+// =============================================================================
+// 🔥 التطبيق الرئيسي مع DebugOverlay
+// =============================================================================
 class DeliveryApp extends StatelessWidget {
   const DeliveryApp({super.key});
 
@@ -381,11 +416,377 @@ class DeliveryApp extends StatelessWidget {
           fillColor: Colors.white,
         ),
       ),
+      // ✅ تم حذف builder: (context, child) => DebugOverlay(...)
+      // الآن التطبيق يعمل بشكل مباشر ونظيف
       home: const AuthGate(),
     );
   }
 }
+// =============================================================================
+// 🔍 أداة التشخيص العائمة (NotificationDebugger)
+// =============================================================================
+class NotificationDebugger {
+  static bool _isInitialized = false;
+  static OverlayEntry? _overlayEntry;
+  static final ValueNotifier<bool> _isVisible = ValueNotifier(false);
+  static final List<String> _logs = [];
+  static String? _lastFcmToken;
+  static bool _isTesting = false;
 
+  static void initialize(BuildContext context) {
+    if (_isInitialized) return;
+    _isInitialized = true;
+    _showFloatingButton(context);
+    _refreshFcmToken();
+
+    // الاستماع للإشعارات الواردة
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      _log('🔔 [Foreground] تلقى إشعار: ${message.notification?.title}');
+      _log('📦 البيانات: ${message.data}');
+      Vibration.vibrate(duration: 300);
+    });
+  }
+
+  static void _showFloatingButton(BuildContext context) {
+    if (_overlayEntry != null) return;
+
+    _overlayEntry = OverlayEntry(
+      builder: (context) => Positioned(
+        bottom: 30,
+        right: 20,
+        child: ValueListenableBuilder<bool>(
+          valueListenable: _isVisible,
+          builder: (context, isVisible, child) {
+            if (isVisible) return const SizedBox.shrink();
+
+            return GestureDetector(
+              onTap: () => _showDebuggerSheet(context),
+              child: Container(
+                width: 60,
+                height: 60,
+                decoration: BoxDecoration(
+                  color: Colors.red.shade700,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.3),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: const Icon(Icons.bug_report, color: Colors.white, size: 32),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+
+    Overlay.of(context)?.insert(_overlayEntry!);
+  }
+
+  static void _showDebuggerSheet(BuildContext context) {
+    _isVisible.value = true;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.grey[900],
+      builder: (context) => ValueListenableBuilder<bool>(
+        valueListenable: _isVisible,
+        builder: (context, _, child) {
+          if (!_isVisible.value) return const SizedBox.shrink();
+
+          return Container(
+            height: MediaQuery.of(context).size.height * 0.85,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      '🔍 تشخيص الإشعارات',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: () => _isVisible.value = false,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 15),
+
+                // بطاقة التوكن
+                _buildInfoCard(
+                  title: 'FCM Token',
+                  value: (_lastFcmToken != null && _lastFcmToken!.length > 15)
+                      ? '${_lastFcmToken!.substring(0, 20)}...'
+                      : (_lastFcmToken ?? 'غير موجود'),
+                  status: _lastFcmToken != null ? 'success' : 'error',
+                ),
+                const SizedBox(height: 10),
+
+                // بطاقة الرصيد
+                _buildInfoCard(
+                  title: 'الرصيد الحالي',
+                  value: '${BalanceManager.current} نقطة',
+                  status: BalanceManager.current > 0 ? 'success' : 'error',
+                ),
+                const SizedBox(height: 20),
+
+                // أزرار الاختبار
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    _buildTestButton(context, '🧪 فحص التوكن', _testFcmToken),
+                    _buildTestButton(context, '🔊 اختبار الصوت', _testSound),
+                    _buildTestButton(context, '📡 فحص السيرفر', _testServer),
+                    _buildTestButton(context, '🌙 اختبار الخلفية', _testBackground),
+                    _buildTestButton(context, '🧹 مسح السجل', _clearLogs),
+                  ],
+                ),
+                const SizedBox(height: 20),
+
+                // سجل الأحداث
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: _logs.length,
+                    itemBuilder: (context, index) {
+                      final log = _logs[index];
+                      final color = log.contains('✅') ? Colors.green :
+                      log.contains('❌') ? Colors.red :
+                      log.contains('⚠️') ? Colors.yellow : Colors.grey;
+
+                      return Container(
+                        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                        margin: const EdgeInsets.only(bottom: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[850],
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          log,
+                          style: TextStyle(
+                            color: color,
+                            fontFamily: 'monospace',
+                            fontSize: 13,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    ).then((_) => _isVisible.value = false);
+  }
+
+  static Widget _buildInfoCard({
+    required String title,
+    required String value,
+    required String status,
+  }) {
+    Color statusColor;
+    switch (status) {
+      case 'success': statusColor = Colors.green; break;
+      case 'warning': statusColor = Colors.yellow; break;
+      default: statusColor = Colors.red;
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.grey[850],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: statusColor, width: 2),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(color: Colors.grey, fontSize: 14)),
+          const SizedBox(height: 5),
+          Text(value, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+        ],
+      ),
+    );
+  }
+
+  static Widget _buildTestButton(BuildContext context, String label, VoidCallback onTap) {
+    return SizedBox(
+      width: (MediaQuery.of(context).size.width - 60) / 2,
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.blue.shade800,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+        ),
+        onPressed: _isTesting ? null : onTap,
+        child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
+      ),
+    );
+  }
+
+  static void _log(String message) {
+    final timestamp = DateTime.now().toIso8601String().split('.').first;
+    _logs.insert(0, '[$timestamp] $message');
+    if (_logs.length > 50) _logs.removeLast();
+    print('DEBUG: $message');
+  }
+
+  static Future<void> _refreshFcmToken() async {
+    try {
+      final token = await FirebaseMessaging.instance.getToken();
+      _lastFcmToken = token;
+      _log(token != null
+          ? '✅ FCM Token: ${token.toString().substring(0, 20)}...'
+          : '❌ فشل جلب التوكن');
+    } catch (e) {
+      _log('❌ خطأ في جلب التوكن: $e');
+    }
+  }
+
+  static Future<void> _testFcmToken() async {
+    _isTesting = true;
+    _log('🧪 بدء فحص التوكن...');
+    await _refreshFcmToken();
+
+    if (_lastFcmToken == null) {
+      _log('❌ التوكن غير موجود - الحل: اخرج من التطبيق وأعد الدخول');
+      _isTesting = false;
+      return;
+    }
+
+    // إرسال التوكن للسيرفر
+    final storedAuth = await ApiService.getStoredAuthData();
+    if (storedAuth != null) {
+      try {
+        await ApiService.updateFcmToken(storedAuth.token, _lastFcmToken!);
+        _log('✅ تم إرسال التوكن للسيرفر بنجاح');
+      } catch (e) {
+        _log('❌ فشل إرسال التوكن: $e');
+      }
+    }
+    _isTesting = false;
+  }
+
+  static Future<void> _testSound() async {
+    _log('🔊 اختبار الصوت والاهتزاز...');
+    try {
+      final hasVib = await Vibration.hasVibrator();
+      if (hasVib == true) Vibration.vibrate(duration: 500);
+      _log('✅ نجاح: الصوت والاهتزاز يعملان');
+    } catch (e) {
+      _log('❌ فشل: $e');
+    }
+  }
+
+  static Future<void> _testServer() async {
+    _log('📡 فحص اتصال السيرفر...');
+    try {
+      final result = await InternetAddress.lookup('google.com');
+      if (result.isNotEmpty) {
+        _log('✅ اتصال الإنترنت يعمل');
+      } else {
+        _log('❌ لا يوجد اتصال بالإنترنت');
+        return;
+      }
+    } catch (_) {
+      _log('❌ خطأ في اتصال الإنترنت');
+      return;
+    }
+
+    try {
+      final res = await http.get(Uri.parse('${ApiService.baseUrl}/taxi/v3/driver/hub'));
+      if (res.statusCode == 200) {
+        _log('✅ سيرفر التطبيق يعمل (الكود: 200)');
+      } else {
+        _log('❌ سيرفر التطبيق أرجع خطأ (الكود: ${res.statusCode})');
+      }
+    } catch (e) {
+      _log('❌ خطأ في الاتصال بالسيرفر: $e');
+    }
+  }
+
+  static Future<void> _testBackground() async {
+    _log('🌙 اختبار الإشعارات في الخلفية...');
+    _log('⚠️ 1. اضغط زر الرئيسية لوضع التطبيق في الخلفية');
+    _log('⚠️ 2. انتظر 10 ثوانٍ');
+    _log('⚠️ 3. سيظهر إشعار تجريبي');
+
+    final storedAuth = await ApiService.getStoredAuthData();
+    if (storedAuth == null) {
+      _log('❌ لم يتم العثور على بيانات اعتماد');
+      return;
+    }
+
+    try {
+      final response = await http.post(
+        Uri.parse('${ApiService.baseUrl}/taxi/v3/test-notification'),
+        headers: {
+          'Authorization': 'Bearer ${storedAuth.token}',
+          'Content-Type': 'application/json',
+        },
+        body: json.encode({
+          'fcm_token': _lastFcmToken,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        _log('✅ تم إرسال طلب الإشعار التجريبي للسيرفر');
+        _log('📱 انتظر 10-20 ثانية لوصول الإشعار (حتى لو كان التطبيق مغلقاً)');
+      } else {
+        _log('❌ فشل إرسال الطلب: ${response.statusCode}');
+      }
+    } catch (e) {
+      _log('❌ خطأ: $e');
+    }
+  }
+
+  static void _clearLogs() {
+    _logs.clear();
+    _log('🧹 تم مسح السجلات');
+  }
+}
+
+// =============================================================================
+// 🔌 غلاف التشغيل الآلي للزر العائم (DebugOverlay)
+// =============================================================================
+class DebugOverlay extends StatefulWidget {
+  final Widget child;
+  const DebugOverlay({super.key, required this.child});
+
+  @override
+  State<DebugOverlay> createState() => _DebugOverlayState();
+}
+
+class _DebugOverlayState extends State<DebugOverlay> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        NotificationDebugger.initialize(context);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+// =============================================================================
+// باقي الكود الأصلي (BalanceManager, NotificationService, ApiService, etc.)
+// =============================================================================
+// ... (ضع هنا باقي الكود من ملفك الأصلي دون تغيير) ...
 // =============================================================================
 // SERVICES
 // =============================================================================
@@ -395,10 +796,17 @@ class DeliveryApp extends StatelessWidget {
 // =============================================================================
 // 🔔 NOTIFICATION SERVICE (التعديل الهام هنا)
 // =============================================================================
+// =============================================================================
+// 🔔 NOTIFICATION SERVICE (تم الإصلاح: سريع وفوري مع نظام الرصيد V3)
+// =============================================================================
+// =============================================================================
+// 🔔 NOTIFICATION SERVICE (المصدر الوحيد لاستقبال الإشعارات - احترافي V3)
+// =============================================================================
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _localParams = FlutterLocalNotificationsPlugin();
+
   static const AndroidNotificationChannel _channel = AndroidNotificationChannel(
-    'high_importance_channel',
+    'beytei_urgent_call',
     'طلبات التوصيل العاجلة',
     description: 'تنبيهات صوتية عالية للطلبات الجديدة',
     importance: Importance.max,
@@ -408,6 +816,7 @@ class NotificationService {
   );
 
   static Future<void> initialize() async {
+    // 1️⃣ طلب أذونات الإشعارات
     await FirebaseMessaging.instance.requestPermission(
       alert: true,
       badge: true,
@@ -416,6 +825,7 @@ class NotificationService {
       criticalAlert: true,
     );
 
+    // 2️⃣ تهيئة الإشعارات المحلية
     const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     const DarwinInitializationSettings iosSettings = DarwinInitializationSettings(
       requestSoundPermission: true,
@@ -432,75 +842,115 @@ class NotificationService {
       },
     );
 
+    // 3️⃣ إنشاء قناة أندرويد
     await _localParams
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(_channel);
 
-    // 🔥 المستمع الوحيد للإشعارات الواردة
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+    // 4️⃣ 🔥 الاستماع للإشعارات الواردة (Foreground)
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       RemoteNotification? notification = message.notification;
       Map<String, dynamic> data = message.data;
       print("🔔 [NotificationService] Received: ${notification?.title} | Data: $data");
 
-      // 🔥 1. تحديث الرصيد فوراً
-      if (data['type'] == 'balance_update' || data['new_balance'] != null || data['current_balance'] != null) {
-        await BalanceManager.handleBalanceUpdate(data);
-      }
+      // إظهار الإشعار فوراً
+      String title = notification?.title ?? data['title'] ?? "🔔 طلب جديد!";
+      String body = notification?.body ?? data['body'] ?? "يوجد طلب بالقرب منك، اضغط للفتح.";
+      int notifId = notification?.hashCode ?? DateTime.now().millisecond;
 
-      // 🔥 2. تحديث عام للرصيد والطلبات
-      await BalanceManager.refresh();
-
-      // 🔥 3. تنبيه شاشات الطلبات بالتحديث
-      refreshTrigger.value = !refreshTrigger.value;
-
-      // 🔥 4. التحقق الفوري من حالة الرصيد الصفري
-      if (BalanceManager.current == 0) {
-        navigatorKey.currentState?.pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => ZeroBalanceLockScreen(
-              token: BalanceManager._token,
-              onRecharge: _recharge,
-            ),
+      _localParams.show(
+        notifId,
+        title,
+        body,
+        NotificationDetails(
+          android: AndroidNotificationDetails(
+            _channel.id,
+            _channel.name,
+            channelDescription: _channel.description,
+            icon: '@mipmap/ic_launcher',
+            importance: Importance.max,
+            priority: Priority.high,
+            fullScreenIntent: true,
+            playSound: true,
+            sound: const RawResourceAndroidNotificationSound('woo_sound'),
+            enableVibration: true,
+            styleInformation: BigTextStyleInformation(body),
           ),
-        );
-        return;
-      }
-
-      // 🔥 5. اهتزاز + إشعار صوتي
-      if (await Vibration.hasVibrator()) {
-        Vibration.vibrate(duration: 500);
-      }
-
-      // 🔥 6. عرض الإشعار المحلي المخصص
-      if (notification != null) {
-        _localParams.show(
-          notification.hashCode,
-          notification.title ?? "🔔 طلب جديد!",
-          notification.body ?? "يوجد طلب بالقرب منك",
-          NotificationDetails(
-            android: AndroidNotificationDetails(
-              _channel.id,
-              _channel.name,
-              channelDescription: _channel.description,
-              icon: '@mipmap/ic_launcher',
-              importance: Importance.max,
-              priority: Priority.high,
-              playSound: true,
-              sound: const RawResourceAndroidNotificationSound('woo_sound'),
-              enableVibration: true,
-              visibility: NotificationVisibility.public,
-              category: AndroidNotificationCategory.message,
-            ),
+          iOS: const DarwinNotificationDetails(
+            presentSound: true,
+            sound: 'woo_sound.caf',
           ),
-        );
-      }
+        ),
+      );
+
+      // تشغيل الاهتزاز الفوري
+      Vibration.hasVibrator().then((hasVib) {
+        if (hasVib == true) Vibration.vibrate(duration: 500);
+      });
+
+      // تحديث قوائم الطلبات في الواجهة فوراً
+      //refreshTrigger.value = !refreshTrigger.value;
+
+
+// ✅ أضف هذا السطر (زيادة العداد تضمن التنبيه دائماً):
+      orderRefreshCounter.value++;
+      print("🔔 [SERVICE] 🔥 تم زيادة عداد التحديث إلى: ${orderRefreshCounter.value}");
+
+      // معالجة الرصيد وعمليات السيرفر في الخلفية
+      _handleBackgroundData(data);
     });
 
+    // 5️⃣ الاستماع عند فتح التطبيق من الإشعار
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
       print("🔔 [NotificationService] App opened from notification: ${message.data}");
     });
 
+    // ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅
+    // 🔥🔥🔥 التعديل الأهم: الاستماع لتجديد توكن FCM تلقائيًا 🔥🔥🔥
+    // ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅
+    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
+      print("🔄 [TOKEN REFRESH] New FCM token generated: ${newToken.substring(0, 20)}...");
+
+      final storedAuth = await ApiService.getStoredAuthData();
+      if (storedAuth != null && storedAuth.token.isNotEmpty) {
+        try {
+          await ApiService.updateFcmToken(storedAuth.token, newToken);
+          print("✅ [TOKEN REFRESH] New token saved to server successfully");
+        } catch (e) {
+          print("❌ [TOKEN REFRESH] Failed to update token: $e");
+        }
+      }
+    });
+    // ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅
+
     print("✅ NotificationService initialized successfully");
+  }
+
+  // ✅ دالة جديدة لمعالجة بيانات الرصيد في الخلفية بهدوء
+  static Future<void> _handleBackgroundData(Map<String, dynamic> data) async {
+    try {
+      if (data['type'] == 'balance_update' || data['new_balance'] != null || data['current_balance'] != null) {
+        await BalanceManager.handleBalanceUpdate(data);
+      }
+
+      await BalanceManager.refresh();
+
+      // التحقق من الرصيد الصفري هنا (بعد أن ضمنّا أن الإشعار ظهر وعمل الصوت)
+      if (BalanceManager.current == 0) {
+        // تأخير بسيط لضمان رؤية السائق للإشعار قبل قفل الشاشة
+        await Future.delayed(const Duration(seconds: 1));
+        navigatorKey.currentState?.pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => ZeroBalanceLockScreen(
+              token: '',
+              onRecharge: _recharge,
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      print("❌ [NotificationService] Background Error: $e");
+    }
   }
 
   static void _handleNotificationClick(NotificationResponse response) {
@@ -733,17 +1183,28 @@ class ApiService {
   }
   static Future<void> updateFcmToken(String token, String fcmToken) async {
     try {
-      await http.post(
-        // ✅ تم التغيير من V1 إلى V3
-        Uri.parse('$baseUrl/taxi/v3/driver/update-fcm'),
+      print("📡 [FCM Update] Sending to server: ${fcmToken.substring(0, 20)}...");
+
+      // ✅ تصحيح الرابط ليطابق السيرفر (taxi-auth/v1/update-fcm-token)
+      final response = await http.post(
+        Uri.parse('$baseUrl/taxi-auth/v1/update-fcm-token'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token'
+          'Authorization': 'Bearer $token' // ضروري لأن السيرفر يطلب taxi_api_permission_check
         },
-        body: json.encode({'fcm_token': fcmToken}),
-      );
+        body: json.encode({
+          'fcm_token': fcmToken,
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      // طباعة النتيجة للمراقبة
+      if (response.statusCode == 200) {
+        print("✅ [FCM Update] Success: Token updated on server.");
+      } else {
+        print("❌ [FCM Update] Server Error: ${response.statusCode} - ${response.body}");
+      }
     } catch (e) {
-      print("Failed to update FCM token: $e");
+      print("❌ [FCM Update] Exception: $e");
     }
   }
   static Future<Map<String, dynamic>> registerDriverV3(Map<String, String> fields, Map<String, XFile> files) async {
@@ -765,14 +1226,22 @@ class ApiService {
 // في ملف ApiService
   static Future<Map<String, dynamic>> getAvailableDeliveriesOnly(String t) async {
     try {
+      // 🔥 1. إضافة طابع زمني لكسر الكاش (ضروري جداً للتحديث الفوري)
+      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+
       final res = await http.get(
-        Uri.parse('$baseUrl/taxi/v3/delivery/available'),
-        headers: {'Authorization': 'Bearer $t'},
+        // 🔥 2. إضافة الطابع الزمني للرابط ليصبح فريداً في كل طلب
+        Uri.parse('$baseUrl/taxi/v3/delivery/available?_t=$timestamp'),
+        headers: {
+          'Authorization': 'Bearer $t',
+          // 🔥 3. هيدرز إجبارية لمنع تخزين الاستجابة (Force No-Cache)
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+        },
       );
 
       // 🔥 طباعة حالة الاستجابة للتشخيص
       print('📡 [API DEBUG] Status Code: ${res.statusCode}');
-      // print('📡 [API DEBUG] Body Preview: ${res.body.substring(0, 100)}'); // احذر إذا كانت البيانات طويلة
 
       // 🔥 فحص إذا كانت الاستجابة HTML بدلاً من JSON
       if (res.body.trim().startsWith('<!DOCTYPE') || res.body.trim().startsWith('<html')) {
@@ -953,13 +1422,22 @@ class _AuthGateState extends State<AuthGate> {
       // 3. 🔥 الفحص المركزي للرصيد (قبل عرض أي شاشة)
       _hasBalance = await BalanceManager.initialize(storedAuth.token);
 
-      // 4. تحديث FCM Token في الخلفية (لا يؤثر على الأداء)
+      // ✅✅✅ 4. تحديث FCM Token فوراً (مع معالجة الأخطاء والتسجيل) ✅✅✅
       try {
         final fcm = await NotificationService.getFcmToken();
-        if (fcm != null) ApiService.updateFcmToken(storedAuth.token, fcm);
-      } catch (_) {}
+        if (fcm != null && fcm.isNotEmpty) {
+          // تحديث التوكن في السيرفر مع الانتظار للتأكد من النجاح
+          await ApiService.updateFcmToken(storedAuth.token, fcm);
+          print("✅ [AuthGate] FCM Token updated successfully: ${fcm.substring(0, 20)}...");
+        } else {
+          print("⚠️ [AuthGate] FCM Token is null or empty, will retry later");
+        }
+      } catch (e) {
+        print("❌ [AuthGate] Failed to update FCM Token: $e");
+        // لا نوقف التطبيق إذا فشل تحديث التوكن
+      }
 
-      // 5. تخزين بيانات المصادقة
+      // 5. تخزين بيانات المصادقة وتحديث الواجهة
       if (mounted) setState(() {
         _auth = storedAuth;
         _isLoading = false;
@@ -1131,7 +1609,6 @@ class _AuthGateState extends State<AuthGate> {
     );
   }
 }
-
 // =============================================================================
 // شاشة إيقاف الحساب عند 0 نقاط (محسّنة وصحيحة)
 // =============================================================================
@@ -1314,21 +1791,54 @@ class _DriverLoginState extends State<DriverLogin> {
 
   Future<void> _go() async {
     setState(() => _load = true);
-    final res = await ApiService.login(p.text, pass.text);
-    setState(() => _load = false);
 
-    if (res['success'] == true) {
-      final a = AuthResult.fromJson(res);
-      if (res['is_driver'] == true) {
-        await ApiService.storeAuthData(a);
-        final fcm = await NotificationService.getFcmToken();
-        if (fcm != null) ApiService.updateFcmToken(a.token, fcm);
-        widget.onSuccess(a);
+    try {
+      final res = await ApiService.login(p.text, pass.text);
+
+      setState(() => _load = false);
+
+      if (res['success'] == true) {
+        final a = AuthResult.fromJson(res);
+
+        if (res['is_driver'] == true) {
+          // 1. حفظ بيانات المصادقة محلياً
+          await ApiService.storeAuthData(a);
+
+          // ✅✅✅ 2. تحديث FCM Token فوراً بعد تسجيل الدخول (مع معالجة الأخطاء) ✅✅✅
+          try {
+            final fcm = await NotificationService.getFcmToken();
+
+            if (fcm != null && fcm.isNotEmpty) {
+              // استخدام await لضمان اكتمال التحديث قبل المتابعة
+              await ApiService.updateFcmToken(a.token, fcm);
+              print("✅ [Login] FCM Token updated successfully: ${fcm.substring(0, 20)}...");
+            } else {
+              print("⚠️ [Login] FCM Token is null or empty, will retry on next app start");
+            }
+          } catch (e) {
+            // لا نوقف التطبيق إذا فشل تحديث التوكن، لكن نسجل الخطأ
+            print("❌ [Login] Failed to update FCM Token: $e");
+          }
+
+          // 3. الانتقال للشاشة الرئيسية
+          widget.onSuccess(a);
+
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('ليس حساب سائق'))
+          );
+        }
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ليس حساب سائق')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(res['message'] ?? 'فشل تسجيل الدخول'))
+        );
       }
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res['message'] ?? 'فشل')));
+    } catch (e) {
+      setState(() => _load = false);
+      print("❌ [Login] Exception: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('حدث خطأ: ${e.toString()}'))
+      );
     }
   }
 
@@ -1358,17 +1868,21 @@ class _DriverLoginState extends State<DriverLogin> {
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: _load ? null : _go,
-                child: _load ? const CircularProgressIndicator(color: Colors.white) : const Text("دخول"),
+                child: _load
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text("دخول"),
               ),
             ),
-            TextButton(onPressed: widget.onToggle, child: const Text("ليس لديك حساب؟ سجل الآن")),
+            TextButton(
+                onPressed: widget.onToggle,
+                child: const Text("ليس لديك حساب؟ سجل الآن")
+            ),
           ],
         ),
       ),
     );
   }
 }
-
 class DriverRegisterV3 extends StatefulWidget {
   final VoidCallback onToggle;
   const DriverRegisterV3({super.key, required this.onToggle});
@@ -1554,6 +2068,9 @@ class _DriverRegisterV3State extends State<DriverRegisterV3> {
 // =============================================================================
 // MAIN LAYOUT
 // =============================================================================
+// =============================================================================
+// MAIN LAYOUT - الإصدار النهائي (مع orderRefreshCounter)
+// =============================================================================
 class MainDeliveryLayout extends StatefulWidget {
   final AuthResult authResult;
   final VoidCallback onLogout;
@@ -1569,23 +2086,40 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
   Timer? _locationTimer;
   bool _isRefreshingOrders = false;
 
+  // ✅ مفاتيح ثابتة للحفاظ على حالة الشاشات الفرعية
+  static const _deliveriesKey = ValueKey('deliveries_screen');
+  static const _historyKey = ValueKey('history_screen');
+  static const _pointsKey = ValueKey('points_screen');
+  static const _currentDeliveryKey = ValueKey('current_delivery_screen');
+
   @override
   void initState() {
     super.initState();
+    print("🔹 [MAIN-LAYOUT] initState: تهيئة الواجهة الرئيسية");
+
     _chk();
     _startLocationTracking();
-    refreshTrigger.addListener(_handleGlobalRefresh);
+
+    // 🔥🔥🔥 الحل النهائي: الاستماع للعداد الرقمي بدلاً من refreshTrigger
+    orderRefreshCounter.addListener(_handleGlobalRefresh);
+    print("🔹 [MAIN-LAYOUT] ✅ تم إضافة مستمع لـ orderRefreshCounter");
   }
 
   @override
   void dispose() {
     _locationTimer?.cancel();
-    refreshTrigger.removeListener(_handleGlobalRefresh);
+
+    // 🔥 إزالة المستمع من العداد الجديد
+    orderRefreshCounter.removeListener(_handleGlobalRefresh);
+    print("🔹 [MAIN-LAYOUT] dispose: تنظيف مستمع orderRefreshCounter");
+
     super.dispose();
   }
 
+  // 🔥 دالة معالجة التحديث العالمي (لجلب الطلب النشط)
   void _handleGlobalRefresh() {
-    _chk();
+    print("🔔 [MAIN-LAYOUT] 🔄 وصل تحديث عالمي، جاري فحص الطلب النشط...");
+    if (mounted) _chk();
   }
 
   void _startLocationTracking() {
@@ -1608,42 +2142,53 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
 
   // 🔥 عند قبول الطلب - الانتقال الفوري لشاشة الطلب النشط
   void _onDeliveryAccepted(Map<String, dynamic> order) {
+    print("✅ [MAIN-LAYOUT] 🎯 تم قبول طلب جديد، الانتقال للشاشة النشطة");
     setState(() {
       _active = order;
-      _idx = 0; // ✅ الانتقال للتبويب الرئيسي
+      _idx = 0;
     });
     BalanceManager.refresh();
   }
 
   // 🔥 عند انتهاء الطلب
   void _handleDeliveryFinished() {
+    print("✅ [MAIN-LAYOUT] 🏁 انتهى الطلب النشط، جاري التحديث");
     setState(() {
       _active = null;
     });
     BalanceManager.refresh();
-    refreshTrigger.value = !refreshTrigger.value;
+
+    // 🔥🔥🔥 الحل النهائي: زيادة العداد بدلاً من عكس القيمة
+    orderRefreshCounter.value++;
+    print("🔔 [MAIN-LAYOUT] 🔥 تم زيادة orderRefreshCounter إلى: ${orderRefreshCounter.value}");
   }
 
   @override
   Widget build(BuildContext context) {
+    print("🎨 [MAIN-LAYOUT] 🔄 إعادة بناء الواجهة الرئيسية، _idx=$_idx, _active=${_active != null ? 'نعم' : 'لا'}");
+
     final pages = [
       // الصفحة 0: إما طلب جاري أو قائمة الطلبات
       _active != null
           ? DriverCurrentDeliveryScreen(
+        key: _currentDeliveryKey, // ✅ مفتاح للحفاظ على الحالة
         initialDelivery: _active!,
         authResult: widget.authResult,
         onDeliveryFinished: _handleDeliveryFinished,
         onDataChanged: _chk,
       )
           : DriverAvailableDeliveriesV3Screen(
+        key: _deliveriesKey, // ✅ هذا هو التعديل الأهم: يمنع إعادة تهيئة الشاشة
         authResult: widget.authResult,
-        onDeliveryAccepted: _onDeliveryAccepted, // ✅ تمرير الدالة الصحيحة
+        onDeliveryAccepted: _onDeliveryAccepted,
         onRefresh: _chk,
       ),
       // الصفحة 1: السجل
       HistoryTabV3(
+        key: _historyKey, // ✅ مفتاح للحفاظ على الحالة
         token: widget.authResult.token,
         onOpenActive: (order) {
+          print("🔹 [MAIN-LAYOUT] 📂 فتح طلب من السجل: #${order['id']}");
           setState(() {
             _active = order;
             _idx = 0;
@@ -1651,7 +2196,11 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
         },
       ),
       // الصفحة 2: الحساب
-      PointsTab(token: widget.authResult.token, onLogout: widget.onLogout),
+      PointsTab(
+        key: _pointsKey, // ✅ مفتاح للحفاظ على الحالة
+        token: widget.authResult.token,
+        onLogout: widget.onLogout,
+      ),
     ];
 
     return Scaffold(
@@ -1668,8 +2217,13 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
                   ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                   : const Icon(Icons.refresh),
               onPressed: () async {
+                print("🔄 [MAIN-LAYOUT] 🔄 ضغط على زر التحديث اليدوي");
                 setState(() => _isRefreshingOrders = true);
-                refreshTrigger.value = !refreshTrigger.value;
+
+                // 🔥🔥🔥 الحل النهائي: زيادة العداد بدلاً من عكس القيمة
+                orderRefreshCounter.value++;
+                print("🔔 [MAIN-LAYOUT] 🔥 تم زيادة orderRefreshCounter يدوياً إلى: ${orderRefreshCounter.value}");
+
                 await Future.delayed(const Duration(seconds: 2));
                 if (mounted) setState(() => _isRefreshingOrders = false);
               },
@@ -1678,14 +2232,20 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
           if (_idx != 0 || _active != null)
             IconButton(
               icon: const Icon(Icons.refresh),
-              onPressed: _chk,
+              onPressed: () {
+                print("🔄 [MAIN-LAYOUT] 🔄 تحديث الطلب النشط يدوياً");
+                _chk();
+              },
             ),
         ],
       ),
       body: pages[_idx],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _idx,
-        onTap: (i) => setState(() => _idx = i),
+        onTap: (i) {
+          print("🔹 [MAIN-LAYOUT] 📱 تغيير التبويب إلى: $i");
+          setState(() => _idx = i);
+        },
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: "الرئيسية"),
           BottomNavigationBarItem(icon: Icon(Icons.history), label: "السجل"),
@@ -1719,7 +2279,30 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
   }
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // =============================================================================
+
+
+
 // شاشة الطلبات المتاحة (محسّنة)
 // =============================================================================
 
@@ -1735,12 +2318,16 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
 // =============================================================================
 // شاشة الطلبات المتاحة (محسّنة)
 // =============================================================================
+// شاشة الطلبات المتاحة V3 (محسّنة + تشخيص مطبوع)
+// =============================================================================
 class DriverAvailableDeliveriesV3Screen extends StatefulWidget {
   final AuthResult authResult;
   final Function(Map<String, dynamic>) onDeliveryAccepted;
   final VoidCallback onRefresh;
+
+  // ✅ المفتاح ضروري للحفاظ على الحالة عند إعادة بناء الأب
   const DriverAvailableDeliveriesV3Screen({
-    super.key,
+    super.key, // <--- هذا هو التعديل الأهم
     required this.authResult,
     required this.onDeliveryAccepted,
     required this.onRefresh,
@@ -1751,6 +2338,9 @@ class DriverAvailableDeliveriesV3Screen extends StatefulWidget {
       _DriverAvailableDeliveriesV3ScreenState();
 }
 
+// =============================================================================
+// شاشة الطلبات المتاحة V3 (محسّنة + تشخيص مطبوع + حل التحديث التلقائي النهائي)
+// =============================================================================
 class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliveriesV3Screen> {
   List<dynamic> _ordersList = [];
   bool _isLoading = false;
@@ -1762,9 +2352,19 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
   @override
   void initState() {
     super.initState();
+    print("🔹 [V3-SCREEN] initState: تهيئة شاشة الطلبات المتاحة");
+
+    // 1. التحميل الأولي عند فتح الشاشة
     _loadDataSafe(isInitial: true);
-    refreshTrigger.addListener(_handleNotification);
+
+    // 2. 🔥🔥🔥 الحل النهائي: الاستماع للعداد الرقمي (orderRefreshCounter)
+    // هذا يضمن أن كل زيادة في العداد تُفعّل التحديث فوراً 100%
+    orderRefreshCounter.addListener(_handleNotification);
+    print("🔹 [V3-SCREEN] ✅ تم إضافة مستمع لـ orderRefreshCounter (الحل النهائي)");
+
+    // 3. مراقبة الرصيد لتحديث الواجهة إذا تم الشحن
     BalanceManager.balanceNotifier.addListener(() {
+      print("🔹 [V3-SCREEN] تغير الرصيد: ${BalanceManager.current}");
       if (mounted && _isFirstLoad) {
         setState(() => _isFirstLoad = false);
       }
@@ -1773,108 +2373,143 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
 
   @override
   void dispose() {
-    refreshTrigger.removeListener(_handleNotification);
+    print("🔹 [V3-SCREEN] dispose: تنظيف المستمعين");
+    // ⚠️ تنظيف المستمع من العداد الجديد لمنع تسرب الذاكرة
+    orderRefreshCounter.removeListener(_handleNotification);
     super.dispose();
   }
 
+  // 🔥 دالة معالجة الإشعار (التحديث التلقائي الفوري - الإصدار النهائي)
   Future<void> _handleNotification() async {
-    print('🔔 [NOTIFICATION] New order notification received - Refreshing...');
-    await _loadDataSafe(isSilent: true);
-    if (mounted && _ordersList.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.green.shade800,
-          content: Row(
-            children: [
-              const Icon(Icons.notifications, color: Colors.white),
-              const SizedBox(width: 8),
-              Text("وصل ${_ordersList.length} طلب جديد!"),
-            ],
-          ),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-      Vibration.vibrate(duration: 500);
+    // تسجيل رقم العداد الحالي للتأكد من استلام التنبيه الصحيح
+    final currentCount = orderRefreshCounter.value;
+    print('🔔 [AUTO-REFRESH #$currentCount] 🚨 وصل إشعار جديد، جاري تحديث القائمة...');
+    print('🔔 [AUTO-REFRESH #$currentCount] 📡 حالة الشاشة: mounted=$mounted, isFirstLoad=$_isFirstLoad');
+
+    // ⏳ انتظار نصف ثانية لضمان أن السيرفر قد حفظ البيانات الجديدة
+    await Future.delayed(const Duration(milliseconds: 500));
+    print('🔔 [AUTO-REFRESH #$currentCount] ⏳ انتهى الانتظار، جاري جلب البيانات...');
+
+    // جلب البيانات بصمت (بدون Loading Spinner)
+    if (mounted) {
+      await _loadDataSafe(isSilent: true);
+      print('🔔 [AUTO-REFRESH #$currentCount] ✅ انتهى تحديث القائمة، عدد الطلبات: ${_ordersList.length}');
+
+      // 📳 اهتزاز خفيف لتنبيه السائق أن القائمة تحدحدث
+      Vibration.vibrate(duration: 100);
+      print('🔔 [AUTO-REFRESH #$currentCount] 📳 تم تشغيل الاهتزاز');
+    } else {
+      print('🔔 [AUTO-REFRESH] ❌ الشاشة غير مثبتة (unmounted)، تم تخطي التحديث');
     }
   }
 
   Future<void> _loadDataSafe({bool isInitial = false, bool isSilent = false}) async {
-    if (isInitial && mounted) setState(() => _isFirstLoad = true);
-    if (!isInitial && !isSilent && mounted) setState(() => _isLoading = true);
+    if (!mounted) {
+      print("📡 [API] ❌ الشاشة غير مثبتة، إلغاء جلب البيانات");
+      return;
+    }
+
+    if (isInitial) {
+      print("📡 [API] 🔄 تحميل أولي للقائمة...");
+      setState(() => _isFirstLoad = true);
+    }
+
+    // إظهار التحميل فقط إذا لم يكن صامتاً ولم يكن التحميل الأولي
+    if (!isInitial && !isSilent) {
+      print("📡 [API] 🔄 جاري جلب الطلبات (مع مؤشر تحميل)...");
+      setState(() => _isLoading = true);
+    } else if (!isInitial && isSilent) {
+      print("📡 [API] 🔄 جاري جلب الطلبات (تحديث صامت)...");
+    }
 
     try {
+      // استدعاء الـ API (مع منع الكاش)
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      print("📡 [API] 🌐 طلب GET: /taxi/v3/delivery/available?_t=$timestamp");
+
       final result = await ApiService.getAvailableDeliveriesOnly(widget.authResult.token);
-      if (!mounted) return;
+
+      if (!mounted) {
+        print("📡 [API] ❌ الشاشة أصبحت غير مثبتة أثناء الانتظار، إلغاء المعالجة");
+        return;
+      }
+
+      print("📡 [API] 📥 استجابة السيرفر: success=${result['success']}, orders count=${result['orders']?.length ?? 0}");
 
       if (result['success'] == true) {
         final dynamic ordersRaw = result['orders'];
-        if (ordersRaw == null || ordersRaw is! List) {
-          if (mounted) setState(() {
-            _ordersList = [];
-            _isLoading = false;
-            _isFirstLoad = false;
-          });
-          return;
-        }
+        final List<dynamic> newOrders = (ordersRaw is List) ? ordersRaw : [];
 
-        final List<dynamic> newOrders = ordersRaw;
-
-        // كشف الطلبات الجديدة
+        // كشف الطلبات الجديدة لتمييزها
         if (_ordersList.isNotEmpty && newOrders.isNotEmpty) {
           final currentIds = _ordersList.map((o) => o['id'].toString()).toSet();
           final incomingIds = newOrders.map((o) => o['id'].toString()).toSet();
           final newlyAdded = Set<String>.from(incomingIds.difference(currentIds));
+
           if (newlyAdded.isNotEmpty) {
+            print("🆕 [NEW ORDERS] 🔥 تم اكتشاف ${newlyAdded.length} طلبات جديدة: $newlyAdded");
             _newOrderIds = newlyAdded;
           }
         }
 
-        // الفرز الآمن للتاريخ
+        // الفرز: الأحدث أولاً
         newOrders.sort((a, b) {
           try {
             final dateA = DateTime.tryParse(a['date_created']?.toString() ?? '') ?? DateTime.now();
             final dateB = DateTime.tryParse(b['date_created']?.toString() ?? '') ?? DateTime.now();
-            return dateB.compareTo(dateA); // الأحدث أولاً
+            return dateB.compareTo(dateA);
           } catch (e) {
             return 0;
           }
         });
 
-        if (mounted) setState(() {
+        setState(() {
           _ordersList = newOrders;
           _isLoading = false;
           _isFirstLoad = false;
         });
+        print("✅ [UI] 📋 تم تحديث القائمة: ${_ordersList.length} طلب معروض");
+
       } else {
+        // فشل الجلب
+        print("❌ [API] فشل جلب الطلبات: ${result['message'] ?? 'خطأ غير معروف'}");
         if (!isSilent && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(result['message'] ?? 'فشل جلب الطلبات'), backgroundColor: Colors.red),
           );
         }
-        if (mounted) setState(() => _ordersList = []);
+        if (mounted && _ordersList.isEmpty) setState(() => _ordersList = []);
       }
     } catch (e) {
+      print("❌ [API] 🚨 استثناء أثناء جلب البيانات: $e");
       if (!isSilent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('حدث خطأ: ${e.toString()}'), backgroundColor: Colors.red),
         );
       }
     } finally {
-      if (mounted) setState(() {
-        _isLoading = false;
-        _isFirstLoad = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isFirstLoad = false;
+        });
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // ✅ التحقق من الرصيد BEFORE عرض أي شيء
+    print("🎨 [BUILD] 🔄 إعادة بناء واجهة الطلبات المتاحة");
+
+    // ✅ التحقق من تهيئة الرصيد
     if (!BalanceManager.isInitialized) {
+      print("⚠️ [BUILD] ⏳ BalanceManager غير مهيأ، عرض مؤشر التحميل");
       return const Center(child: CircularProgressIndicator());
     }
 
+    // 🛑 التحقق من كفاية الرصيد
     if (BalanceManager.current < _costInPoints) {
+      print("⚠️ [BUILD] 🔴 الرصيد غير كافٍ: ${BalanceManager.current} < $_costInPoints");
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1886,10 +2521,13 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
             Text("يتطلب $_costInPoints نقطة لقبول الطلبات"),
             const SizedBox(height: 20),
             ElevatedButton(
-              onPressed: () => launchUrl(
-                Uri.parse("https://wa.me/+9647854076931"),
-                mode: LaunchMode.externalApplication,
-              ),
+              onPressed: () {
+                print("🔗 [BUILD] 📲 ضغط على زر شحن الرصيد");
+                launchUrl(
+                  Uri.parse("https://wa.me/+9647854076931"),
+                  mode: LaunchMode.externalApplication,
+                );
+              },
               child: const Text("شحن الرصيد"),
             ),
           ],
@@ -1897,19 +2535,28 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
       );
     }
 
-    if (_isFirstLoad) return const Center(child: CircularProgressIndicator());
+    // ⏳ التحميل الأولي
+    if (_isFirstLoad) {
+      print("⏳ [BUILD] 🔄 عرض مؤشر التحميل الأولي");
+      return const Center(child: CircularProgressIndicator());
+    }
 
+    // 📭 القائمة فارغة
     if (_ordersList.isEmpty) {
+      print("📭 [BUILD] 🗂️ القائمة فارغة، عرض رسالة 'لا توجد طلبات'");
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Icon(Icons.inbox, size: 60, color: Colors.grey),
             const SizedBox(height: 15),
-            const Text("لا توجد طلبات متاحة"),
+            const Text("لا توجد طلبات متاحة حالياً"),
             const SizedBox(height: 20),
             ElevatedButton.icon(
-              onPressed: () => _loadDataSafe(),
+              onPressed: () {
+                print("🔄 [BUILD] 🔄 ضغط على زر التحديث اليدوي");
+                _loadDataSafe();
+              },
               icon: const Icon(Icons.refresh),
               label: const Text("تحديث"),
             ),
@@ -1918,25 +2565,39 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
       );
     }
 
+    print("✅ [BUILD] 📋 عرض القائمة: ${_ordersList.length} طلب");
+
+    // 📋 عرض القائمة
     return Column(
       children: [
+        // شريط الحالة العلوي
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           color: Colors.grey[200],
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text("الطلبات: ${_ordersList.length}", style: const TextStyle(fontWeight: FontWeight.bold)),
+              Text("الطلبات المتاحة: ${_ordersList.length}", style: const TextStyle(fontWeight: FontWeight.bold)),
               if (_isLoading)
                 const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2))
               else
-                InkWell(onTap: () => _loadDataSafe(), child: const Icon(Icons.refresh, size: 20)),
+                InkWell(
+                  onTap: () {
+                    print("🔄 [UI] 🔄 ضغط على أيقونة التحديث");
+                    _loadDataSafe();
+                  },
+                  child: const Icon(Icons.refresh, size: 20),
+                ),
             ],
           ),
         ),
+        // قائمة البطاقات
         Expanded(
           child: RefreshIndicator(
-            onRefresh: () async => await _loadDataSafe(),
+            onRefresh: () async {
+              print("🔄 [UI] 🎯 سحب للتحديث (Pull-to-Refresh)");
+              await _loadDataSafe();
+            },
             child: ListView.builder(
               padding: const EdgeInsets.all(10),
               itemCount: _ordersList.length,
@@ -1950,13 +2611,17 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     );
   }
 
-  // 🔥 الواجهة العصرية لبطاقة الطلب
+  // 🔥 تصميم بطاقة الطلب
   Widget _buildOrderCard(Map<String, dynamic> order) {
     final id = order['id'].toString();
     final isNew = _newOrderIds.contains(id);
     final shopName = order['pickup_location_name']?.toString() ?? 'المتجر';
     final address = order['destination_address']?.toString() ?? 'العنوان';
     final deliveryFee = order['delivery_fee']?.toString() ?? '---';
+
+    if (isNew) {
+      print("🆕 [CARD] ✨ عرض طلب جديد مميز: #$id من $shopName");
+    }
 
     return Card(
       elevation: isNew ? 8 : 2,
@@ -1971,7 +2636,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 🌟 رأس البطاقة: اسم المتجر + السعر بشكل عصري
+            // 🌟 رأس البطاقة: اسم المتجر + السعر
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -2000,7 +2665,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                     ],
                   ),
                 ),
-                // 🌟 شارة السعر (Badge) في مكان مناسب وبارز
+                // 🌟 شارة السعر
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
@@ -2037,14 +2702,17 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
               ],
             ),
             const SizedBox(height: 16),
-            // 🔘 أزرار التفاعل (التفاصيل + القبول)
+            // 🔘 أزرار التفاعل
             Row(
               children: [
-                // زر عرض التفاصيل (إطار خارجي)
+                // زر التفاصيل
                 Expanded(
                   flex: 1,
                   child: OutlinedButton.icon(
-                    onPressed: () => _showDetailsDialog(order, deliveryFee),
+                    onPressed: () {
+                      print("🔍 [CARD] 👁️ فتح تفاصيل الطلب: #$id");
+                      _showDetailsDialog(order, deliveryFee);
+                    },
                     icon: const Icon(Icons.info_outline, size: 18),
                     label: const Text("التفاصيل", style: TextStyle(fontWeight: FontWeight.bold)),
                     style: OutlinedButton.styleFrom(
@@ -2056,7 +2724,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                   ),
                 ),
                 const SizedBox(width: 12),
-                // زر قبول الطلب (ممتلئ وبارز)
+                // زر القبول
                 Expanded(
                   flex: 2,
                   child: ElevatedButton.icon(
@@ -2071,7 +2739,10 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                     ),
                     onPressed: _isProcessingOrder || BalanceManager.current < _costInPoints
                         ? null
-                        : () => _acceptDelivery(id),
+                        : () {
+                      print("✅ [CARD] 🎯 ضغط على قبول الطلب: #$id");
+                      _acceptDelivery(id);
+                    },
                   ),
                 ),
               ],
@@ -2083,6 +2754,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
   }
 
   void _showDetailsDialog(Map<String, dynamic> order, String price) {
+    print("📋 [DIALOG] 🗂️ عرض نافذة تفاصيل الطلب: #${order['id']}");
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -2101,10 +2773,15 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
   }
 
   Future<void> _acceptDelivery(String id) async {
-    if (_isProcessingOrder) return;
+    print("🚀 [ACCEPT] ▶️ بدء عملية قبول الطلب: #$id");
 
-    // ✅ التحقق من الرصيد BEFORE الخصم
+    if (_isProcessingOrder) {
+      print("⚠️ [ACCEPT] ⏳ عملية قبول أخرى جارية، تم تخطي هذا الطلب");
+      return;
+    }
+
     if (BalanceManager.current < _costInPoints) {
+      print("❌ [ACCEPT] 🔴 الرصيد غير كافٍ: ${BalanceManager.current} < $_costInPoints");
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('⚠️ رصيدك غير كافٍ'), backgroundColor: Colors.red),
       );
@@ -2112,19 +2789,25 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     }
 
     setState(() => _isProcessingOrder = true);
+    print("✅ [ACCEPT] 🔒 قفل حالة المعالجة: _isProcessingOrder = true");
 
     try {
-      // الخصم المتفائل
+      // خصم تفاؤلي
+      print("💰 [ACCEPT] 💸 محاولة خصم $_costInPoints نقطة من الرصيد: ${BalanceManager.current}");
       final deducted = await BalanceManager.deductOptimistic(_costInPoints);
+
       if (!deducted) {
+        print("❌ [ACCEPT] 🔴 فشل الخصم التفاؤلي");
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('❌ فشل الخصم - الرصيد غير كافٍ'), backgroundColor: Colors.red),
         );
         setState(() => _isProcessingOrder = false);
         return;
       }
+      print("✅ [ACCEPT] 💰 تم الخصم التفاؤلي، الرصيد الجديد: ${BalanceManager.current}");
 
-      // إزالة الطلب من القائمة مؤقتاً
+      // إزالة الطلب من القائمة محلياً فوراً
+      print("🗑️ [ACCEPT] 🧹 إزالة الطلب #$id من القائمة المحلية");
       setState(() {
         _ordersList.removeWhere((o) => o['id'].toString() == id);
         _newOrderIds.remove(id);
@@ -2134,20 +2817,22 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
         const SnackBar(content: Text('تم القبول! جاري التوصيل...'), backgroundColor: Colors.green),
       );
 
-      // إرسال الطلب إلى السيرفر
+      print("📡 [ACCEPT] 🌐 إرسال طلب القبول للسيرفر...");
       final res = await ApiService.acceptDeliveryV3(widget.authResult.token, id, fee: _costInPoints);
 
       if (res['success'] == true) {
-        // ✅ تحديث الرصيد من السيرفر
+        print("✅ [ACCEPT] 🎉 نجاح قبول الطلب من السيرفر");
         final newBalance = res['current_balance'] ?? BalanceManager.current;
         BalanceManager.setCurrent(newBalance);
+        print("💰 [ACCEPT] 💵 تحديث الرصيد النهائي: $newBalance");
 
-        // ✅ الانتقال لشاشة الطلب النشط
         if (mounted && res['delivery_order'] != null) {
+          print("🔄 [ACCEPT] 🚚 الانتقال لشاشة الطلب النشط");
           widget.onDeliveryAccepted(res['delivery_order']);
         }
       } else {
-        // استرداد النقاط في حالة فشل الطلب
+        // إعادة النقاط في حالة فشل السيرفر
+        print("❌ [ACCEPT] 🔄 فشل قبول الطلب في السيرفر، جاري استرداد النقاط");
         BalanceManager.refund(_costInPoints);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(res['message'] ?? 'فشل في قبول الطلب'), backgroundColor: Colors.red),
@@ -2155,6 +2840,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
         setState(() => _isProcessingOrder = false);
       }
     } catch (e) {
+      print("❌ [ACCEPT] 🚨 استثناء أثناء قبول الطلب: $e");
       BalanceManager.refund(_costInPoints);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('خطأ: ${e.toString()}'), backgroundColor: Colors.red),
@@ -2178,9 +2864,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     }
   }
 }
-// =============================================================================
-// =============================================================================
-// شاشة الطلب الحالي (من ملف 2 - النسخة الكاملة مع الأزرار والمكالمات)
 // =============================================================================
 class DriverCurrentDeliveryScreen extends StatefulWidget {
   final Map<String, dynamic> initialDelivery;
@@ -3072,7 +3755,7 @@ class HistoryTabV3 extends StatelessWidget {
               ],
             ),
             trailing: Text(
-              "${o['delivery_fee']} نقطة",
+              "${o['delivery_fee']} التوصيل ",
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
           ),

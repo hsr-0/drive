@@ -1,5 +1,7 @@
+import 'dart:io'; // تمت الإضافة لمعرفة نوع الجهاز (آيفون أو أندرويد)
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:ovoride_driver/core/route/route.dart'; // تمت الإضافة للانتقال لمنصة بيتي
 import 'package:ovoride_driver/core/utils/dimensions.dart';
 import 'package:ovoride_driver/core/utils/my_icons.dart';
 import 'package:ovoride_driver/core/utils/my_strings.dart';
@@ -72,7 +74,51 @@ class _DashBoardScreenState extends State<DashBoardScreen> {
         child: GetBuilder<DashBoardController>(
           builder: (controller) => Scaffold(
             extendBody: true,
-            body: IndexedStack(index: selectedIndex, children: _widgets),
+
+            // 🔥🔥🔥 التعديل الجوهري هنا 🔥🔥🔥
+            body: Stack(
+              children: [
+                // 1. الشاشات الثلاث الخاصة بالتطبيق
+                IndexedStack(index: selectedIndex, children: _widgets),
+
+                // 2. زر الرجوع الأنيق (يظهر للآيفون فقط + في الشاشة الرئيسية فقط)
+                if (Platform.isIOS && selectedIndex == 0)
+                  Positioned(
+                    top: 60, // المسافة من الأعلى لتجاوز النوتش
+                    left: 20, // مكان الزر في الجهة اليسرى كما في صورتك (إذا أردته يميناً اجعلها right: 20)
+                    child: GestureDetector(
+                      onTap: () {
+                        // العودة إلى شاشة اختيار الخدمات الرئيسية لمنصة بيتي
+                        Get.offAllNamed(RouteHelper.sectionsScreen);
+                      },
+                      child: Container(
+                        width: 45,
+                        height: 45,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.08),
+                              blurRadius: 10,
+                              spreadRadius: 1,
+                              offset: const Offset(0, 2),
+                            )
+                          ],
+                        ),
+                        // يمكنك تغيير الأيقونة هنا، استخدمت أيقونة القائمة لتشبه صورتك
+                        child: const Icon(
+                          Icons.arrow_back_ios, // أيقونة تشبه الخطوط غير المتساوية التي في صورتك
+                          color: Colors.black87,
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            // 🔥🔥🔥 نهاية التعديل 🔥🔥🔥
+
             bottomNavigationBar: FloatingNavbar(
               inLine: true,
               fontSize: Dimensions.fontMedium,
