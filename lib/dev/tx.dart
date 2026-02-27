@@ -1337,32 +1337,35 @@ class ApiService {
 // 🔥 دالة مخصصة لتحديث النقاط فقط (نسخة V3 - آمنة ومصححة)
   static Future<int> getPoints(String t) async {
     try {
-      // 1. تم تحديث الرابط إلى V3 للحصول على الرصيد الحقيقي (28 نقطة)
+      // 🔥 1. إضافة طابع زمني لكسر الكاش
+      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+
       final res = await http.get(
-        Uri.parse('$baseUrl/taxi/v3/driver/hub'),
-        headers: {'Authorization': 'Bearer $t'},
+        // 🔥 2. إضافة الطابع الزمني للرابط
+        Uri.parse('$baseUrl/taxi/v3/driver/hub?_t=$timestamp'),
+        headers: {
+          'Authorization': 'Bearer $t',
+          // 🔥 3. هيدرز منع الكاش الإجبارية
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+        },
       );
 
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
-
-        // التأكد من نجاح الطلب
         if (data['success'] == true) {
           final val = data['data']['wallet_balance'];
-
-          // 2. معالجة آمنة للرقم (سواء جاء نصاً أو رقماً)
           if (val is int) return val;
           if (val is double) return val.toInt();
           if (val is String) {
-            // إزالة أي رموز غير رقمية وتحويله
             return int.tryParse(val.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
           }
         }
       }
     } catch (e) {
-      print("❌ Error fetching points in ApiService: $e");
+      print("❌ Error: $e");
     }
-    return 0; // يعيد 0 فقط في حال الفشل التام
+    return 0;
   }
   static Future<List<dynamic>> getHistoryV3(String t) async {
     try {
@@ -1398,6 +1401,26 @@ class _AuthGateState extends State<AuthGate> {
   void initState() {
     super.initState();
     _initializeApp();
+
+    // ✅ إضافة مستمع لتحديث الشاشة تلقائياً عند تغير الرصيد
+    BalanceManager.balanceNotifier.addListener(_onBalanceChanged);
+  }
+
+  // دالة جديدة للتعامل مع تغير الرصيد
+  void _onBalanceChanged() {
+    if (mounted) {
+      setState(() {
+        _hasBalance = BalanceManager.hasBalance;
+      });
+      print("🔄 [AuthGate] Balance changed: $_hasBalance");
+    }
+  }
+
+  @override
+  void dispose() {
+    // ✅ تنظيف المستمع لمنع تسرب الذاكرة
+    BalanceManager.balanceNotifier.removeListener(_onBalanceChanged);
+    super.dispose();
   }
 
   Future<void> _initializeApp() async {
@@ -1592,6 +1615,7 @@ class _AuthGateState extends State<AuthGate> {
       );
 
     // 🔥 حالة 3: الرصيد = 0 → شاشة الإيقاف الفوري
+    // ✅ الآن: إذا تغير الرصيد، _onBalanceChanged ستعيد بناء الشاشة فوراً
     if (!_hasBalance) {
       return ZeroBalanceLockScreen(
         token: _auth!.token,
@@ -1618,36 +1642,49 @@ class ZeroBalanceLockScreen extends StatelessWidget {
   const ZeroBalanceLockScreen({super.key, required this.token, required this.onRecharge,});
 
   // 🔥 زر "تم الشحن؟" يعيد فحص الرصيد من السيرفر مباشرة
+// في ملف main.dart - داخل كلاس ZeroBalanceLockScreen
   Future<void> _refreshBalance(BuildContext context) async {
     try {
+      // 1. تحديث الرصيد من السيرفر
       await BalanceManager.refresh();
 
-      // إذا تم شحن النقاط، العودة إلى الشاشة الرئيسية
+      // 2. الانتظار قليلاً لضمان اكتمال التحديث
+      await Future.delayed(const Duration(milliseconds: 300));
+
+      // 3. التحقق من الرصيد الجديد
       if (BalanceManager.hasBalance) {
-        Navigator.pop(context);
+        // ✅ الحل: إعادة توجيه كامل بدلاً من pop فقط
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => AuthGate(), // إعادة تهيئة AuthGate من الصفر
+          ),
+        );
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("تم شحن المحفظة بنجاح!"),
+            content: Text("✅ تم شحن المحفظة بنجاح!"),
             backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
           ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("الرصيد لا يزال منخفضًا. يرجى الشحن مرة أخرى"),
-            backgroundColor: Colors.red,
+            content: Text("⚠️ الرصيد لا يزال منخفضًا. يرجى الشحن مرة أخرى"),
+            backgroundColor: Colors.orange,
           ),
         );
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text("فشل في تحديث الرصيد: ${e.toString()}"),
+          content: Text("❌ فشل في تحديث الرصيد: ${e.toString()}"),
+          backgroundColor: Colors.red,
         ),
       );
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
