@@ -159,10 +159,10 @@ class MyStrings {
   static const String selectCoupon = "Select Coupon";
 
   static const String vehicleNumber = "Vehicle Number";
-  static const String vehicleModel = "Vehicle Model";
-  static const String vehicleColor = "Vehicle Color";
-  static const String vehicleYear = "Vehicle year";
-  static const String vehicleImage = "Vehicle Image";
+  static const String vehicleModel = "موديل المركبة ";
+  static const String vehicleColor = "لون المركبة";
+  static const String vehicleYear = "سنة التصنيع ";
+  static const String vehicleImage = "صورة المركبة ";
 
   static const String registrationDate = "Registration Date";
 
@@ -799,7 +799,7 @@ class MyStrings {
 
   static const String tryAfterSec = "Try After {sec} Second";
 
-  static const String driverVerificationRequired = "Driver Document Verification Required";
+  static const String driverVerificationRequired = "التحقق من السائق";
 
   static const String kycVerificationMsg = "Please submit the required documents information to verify yourself. Otherwise, you couldn't make any withdrawal request.";
 
