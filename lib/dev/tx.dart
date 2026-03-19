@@ -6,7 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
+import 'package:agora_rtc_engine/agora_rtc_engine.dart';
+import 'package:permission_handler/permission_handler.dart';
+
 import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
@@ -2375,9 +2380,6 @@ class DriverAvailableDeliveriesV3Screen extends StatefulWidget {
       _DriverAvailableDeliveriesV3ScreenState();
 }
 
-// =============================================================================
-// شاشة الطلبات المتاحة V3 (محسّنة + تشخيص مطبوع + حل التحديث التلقائي النهائي)
-// =============================================================================
 class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliveriesV3Screen> {
   List<dynamic> _ordersList = [];
   bool _isLoading = false;
@@ -2389,107 +2391,49 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
   @override
   void initState() {
     super.initState();
-    print("🔹 [V3-SCREEN] initState: تهيئة شاشة الطلبات المتاحة");
-
-    // 1. التحميل الأولي عند فتح الشاشة
     _loadDataSafe(isInitial: true);
-
-    // 2. 🔥🔥🔥 الحل النهائي: الاستماع للعداد الرقمي (orderRefreshCounter)
-    // هذا يضمن أن كل زيادة في العداد تُفعّل التحديث فوراً 100%
     orderRefreshCounter.addListener(_handleNotification);
-    print("🔹 [V3-SCREEN] ✅ تم إضافة مستمع لـ orderRefreshCounter (الحل النهائي)");
-
-    // 3. مراقبة الرصيد لتحديث الواجهة إذا تم الشحن
     BalanceManager.balanceNotifier.addListener(() {
-      print("🔹 [V3-SCREEN] تغير الرصيد: ${BalanceManager.current}");
-      if (mounted && _isFirstLoad) {
-        setState(() => _isFirstLoad = false);
-      }
+      if (mounted && _isFirstLoad) setState(() => _isFirstLoad = false);
     });
   }
 
   @override
   void dispose() {
-    print("🔹 [V3-SCREEN] dispose: تنظيف المستمعين");
-    // ⚠️ تنظيف المستمع من العداد الجديد لمنع تسرب الذاكرة
     orderRefreshCounter.removeListener(_handleNotification);
     super.dispose();
   }
 
-  // 🔥 دالة معالجة الإشعار (التحديث التلقائي الفوري - الإصدار النهائي)
   Future<void> _handleNotification() async {
-    // تسجيل رقم العداد الحالي للتأكد من استلام التنبيه الصحيح
-    final currentCount = orderRefreshCounter.value;
-    print('🔔 [AUTO-REFRESH #$currentCount] 🚨 وصل إشعار جديد، جاري تحديث القائمة...');
-    print('🔔 [AUTO-REFRESH #$currentCount] 📡 حالة الشاشة: mounted=$mounted, isFirstLoad=$_isFirstLoad');
-
-    // ⏳ انتظار نصف ثانية لضمان أن السيرفر قد حفظ البيانات الجديدة
     await Future.delayed(const Duration(milliseconds: 500));
-    print('🔔 [AUTO-REFRESH #$currentCount] ⏳ انتهى الانتظار، جاري جلب البيانات...');
-
-    // جلب البيانات بصمت (بدون Loading Spinner)
     if (mounted) {
       await _loadDataSafe(isSilent: true);
-      print('🔔 [AUTO-REFRESH #$currentCount] ✅ انتهى تحديث القائمة، عدد الطلبات: ${_ordersList.length}');
-
-      // 📳 اهتزاز خفيف لتنبيه السائق أن القائمة تحدحدث
       Vibration.vibrate(duration: 100);
-      print('🔔 [AUTO-REFRESH #$currentCount] 📳 تم تشغيل الاهتزاز');
-    } else {
-      print('🔔 [AUTO-REFRESH] ❌ الشاشة غير مثبتة (unmounted)، تم تخطي التحديث');
     }
   }
 
   Future<void> _loadDataSafe({bool isInitial = false, bool isSilent = false}) async {
-    if (!mounted) {
-      print("📡 [API] ❌ الشاشة غير مثبتة، إلغاء جلب البيانات");
-      return;
-    }
-
-    if (isInitial) {
-      print("📡 [API] 🔄 تحميل أولي للقائمة...");
-      setState(() => _isFirstLoad = true);
-    }
-
-    // إظهار التحميل فقط إذا لم يكن صامتاً ولم يكن التحميل الأولي
-    if (!isInitial && !isSilent) {
-      print("📡 [API] 🔄 جاري جلب الطلبات (مع مؤشر تحميل)...");
-      setState(() => _isLoading = true);
-    } else if (!isInitial && isSilent) {
-      print("📡 [API] 🔄 جاري جلب الطلبات (تحديث صامت)...");
-    }
+    if (!mounted) return;
+    if (isInitial) setState(() => _isFirstLoad = true);
+    if (!isInitial && !isSilent) setState(() => _isLoading = true);
 
     try {
-      // استدعاء الـ API (مع منع الكاش)
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      print("📡 [API] 🌐 طلب GET: /taxi/v3/delivery/available?_t=$timestamp");
-
       final result = await ApiService.getAvailableDeliveriesOnly(widget.authResult.token);
 
-      if (!mounted) {
-        print("📡 [API] ❌ الشاشة أصبحت غير مثبتة أثناء الانتظار، إلغاء المعالجة");
-        return;
-      }
-
-      print("📡 [API] 📥 استجابة السيرفر: success=${result['success']}, orders count=${result['orders']?.length ?? 0}");
+      if (!mounted) return;
 
       if (result['success'] == true) {
         final dynamic ordersRaw = result['orders'];
         final List<dynamic> newOrders = (ordersRaw is List) ? ordersRaw : [];
 
-        // كشف الطلبات الجديدة لتمييزها
         if (_ordersList.isNotEmpty && newOrders.isNotEmpty) {
           final currentIds = _ordersList.map((o) => o['id'].toString()).toSet();
           final incomingIds = newOrders.map((o) => o['id'].toString()).toSet();
           final newlyAdded = Set<String>.from(incomingIds.difference(currentIds));
-
-          if (newlyAdded.isNotEmpty) {
-            print("🆕 [NEW ORDERS] 🔥 تم اكتشاف ${newlyAdded.length} طلبات جديدة: $newlyAdded");
-            _newOrderIds = newlyAdded;
-          }
+          if (newlyAdded.isNotEmpty) _newOrderIds = newlyAdded;
         }
 
-        // الفرز: الأحدث أولاً
         newOrders.sort((a, b) {
           try {
             final dateA = DateTime.tryParse(a['date_created']?.toString() ?? '') ?? DateTime.now();
@@ -2505,48 +2449,27 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
           _isLoading = false;
           _isFirstLoad = false;
         });
-        print("✅ [UI] 📋 تم تحديث القائمة: ${_ordersList.length} طلب معروض");
 
       } else {
-        // فشل الجلب
-        print("❌ [API] فشل جلب الطلبات: ${result['message'] ?? 'خطأ غير معروف'}");
         if (!isSilent && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(result['message'] ?? 'فشل جلب الطلبات'), backgroundColor: Colors.red),
-          );
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result['message'] ?? 'فشل جلب الطلبات'), backgroundColor: Colors.red));
         }
         if (mounted && _ordersList.isEmpty) setState(() => _ordersList = []);
       }
     } catch (e) {
-      print("❌ [API] 🚨 استثناء أثناء جلب البيانات: $e");
       if (!isSilent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('حدث خطأ: ${e.toString()}'), backgroundColor: Colors.red),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('حدث خطأ: ${e.toString()}'), backgroundColor: Colors.red));
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _isFirstLoad = false;
-        });
-      }
+      if (mounted) setState(() { _isLoading = false; _isFirstLoad = false; });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    print("🎨 [BUILD] 🔄 إعادة بناء واجهة الطلبات المتاحة");
+    if (!BalanceManager.isInitialized) return const Center(child: CircularProgressIndicator());
 
-    // ✅ التحقق من تهيئة الرصيد
-    if (!BalanceManager.isInitialized) {
-      print("⚠️ [BUILD] ⏳ BalanceManager غير مهيأ، عرض مؤشر التحميل");
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    // 🛑 التحقق من كفاية الرصيد
     if (BalanceManager.current < _costInPoints) {
-      print("⚠️ [BUILD] 🔴 الرصيد غير كافٍ: ${BalanceManager.current} < $_costInPoints");
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -2558,13 +2481,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
             Text("يتطلب $_costInPoints نقطة لقبول الطلبات"),
             const SizedBox(height: 20),
             ElevatedButton(
-              onPressed: () {
-                print("🔗 [BUILD] 📲 ضغط على زر شحن الرصيد");
-                launchUrl(
-                  Uri.parse("https://wa.me/+9647854076931"),
-                  mode: LaunchMode.externalApplication,
-                );
-              },
+              onPressed: () => launchUrl(Uri.parse("https://wa.me/+9647854076931"), mode: LaunchMode.externalApplication),
               child: const Text("شحن الرصيد"),
             ),
           ],
@@ -2572,15 +2489,9 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
       );
     }
 
-    // ⏳ التحميل الأولي
-    if (_isFirstLoad) {
-      print("⏳ [BUILD] 🔄 عرض مؤشر التحميل الأولي");
-      return const Center(child: CircularProgressIndicator());
-    }
+    if (_isFirstLoad) return const Center(child: CircularProgressIndicator());
 
-    // 📭 القائمة فارغة
     if (_ordersList.isEmpty) {
-      print("📭 [BUILD] 🗂️ القائمة فارغة، عرض رسالة 'لا توجد طلبات'");
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -2589,25 +2500,14 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
             const SizedBox(height: 15),
             const Text("لا توجد طلبات متاحة حالياً"),
             const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: () {
-                print("🔄 [BUILD] 🔄 ضغط على زر التحديث اليدوي");
-                _loadDataSafe();
-              },
-              icon: const Icon(Icons.refresh),
-              label: const Text("تحديث"),
-            ),
+            ElevatedButton.icon(onPressed: _loadDataSafe, icon: const Icon(Icons.refresh), label: const Text("تحديث")),
           ],
         ),
       );
     }
 
-    print("✅ [BUILD] 📋 عرض القائمة: ${_ordersList.length} طلب");
-
-    // 📋 عرض القائمة
     return Column(
       children: [
-        // شريط الحالة العلوي
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           color: Colors.grey[200],
@@ -2615,32 +2515,18 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text("الطلبات المتاحة: ${_ordersList.length}", style: const TextStyle(fontWeight: FontWeight.bold)),
-              if (_isLoading)
-                const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2))
-              else
-                InkWell(
-                  onTap: () {
-                    print("🔄 [UI] 🔄 ضغط على أيقونة التحديث");
-                    _loadDataSafe();
-                  },
-                  child: const Icon(Icons.refresh, size: 20),
-                ),
+              if (_isLoading) const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2))
+              else InkWell(onTap: _loadDataSafe, child: const Icon(Icons.refresh, size: 20)),
             ],
           ),
         ),
-        // قائمة البطاقات
         Expanded(
           child: RefreshIndicator(
-            onRefresh: () async {
-              print("🔄 [UI] 🎯 سحب للتحديث (Pull-to-Refresh)");
-              await _loadDataSafe();
-            },
+            onRefresh: () async => await _loadDataSafe(),
             child: ListView.builder(
               padding: const EdgeInsets.all(10),
               itemCount: _ordersList.length,
-              itemBuilder: (context, index) {
-                return _buildOrderCard(_ordersList[index]);
-              },
+              itemBuilder: (context, index) => _buildOrderCard(_ordersList[index]),
             ),
           ),
         ),
@@ -2648,7 +2534,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     );
   }
 
-  // 🔥 تصميم بطاقة الطلب
   Widget _buildOrderCard(Map<String, dynamic> order) {
     final id = order['id'].toString();
     final isNew = _newOrderIds.contains(id);
@@ -2656,33 +2541,22 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     final address = order['destination_address']?.toString() ?? 'العنوان';
     final deliveryFee = order['delivery_fee']?.toString() ?? '---';
 
-    if (isNew) {
-      print("🆕 [CARD] ✨ عرض طلب جديد مميز: #$id من $shopName");
-    }
-
     return Card(
       elevation: isNew ? 8 : 2,
       shadowColor: isNew ? Colors.green.withOpacity(0.5) : Colors.black12,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: isNew ? const BorderSide(color: Colors.green, width: 2) : BorderSide.none,
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: isNew ? const BorderSide(color: Colors.green, width: 2) : BorderSide.none),
       margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 🌟 رأس البطاقة: اسم المتجر + السعر
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
                   padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                      color: Colors.indigo.shade50,
-                      borderRadius: BorderRadius.circular(12)
-                  ),
+                  decoration: BoxDecoration(color: Colors.indigo.shade50, borderRadius: BorderRadius.circular(12)),
                   child: const Icon(Icons.storefront, color: Colors.indigo, size: 28),
                 ),
                 const SizedBox(width: 12),
@@ -2692,94 +2566,52 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                     children: [
                       Text(shopName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
                       const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          const Icon(Icons.access_time, size: 14, color: Colors.grey),
-                          const SizedBox(width: 4),
-                          Text(_calculateTimeAgo(order['date_created']), style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
-                        ],
-                      ),
+                      Row(children: [const Icon(Icons.access_time, size: 14, color: Colors.grey), const SizedBox(width: 4), Text(_calculateTimeAgo(order['date_created']), style: const TextStyle(fontSize: 12, color: Colors.blueGrey))]),
                     ],
                   ),
                 ),
-                // 🌟 شارة السعر
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                      color: Colors.green.shade50,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.green.shade200)
-                  ),
+                  decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.green.shade200)),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       const Icon(Icons.monetization_on, size: 16, color: Colors.green),
                       const SizedBox(width: 4),
-                      Text(
-                        deliveryFee,
-                        style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green.shade800, fontSize: 14),
-                      ),
+                      Text(deliveryFee, style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green.shade800, fontSize: 14)),
                     ],
                   ),
                 ),
               ],
             ),
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Divider(height: 1),
-            ),
-            // 📍 قسم العنوان
+            const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(height: 1)),
             Row(
               children: [
                 const Icon(Icons.location_on, size: 18, color: Colors.redAccent),
                 const SizedBox(width: 8),
-                Expanded(
-                    child: Text(address, style: const TextStyle(fontSize: 14, color: Colors.black87), maxLines: 2)
-                ),
+                Expanded(child: Text(address, style: const TextStyle(fontSize: 14, color: Colors.black87), maxLines: 2)),
               ],
             ),
             const SizedBox(height: 16),
-            // 🔘 أزرار التفاعل
             Row(
               children: [
-                // زر التفاصيل
                 Expanded(
                   flex: 1,
                   child: OutlinedButton.icon(
-                    onPressed: () {
-                      print("🔍 [CARD] 👁️ فتح تفاصيل الطلب: #$id");
-                      _showDetailsDialog(order, deliveryFee);
-                    },
+                    onPressed: () => _showDetailsDialog(order, deliveryFee),
                     icon: const Icon(Icons.info_outline, size: 18),
                     label: const Text("التفاصيل", style: TextStyle(fontWeight: FontWeight.bold)),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      foregroundColor: Colors.indigo,
-                      side: const BorderSide(color: Colors.indigo),
-                    ),
+                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), foregroundColor: Colors.indigo, side: const BorderSide(color: Colors.indigo)),
                   ),
                 ),
                 const SizedBox(width: 12),
-                // زر القبول
                 Expanded(
                   flex: 2,
                   child: ElevatedButton.icon(
                     icon: const Icon(Icons.check_circle_outline, size: 20),
                     label: const Text("قبول الطلب", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.indigo,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      elevation: 2,
-                    ),
-                    onPressed: _isProcessingOrder || BalanceManager.current < _costInPoints
-                        ? null
-                        : () {
-                      print("✅ [CARD] 🎯 ضغط على قبول الطلب: #$id");
-                      _acceptDelivery(id);
-                    },
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 2),
+                    onPressed: _isProcessingOrder || BalanceManager.current < _costInPoints ? null : () => _acceptDelivery(id),
                   ),
                 ),
               ],
@@ -2790,98 +2622,221 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     );
   }
 
-  void _showDetailsDialog(Map<String, dynamic> order, String price) {
-    print("📋 [DIALOG] 🗂️ عرض نافذة تفاصيل الطلب: #${order['id']}");
-    showDialog(
+  // 💡 دالة لترجمة الأوزان الكسرية إلى نصوص عربية مفهومة
+  String _formatFractionWeight(String qtyStr) {
+    double? qty = double.tryParse(qtyStr);
+    if (qty == null) return qtyStr;
+
+    if (qty == 0.25) return "ربع كيلو";
+    if (qty == 0.5) return "نصف كيلو";
+    if (qty == 0.75) return "كيلو إلا ربع";
+    if (qty == 1.25) return "كيلو وربع";
+    if (qty == 1.5) return "كيلو ونصف";
+    if (qty == 1.75) return "كيلو و 750 غرام";
+    if (qty == 2.25) return "كيلوين وربع";
+    if (qty == 2.5) return "كيلوين ونصف";
+
+    // إذا كان كسراً غير معروف في القائمة نرجعه مع كلمة كيلو
+    return "$qty كيلو";
+  }
+
+  // 🔥 عرض تفاصيل الطلب (التصميم الجديد والذكي للأوزان)
+  void _showDetailsDialog(Map<String, dynamic> order, String priceStr) {
+    final String orderId = order['id']?.toString() ?? '...';
+    final String sourceType = order['source_type']?.toString() ?? 'restaurant';
+
+    List<dynamic> items = [];
+    dynamic rawItems = order['line_items'] ?? order['items'];
+    if (rawItems != null) {
+      if (rawItems is List) {
+        items = rawItems;
+      } else if (rawItems is String && rawItems.isNotEmpty) {
+        try {
+          items = json.decode(rawItems);
+        } catch (_) {}
+      }
+    }
+
+    final double deliveryFee = double.tryParse(order['delivery_fee']?.toString() ?? '0') ?? 0;
+    final double orderTotal = double.tryParse(order['order_total']?.toString() ?? '0') ?? 0;
+    final double totalToCollect = double.tryParse(order['total_to_collect']?.toString() ?? '0') ?? 0;
+
+    double finalItemsPrice = orderTotal > 0 ? orderTotal : (totalToCollect > deliveryFee ? totalToCollect - deliveryFee : 0);
+    double finalGrandTotal = totalToCollect > 0 ? totalToCollect : (finalItemsPrice + deliveryFee);
+
+    showModalBottomSheet(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text(order['pickup_location_name'] ?? 'تفاصيل'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(leading: const Icon(Icons.info_outline), title: Text(order['items_description'] ?? '...')),
-            ListTile(leading: const Icon(Icons.location_on), title: Text(order['destination_address'] ?? '...')),
-            const Divider(),
-            Text("سعر التوصيل: $price", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-          ],
-        ),
-      ),
+      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.6,
+          maxChildSize: 0.9,
+          builder: (_, controller) => Container(
+            padding: const EdgeInsets.all(24),
+            child: ListView(
+              controller: controller,
+              children: [
+                Center(child: Container(width: 50, height: 5, margin: const EdgeInsets.only(bottom: 20), decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(10)))),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text("تفاصيل الطلب #$orderId", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
+                    Row(
+                      children: [
+                        Text(sourceType == 'market' ? "مسواك" : "مطعم", style: TextStyle(color: Colors.grey[700], fontWeight: FontWeight.bold, fontSize: 16)),
+                        const SizedBox(width: 6),
+                        Icon(sourceType == 'market' ? Icons.shopping_cart : Icons.fastfood, color: Colors.orange, size: 22),
+                      ],
+                    ),
+                  ],
+                ),
+                const Divider(height: 30, color: Colors.black12),
+
+                if (items.isNotEmpty)
+                  ...items.map((item) {
+                    final String rawQty = item['quantity']?.toString() ?? '1';
+                    final double qtyDouble = double.tryParse(rawQty) ?? 1.0;
+
+                    // 💡 التحقق: هل هو كسر والمصدر مسواك؟
+                    final bool isFraction = qtyDouble % 1 != 0 && sourceType == 'market';
+
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12.0),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(item['name'] ?? '', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
+                                    ),
+                                    // 🍊 شارة الوزن المخصص (تظهر فقط إذا كان كسراً)
+                                    if (isFraction)
+                                      Container(
+                                        margin: const EdgeInsets.only(right: 8),
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                            color: Colors.orange.shade50,
+                                            borderRadius: BorderRadius.circular(20),
+                                            border: Border.all(color: Colors.orange.shade200)
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.scale, size: 14, color: Colors.orange.shade800),
+                                            const SizedBox(width: 4),
+                                            Text(_formatFractionWeight(rawQty), style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.orange.shade800)),
+                                          ],
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Text("${NumberFormat('#,###').format(double.tryParse(item['total']?.toString() ?? '0') ?? 0)} د.ع", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.green.shade700)),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 15),
+                          // 📦 المربع سيتغير تصميمه حسب نوع الكمية (صحيح = أزرق / كسر = مخفي أو برتقالي حسب الشارة)
+                          // بما أن الشارة البرتقالية تكفي للمسواك، سنبقي المربع للعدد الصحيح فقط للترتيب
+                          if (!isFraction)
+                            Container(
+                                width: 45, height: 45,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.blue.shade100)),
+                                child: Text("${rawQty}x", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue, fontSize: 16))
+                            ),
+                        ],
+                      ),
+                    );
+                  }).toList()
+                else
+                  Center(child: Padding(padding: const EdgeInsets.all(20.0), child: Text(order['items_description'] ?? "لا توجد تفاصيل للمنتجات", style: const TextStyle(fontSize: 16, height: 1.5), textAlign: TextAlign.center))),
+
+                const Divider(height: 30, color: Colors.black12),
+
+                _summaryRow("سعر الطلب:", finalItemsPrice),
+                const SizedBox(height: 12),
+                _summaryRow("سعر التوصيل:", deliveryFee),
+                const Padding(padding: EdgeInsets.symmetric(vertical: 15), child: Divider(color: Colors.black12)),
+                _summaryRow("الإجمالي الكلي:", finalGrandTotal, isBold: true, color: Colors.green.shade700, size: 18),
+
+                const SizedBox(height: 30),
+                SizedBox(
+                    width: double.infinity, height: 55,
+                    child: ElevatedButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.grey[100], foregroundColor: Colors.black87, elevation: 0, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))),
+                        child: const Text("إغلاق", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))
+                    )
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _summaryRow(String label, double amount, {bool isBold = false, Color? color, double size = 16}) {
+    return Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(fontSize: size, fontWeight: isBold ? FontWeight.bold : FontWeight.w500, color: Colors.black87)),
+          Text("${NumberFormat('#,###').format(amount)} د.ع", style: TextStyle(fontSize: size, fontWeight: FontWeight.bold, color: color ?? Colors.black87)),
+        ]
     );
   }
 
   Future<void> _acceptDelivery(String id) async {
-    print("🚀 [ACCEPT] ▶️ بدء عملية قبول الطلب: #$id");
-
-    if (_isProcessingOrder) {
-      print("⚠️ [ACCEPT] ⏳ عملية قبول أخرى جارية، تم تخطي هذا الطلب");
-      return;
-    }
+    if (_isProcessingOrder) return;
 
     if (BalanceManager.current < _costInPoints) {
-      print("❌ [ACCEPT] 🔴 الرصيد غير كافٍ: ${BalanceManager.current} < $_costInPoints");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('⚠️ رصيدك غير كافٍ'), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('⚠️ رصيدك غير كافٍ'), backgroundColor: Colors.red));
       return;
     }
 
     setState(() => _isProcessingOrder = true);
-    print("✅ [ACCEPT] 🔒 قفل حالة المعالجة: _isProcessingOrder = true");
 
     try {
-      // خصم تفاؤلي
-      print("💰 [ACCEPT] 💸 محاولة خصم $_costInPoints نقطة من الرصيد: ${BalanceManager.current}");
       final deducted = await BalanceManager.deductOptimistic(_costInPoints);
-
       if (!deducted) {
-        print("❌ [ACCEPT] 🔴 فشل الخصم التفاؤلي");
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('❌ فشل الخصم - الرصيد غير كافٍ'), backgroundColor: Colors.red),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('❌ فشل الخصم - الرصيد غير كافٍ'), backgroundColor: Colors.red));
         setState(() => _isProcessingOrder = false);
         return;
       }
-      print("✅ [ACCEPT] 💰 تم الخصم التفاؤلي، الرصيد الجديد: ${BalanceManager.current}");
 
-      // إزالة الطلب من القائمة محلياً فوراً
-      print("🗑️ [ACCEPT] 🧹 إزالة الطلب #$id من القائمة المحلية");
       setState(() {
         _ordersList.removeWhere((o) => o['id'].toString() == id);
         _newOrderIds.remove(id);
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم القبول! جاري التوصيل...'), backgroundColor: Colors.green),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم القبول! جاري التوصيل...'), backgroundColor: Colors.green));
 
-      print("📡 [ACCEPT] 🌐 إرسال طلب القبول للسيرفر...");
       final res = await ApiService.acceptDeliveryV3(widget.authResult.token, id, fee: _costInPoints);
 
       if (res['success'] == true) {
-        print("✅ [ACCEPT] 🎉 نجاح قبول الطلب من السيرفر");
         final newBalance = res['current_balance'] ?? BalanceManager.current;
         BalanceManager.setCurrent(newBalance);
-        print("💰 [ACCEPT] 💵 تحديث الرصيد النهائي: $newBalance");
 
         if (mounted && res['delivery_order'] != null) {
-          print("🔄 [ACCEPT] 🚚 الانتقال لشاشة الطلب النشط");
           widget.onDeliveryAccepted(res['delivery_order']);
         }
       } else {
-        // إعادة النقاط في حالة فشل السيرفر
-        print("❌ [ACCEPT] 🔄 فشل قبول الطلب في السيرفر، جاري استرداد النقاط");
         BalanceManager.refund(_costInPoints);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(res['message'] ?? 'فشل في قبول الطلب'), backgroundColor: Colors.red),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res['message'] ?? 'فشل في قبول الطلب'), backgroundColor: Colors.red));
         setState(() => _isProcessingOrder = false);
       }
     } catch (e) {
-      print("❌ [ACCEPT] 🚨 استثناء أثناء قبول الطلب: $e");
       BalanceManager.refund(_costInPoints);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطأ: ${e.toString()}'), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ: ${e.toString()}'), backgroundColor: Colors.red));
       setState(() => _isProcessingOrder = false);
     }
   }
@@ -2900,8 +2855,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
       return "وقت غير صالح";
     }
   }
-}
-// =============================================================================
+}// =============================================================================
 class DriverCurrentDeliveryScreen extends StatefulWidget {
   final Map<String, dynamic> initialDelivery;
   final AuthResult authResult;
@@ -2932,15 +2886,10 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   void initState() {
     super.initState();
     _currentDelivery = widget.initialDelivery;
-
-    // 🔥 تشغيل التتبع بعد بناء الواجهة
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _startLiveTracking();
-      // 🔥 تشغيل التشخيص مرة واحدة للتأكد من الإحداثيات
       _debugCoordinates();
     });
-
-    // إظهار رقم الزبون بعد 3 دقائق
     Future.delayed(const Duration(minutes: 3), () {
       if (mounted) setState(() => _canShowNumber = true);
     });
@@ -2953,10 +2902,154 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   // ========================================================================
-  // 🔥 دوال معالجة الإحداثيات (المصدر الوحيد للصحة)
+  // 🔥 عرض تفاصيل الطلب (نفس تصميم التيم ليدر)
+  // ========================================================================
+// ========================================================================
+  // 🔥 عرض تفاصيل الطلب (التصميم الجديد المطابق للصور)
   // ========================================================================
 
-  /// دالة آمنة لتحويل أي قيمة إلى double مع معالجة جميع الحالات الشاذة
+  void _showOrderDetailsDialog() {
+    final String orderId = _currentDelivery['id']?.toString() ?? '...';
+    final String sourceType = _currentDelivery['source_type']?.toString() ?? 'restaurant';
+
+    // محاولة استخراج المنتجات كقائمة (إذا كان السيرفر يرسلها كـ Array)
+    List<dynamic> items = [];
+    if (_currentDelivery['line_items'] != null && _currentDelivery['line_items'] is List) {
+      items = _currentDelivery['line_items'];
+    } else if (_currentDelivery['items'] != null && _currentDelivery['items'] is List) {
+      items = _currentDelivery['items'];
+    }
+
+    // حساب الأسعار بأمان
+    final double deliveryFee = double.tryParse(_currentDelivery['delivery_fee']?.toString() ?? '0') ?? 0;
+    final double totalToCollect = double.tryParse(_currentDelivery['total_to_collect']?.toString() ?? '0') ?? 0;
+
+    // إذا كان الإجمالي الكلي غير متوفر، نعتبره سعر التوصيل + سعر الطلب (إن وجد)
+    final double orderTotal = totalToCollect > deliveryFee ? totalToCollect - deliveryFee : totalToCollect;
+    final double finalGrandTotal = totalToCollect > 0 ? totalToCollect : (orderTotal + deliveryFee);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.6,
+          maxChildSize: 0.9,
+          builder: (_, controller) => Container(
+            padding: const EdgeInsets.all(20),
+            child: ListView(
+              controller: controller,
+              children: [
+                // شريط السحب العلوي (المؤشر الرمادي)
+                Center(
+                    child: Container(
+                        width: 50, height: 5,
+                        margin: const EdgeInsets.only(bottom: 15),
+                        decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(10))
+                    )
+                ),
+
+                // الرأس (رقم الطلب وأيقونة المصدر)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text("تفاصيل الطلب #$orderId", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    Row(
+                      children: [
+                        Icon(sourceType == 'market' ? Icons.shopping_cart : Icons.fastfood, color: Colors.orange, size: 20),
+                        const SizedBox(width: 5),
+                        Text(sourceType == 'market' ? "مسواك" : "مطعم", style: TextStyle(color: Colors.grey[700], fontWeight: FontWeight.bold, fontSize: 16)),
+                      ],
+                    ),
+                  ],
+                ),
+                const Divider(height: 30),
+
+                // 📋 قائمة المنتجات
+                if (items.isNotEmpty)
+                  ...items.map((item) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8.0),
+                    child: Row(
+                      children: [
+                        // مربع الكمية الأزرق الفاتح
+                        Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8)),
+                            child: Text("${item['quantity'] ?? '1'}x", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue))
+                        ),
+                        const SizedBox(width: 12),
+                        // اسم المنتج
+                        Expanded(child: Text(item['name'] ?? '', style: const TextStyle(fontSize: 16))),
+                        // السعر
+                        Text("${NumberFormat('#,###').format(double.tryParse(item['total']?.toString() ?? '0') ?? 0)} د.ع", style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  )).toList()
+                else
+                // حل بديل: إذا كان السيرفر يرسل المنتجات كنص عادي (items_description)
+                  Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(10.0),
+                        child: Text(
+                          _currentDelivery['items_description'] ?? "لا توجد تفاصيل للمنتجات",
+                          style: const TextStyle(fontSize: 16, height: 1.5),
+                          textAlign: TextAlign.center,
+                        ),
+                      )
+                  ),
+
+                const Divider(height: 30),
+
+                // 💰 الملخص المالي
+                _buildSummaryRow("سعر الطلب:", orderTotal),
+                const SizedBox(height: 10),
+                _buildSummaryRow("سعر التوصيل:", deliveryFee),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 10),
+                  child: Divider(),
+                ),
+                _buildSummaryRow("الإجمالي الكلي:", finalGrandTotal, isBold: true, color: Colors.green),
+
+                const SizedBox(height: 30),
+
+                // زر الإغلاق
+                SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.grey[100],
+                            foregroundColor: Colors.black87,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
+                        ),
+                        child: const Text("إغلاق", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
+                    )
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // دالة مساعدة لبناء صفوف الأسعار
+  Widget _buildSummaryRow(String label, double amount, {bool isBold = false, Color? color}) {
+    return Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(fontSize: 16, fontWeight: isBold ? FontWeight.bold : FontWeight.w500)),
+          Text("${NumberFormat('#,###').format(amount)} د.ع", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color ?? Colors.black87)),
+        ]
+    );
+  }
+
+
   double? _safeParseDouble(dynamic value) {
     if (value == null) return null;
     if (value is double) {
@@ -2967,7 +3060,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
     if (value is String) {
       final trimmed = value.trim();
-      if (trimmed.isEmpty || trimmed.toLowerCase() == "null" || trimmed == "0" || trimmed == "0.0") {
+      if (trimmed.isEmpty || trimmed.toLowerCase() == "null" ||
+          trimmed == "0" || trimmed == "0.0") {
         return null;
       }
       final parsed = double.tryParse(trimmed);
@@ -2976,31 +3070,26 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     return null;
   }
 
-  /// 🔥 إحداثيات المطعم (نقطة الاستلام) - معزولة ومضمونة
   LatLng? _getPickupPoint() {
     final lat = _safeParseDouble(_currentDelivery['pickup_lat']);
     final lng = _safeParseDouble(_currentDelivery['pickup_lng']);
-
-    // التحقق النهائي من الصحة
-    if (lat != null && lng != null && lat.abs() > 0.001 && lng.abs() > 0.001) {
+    if (lat != null && lng != null &&
+        lat.abs() > 0.001 && lng.abs() > 0.001) {
       return LatLng(lat, lng);
     }
     return null;
   }
 
-  /// 🔥 إحداثيات الزبون (نقطة التوصيل) - معزولة ومضمونة
   LatLng? _getDestinationPoint() {
     final lat = _safeParseDouble(_currentDelivery['destination_lat']);
     final lng = _safeParseDouble(_currentDelivery['destination_lng']);
-
-    // التحقق النهائي من الصحة
-    if (lat != null && lng != null && lat.abs() > 0.001 && lng.abs() > 0.001) {
+    if (lat != null && lng != null &&
+        lat.abs() > 0.001 && lng.abs() > 0.001) {
       return LatLng(lat, lng);
     }
     return null;
   }
 
-  /// 🔥 النقطة المستهدفة حسب حالة الطلب (لحساب المسافة المعروضة)
   LatLng? _getTargetPoint() {
     final status = _currentDelivery['order_status'];
     if (status == 'accepted' || status == 'at_store') {
@@ -3011,38 +3100,15 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     return null;
   }
 
-  // ========================================================================
-  // 🔥 دالة التشخيص (للفحص السريع في الكونسول)
-  // ========================================================================
   void _debugCoordinates() {
     print("🔍 === بدء تشخيص الإحداثيات ===");
-
-    // فحص إحداثيات المطعم
-    final pickupLatRaw = _currentDelivery['pickup_lat'];
-    final pickupLngRaw = _currentDelivery['pickup_lng'];
-    print("📍 PICKUP Raw: lat='$pickupLatRaw' | lng='$pickupLngRaw'");
-
     final pickupParsed = _getPickupPoint();
-    print("📍 PICKUP Parsed: ${pickupParsed?.toString() ?? 'NULL'}");
-
-    // فحص إحداثيات الزبون
-    final destLatRaw = _currentDelivery['destination_lat'];
-    final destLngRaw = _currentDelivery['destination_lng'];
-    print("🎯 DESTINATION Raw: lat='$destLatRaw' | lng='$destLngRaw'");
-
+    print("📍 المطعم: ${pickupParsed?.toString() ?? 'NULL'}");
     final destParsed = _getDestinationPoint();
-    print("🎯 DESTINATION Parsed: ${destParsed?.toString() ?? 'NULL'}");
-
-    // فحص النقطة المستهدفة الحالية
-    final target = _getTargetPoint();
-    print("✅ Current Target: ${target?.toString() ?? 'NULL'}");
-
+    print("🎯 الزبون: ${destParsed?.toString() ?? 'NULL'}");
     print("🔍 === نهاية التشخيص ===");
   }
 
-  // ========================================================================
-  // 🔥 التتبع المباشر للموقع
-  // ========================================================================
   Future<void> _startLiveTracking() async {
     final hasPermission = await PermissionService.handleLocationPermission(context);
     if (!hasPermission) return;
@@ -3056,11 +3122,10 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         locationSettings: locationSettings
     ).listen((geolocator.Position pos) {
       if (!mounted) return;
-
       final newLoc = LatLng(pos.latitude, pos.longitude);
       final target = _getTargetPoint();
-
       String distString = "...";
+
       if (target != null) {
         final distMeters = geolocator.Geolocator.distanceBetween(
           newLoc.latitude,
@@ -3077,7 +3142,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
       setState(() => _distanceToTargetString = distString);
 
-      // تحديث الموقع في السيرفر
       ApiService.updateDriverLocation(
         widget.authResult.token,
         newLoc.latitude,
@@ -3086,9 +3150,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     });
   }
 
-  // ========================================================================
-  // 🔥 تحديث حالة الطلب
-  // ========================================================================
   Future<void> _updateStatus(String newStatus) async {
     setState(() => _isLoading = true);
     try {
@@ -3097,7 +3158,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         _currentDelivery['id'].toString(),
         newStatus,
       );
-
       final data = json.decode(response.body);
 
       if (mounted && response.statusCode == 200 && data['success'] == true) {
@@ -3121,119 +3181,97 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  // ========================================================================
-  // 🔥 دوال الخرائط (الإصلاح النهائي - بدون مسافات زائدة)
-  // ========================================================================
-
-  /// فتح Waze/Google Maps للإحداثيات المحددة - ✅ تم إصلاح الروابط
-  Future<void> _launchMapWithCoords(double lat, double lng, String label) async {
-    // ✅ إزالة المسافات الزائدة في الروابط (كان هذا سبب المشكلة)
+  Future<void> _launchWazeWithCoords(double lat, double lng) async {
     final wazeUri = Uri.parse("https://waze.com/ul?ll=$lat,$lng&navigate=yes");
-    final googleUri = Uri.parse("https://www.google.com/maps/dir/?api=1&destination=$lat,$lng");
-
-    // محاولة فتح Waze أولاً
     if (await canLaunchUrl(wazeUri)) {
       await launchUrl(wazeUri, mode: LaunchMode.externalApplication);
-    }
-    // ثم Google Maps
-    else if (await canLaunchUrl(googleUri)) {
-      await launchUrl(googleUri, mode: LaunchMode.externalApplication);
-    }
-    // fallback: بحث نصي
-    else {
-      final searchUri = Uri.parse(
-          "https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(label)}"
-      );
-      await launchUrl(searchUri, mode: LaunchMode.externalApplication);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("❌ يرجى تثبيت تطبيق Waze (ويز) على جهازك أولاً"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
-  /// 🔥 زر خريطة المطعم (نقطة الاستلام) - منفصل ومضمون
+  Future<void> _launchWazeWithAddress(String address) async {
+    final encodedAddress = Uri.encodeComponent(address);
+    final wazeUri = Uri.parse("https://waze.com/ul?q=$encodedAddress&navigate=yes");
+    if (await canLaunchUrl(wazeUri)) {
+      await launchUrl(wazeUri, mode: LaunchMode.externalApplication);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("❌ يرجى تثبيت تطبيق Waze (ويز) على جهازك أولاً"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _launchRestaurantMap() async {
     final pickup = _getPickupPoint();
-    final pickupName = _currentDelivery['pickup_location_name'] ?? 'المطعم';
-
     if (pickup != null) {
-      // ✅ استخدام الإحداثيات الصحيحة مباشرة
-      await _launchMapWithCoords(pickup.latitude, pickup.longitude, pickupName);
+      await _launchWazeWithCoords(pickup.latitude, pickup.longitude);
     } else {
-      // fallback للعنوان النصي فقط إذا فشلت الإحداثيات
-      final address = pickupName;
-      if (address.isNotEmpty && address != 'غير محدد') {
-        final uri = Uri.parse(
-            "https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}"
-        );
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-        } else {
-          _showMapError("المطعم");
-        }
+      final pickupName = _currentDelivery['pickup_location_name'] ?? '';
+      if (pickupName.isNotEmpty && pickupName != 'غير محدد') {
+        await _launchWazeWithAddress(pickupName);
       } else {
         _showMapError("المطعم");
       }
     }
   }
 
-  /// 🔥 زر خريطة الزبون (نقطة التوصيل) - منفصل ومضمون
   Future<void> _launchCustomerMap() async {
     final destination = _getDestinationPoint();
-    final destAddress = _currentDelivery['destination_address'] ?? 'عنوان الزبون';
-
     if (destination != null) {
-      // ✅ استخدام الإحداثيات الصحيحة مباشرة
-      await _launchMapWithCoords(destination.latitude, destination.longitude, destAddress);
+      await _launchWazeWithCoords(destination.latitude, destination.longitude);
     } else {
-      // fallback للعنوان النصي فقط إذا فشلت الإحداثيات
+      final destAddress = _currentDelivery['destination_address'] ?? '';
       if (destAddress.isNotEmpty && destAddress != 'غير معروف') {
-        final uri = Uri.parse(
-            "https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(destAddress)}"
-        );
-        if (await canLaunchUrl(uri)) {
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-        } else {
-          _showMapError("الزبون");
-        }
+        await _launchWazeWithAddress(destAddress);
       } else {
         _showMapError("الزبون");
       }
     }
   }
 
-  /// 🔥 زر الخريطة العام (يختار النقطة حسب الحالة)
   Future<void> _launchWaze() async {
     final target = _getTargetPoint();
     if (target != null) {
-      await _launchMapWithCoords(target.latitude, target.longitude, "الوجهة");
+      await _launchWazeWithCoords(target.latitude, target.longitude);
     } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("❌ الإحداثيات غير متوفرة"),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showMapError(String target) {
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("❌ الإحداثيات غير متوفرة"), backgroundColor: Colors.orange),
+        SnackBar(
+          content: Text("❌ تعذر إيجاد إحداثيات أو عنوان واضح لـ $target"),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
 
-  /// عرض رسالة خطأ موحدة عند فشل فتح الخريطة
-  void _showMapError(String target) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text("❌ لا توجد إحداثيات صحيحة لـ $target"),
-        backgroundColor: Colors.red,
-        action: SnackBarAction(
-          label: "عرض العنوان",
-          textColor: Colors.white,
-          onPressed: () {
-            // يمكن إضافة منطق لعرض العنوان كنص هنا
-          },
-        ),
-      ),
-    );
-  }
-
-  // ========================================================================
-  // 🔥 دوال الاتصال
-  // ========================================================================
-
   Future<void> _callCustomer() async {
-    final phone = _currentDelivery['end_customer_phone'] ?? _currentDelivery['customer_phone'];
+    final phone = _currentDelivery['end_customer_phone'] ??
+        _currentDelivery['customer_phone'];
     if (phone == null || phone.toString().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("رقم الهاتف غير متوفر"))
@@ -3250,172 +3288,125 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
+  Future<void> _makePhoneCall(String phoneNumber) async {
+    if (phoneNumber.isEmpty) return;
+    final Uri launchUri = Uri(scheme: 'tel', path: phoneNumber);
+    if (await canLaunchUrl(launchUri)) {
+      await launchUrl(launchUri);
+    }
+  }
+
   Future<void> _startInternalCall() async {
-    if (_currentDelivery == null) return;
+    print("📞 [CALL] ========== بدء المكالمة الداخلية ==========");
+    print("📞 [CALL] Order ID: ${_currentDelivery['id']}");
+    print("📞 [CALL] Customer Phone: ${_currentDelivery['end_customer_phone']}");
 
-    final customerName = _currentDelivery?['customer_name'] ?? 'الزبون';
-    final customerPhone = _currentDelivery?['end_customer_phone'] ??
-        _currentDelivery?['customer_phone'] ?? 'غير معروف';
-    final orderId = _currentDelivery?['id'].toString() ?? '0';
+    setState(() => _isLoading = true);
 
-    // 🔥 تحديد مصدر الطلب (مهم جداً لتوجيه المكالمة للسيرفر الصحيح)
-    // 'market' = طلب من المسواك (beytei.com)
-    // 'restaurant' = طلب من المطعم (re.beytei.com)
-    final sourceType = _currentDelivery?['source_type'] ?? 'market';
-
-    // 1. إرسال طلب المكالمة لسيرفر التكسي
     try {
+      final orderId = _currentDelivery['id'].toString();
+      final customerPhone = _currentDelivery['end_customer_phone'] ?? '';
+      final driverName = widget.authResult.displayName ?? 'سائق';
+      final driverPhone = widget.authResult.userId ?? '';
+
+      print("📡 [CALL] إرسال طلب المكالمة للسيرفر...");
+
       final response = await http.post(
-        Uri.parse('https://banner.beytei.com/wp-json/taxi/v3/call/initiate'),
+        Uri.parse('${ApiService.baseUrl}/restaurant-app/v1/incoming-call'),
         headers: {
-          'Authorization': 'Bearer ${widget.authResult.token}',
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
         body: json.encode({
-          'customer_phone': customerPhone,
+          'secret_key': 'BEYTEI_SECURE_2025',
           'order_id': orderId,
-          'source_type': sourceType, // ⚠️ هذا الحقل ضروري لتحديد السيرفر الصحيح
+          'driver_name': driverName,
+          'driver_phone': driverPhone,
+          'customer_phone': customerPhone,
         }),
       );
 
-      final result = json.decode(response.body);
+      print("📡 [CALL] استجابة السيرفر: ${response.statusCode}");
+      print("📡 [CALL] Response Body: ${response.body}");
 
-      if (response.statusCode == 200 && result['success'] == true) {
-        // 2. فتح شاشة المكالمة بعد نجاح الإرسال
-        await Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => DriverCallPage(
-              channelName: result['channel_name'],
-              customerName: customerName,
-              customerPhone: customerPhone,
-              agoraAppId: result['agora_app_id'],
-            ),
-          ),
-        );
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        print("✅ [CALL] تم إنشاء قناة المكالمة: ${data['channel_name']}");
 
-        // تحديث البيانات بعد انتهاء المكالمة
-        widget.onDataChanged();
+        if (data['success'] == true) {
+          // الانتقال لشاشة المكالمة
+          if (mounted) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => DriverCallPage(
+                  channelName: data['channel_name'],
+                  customerName: 'الزبون',
+                  customerPhone: customerPhone,
+                  agoraAppId: data['agora_app_id'],
+                ),
+              ),
+            );
+          }
+        } else {
+          print("❌ [CALL] فشل بدء المكالمة: ${data['message']}");
+          _showError('فشل بدء المكالمة: ${data['message']}');
+        }
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result['message'] ?? 'فشل في بدء المكالمة'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        print("❌ [CALL] خطأ من السيرفر: ${response.statusCode}");
+        _showError('خطأ في الاتصال بالسيرفر');
       }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('خطأ في الاتصال: ${e.toString()}'),
-          backgroundColor: Colors.red,
-        ),
-      );
+    } catch (e, stackTrace) {
+      print("❌ [CALL] استثناء: $e");
+      print("❌ [CALL] Stack Trace: $stackTrace");
+      _showError('خطأ: ${e.toString()}');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
-  }
-  // ========================================================================
-  // 🔥 عرض تفاصيل الطلب
-  // ========================================================================
 
-  void _showOrderDetailsDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("تفاصيل الطلب"),
-        content: SingleChildScrollView(
-          child: ListBody(
-            children: [
-              _infoRow("المصدر:", _currentDelivery['pickup_location_name'] ?? 'غير محدد'),
-              const Divider(),
-              const Text("📦 المحتويات:", style: TextStyle(color: Colors.grey, fontSize: 12)),
-              const SizedBox(height: 5),
-              Text(
-                  _currentDelivery['items_description'] ?? 'لا توجد تفاصيل',
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)
-              ),
-              const SizedBox(height: 15),
-              _infoRow("ملاحظات:", _currentDelivery['notes'] ?? 'لا توجد'),
-              const Divider(),
-              _infoRow("اسم الزبون:", _currentDelivery['customer_name'] ?? 'زبون'),
-              _infoRow(
-                  "السعر المطلوب:",
-                  "${_currentDelivery['total_to_collect'] ?? 0} د.ع",
-                  isPrice: true
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("إغلاق")
-          ),
-        ],
-      ),
+    print("📞 [CALL] ========== نهاية محاولة المكالمة ==========\n");
+  }
+
+  void _showError(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.red),
     );
   }
-
-  Widget _infoRow(String label, String value, {bool isPrice = false}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: const TextStyle(color: Colors.grey)),
-          const SizedBox(width: 8),
-          Expanded(
-              child: Text(
-                  value,
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: isPrice ? Colors.green : Colors.black
-                  )
-              )
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ========================================================================
-  // 🔥 أزرار الخرائط الذكية (تظهر حسب الحالة)
-  // ========================================================================
 
   Widget _buildMapButtons() {
     final status = _currentDelivery['order_status'];
-
-    // ✅ الحالة 1: في الطريق للمطعم أو وصل له → يظهر زران منفصلان
     if (status == 'accepted' || status == 'at_store') {
       return Row(
         children: [
-          // زر خريطة المطعم
           Expanded(
             child: ElevatedButton.icon(
               onPressed: _launchRestaurantMap,
               icon: const Icon(Icons.store, size: 18),
-              label: const Text("خريطة المطعم", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+              label: const Text("خريطة المتجر",
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue.shade50,
                 foregroundColor: Colors.blue,
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
                 side: BorderSide(color: Colors.blue.shade300),
                 elevation: 1,
               ),
             ),
           ),
           const SizedBox(width: 10),
-          // زر خريطة الزبون
           Expanded(
             child: ElevatedButton.icon(
               onPressed: _launchCustomerMap,
               icon: const Icon(Icons.person_pin, size: 18),
-              label: const Text("خريطة الزبون", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+              label: const Text("خريطة الزبون",
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green.shade50,
                 foregroundColor: Colors.green.shade800,
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
                 side: BorderSide(color: Colors.green.shade300),
                 elevation: 1,
               ),
@@ -3423,32 +3414,27 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
           ),
         ],
       );
-    }
-    // ✅ الحالة 2: في طريقه للزبون → يظهر زر واحد لخريطة الزبون
-    else if (status == 'picked_up') {
+    } else if (status == 'picked_up') {
       return SizedBox(
         width: double.infinity,
         child: ElevatedButton.icon(
           onPressed: _launchCustomerMap,
           icon: const Icon(Icons.person_pin, size: 20),
-          label: const Text("خريطة الزبون", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+          label: const Text("خريطة الزبون",
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.green,
             foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(vertical: 14),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
             elevation: 2,
           ),
         ),
       );
     }
-    // ✅ الحالة الأخرى: لا تظهر أزرار خرائط
     return const SizedBox.shrink();
   }
-
-  // ========================================================================
-  // 🔥 زر تغيير الحالة الرئيسي
-  // ========================================================================
 
   Widget _buildActionButton() {
     final status = _currentDelivery['order_status'];
@@ -3465,7 +3451,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
           width: double.infinity,
           child: ElevatedButton.icon(
             icon: const Icon(Icons.store, size: 28),
-            label: const Text('وصلت للمطعم'),
+            label: const Text('وصلت للمتجر'),
             onPressed: _isLoading ? null : () => _updateStatus('at_store'),
             style: buttonStyle.copyWith(
               backgroundColor: const WidgetStatePropertyAll(Colors.blue),
@@ -3504,10 +3490,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  // ========================================================================
-  // 🔥 بناء الواجهة
-  // ========================================================================
-
   @override
   Widget build(BuildContext context) {
     final status = _currentDelivery['order_status'] ?? 'pending';
@@ -3518,12 +3500,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
     if (status == 'accepted') {
       stateIcon = Icons.store_mall_directory;
-      stateTitle = "تجه للـمطعم";
+      stateTitle = "تجه للمتجر";
       stateColor = Colors.blue;
-      locationText = "المطعم: ${_currentDelivery['pickup_location_name']}";
+      locationText = "المتجر: ${_currentDelivery['pickup_location_name']}";
     } else if (status == 'picked_up') {
       stateIcon = Icons.person_pin_circle;
-      stateTitle = "تجه للـزبون";
+      stateTitle = "تجه للزبون";
       stateColor = Colors.orange;
       locationText = "الزبون: ${_currentDelivery['destination_address']}";
     }
@@ -3531,7 +3513,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: Text(stateTitle, style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(stateTitle,
+            style: const TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         backgroundColor: stateColor,
         foregroundColor: Colors.white,
@@ -3572,8 +3555,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   ),
                   const SizedBox(height: 15),
                   Text(
-                      _distanceToTargetString,
-                      style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: stateColor)
+                    _distanceToTargetString,
+                    style: TextStyle(
+                        fontSize: 36,
+                        fontWeight: FontWeight.bold,
+                        color: stateColor
+                    ),
                   ),
                   const SizedBox(height: 5),
                   Text(
@@ -3582,28 +3569,33 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   ),
                   const Divider(height: 30),
                   Text(
-                      locationText,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)
+                    locationText,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600
+                    ),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 20),
 
-            // 📞 أزرار الاتصال (عادي + مجاني)
+            // 📞 أزرار الاتصال
             Row(
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: _callCustomer,
                     icon: const Icon(Icons.phone, size: 20),
-                    label: const Text("اتصال عادي", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                    label: const Text("اتصال عادي",
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.white,
                       foregroundColor: Colors.green,
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                       side: const BorderSide(color: Colors.green, width: 2),
                       elevation: 0,
                     ),
@@ -3614,12 +3606,14 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   child: ElevatedButton.icon(
                     onPressed: _startInternalCall,
                     icon: const Icon(Icons.headset_mic, size: 20),
-                    label: const Text("اتصال مجاني", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                    label: const Text("اتصال مجاني",
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.indigo,
+                      backgroundColor: Colors.lightBlue,
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                       elevation: 2,
                     ),
                   ),
@@ -3628,44 +3622,48 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
             ),
             const SizedBox(height: 20),
 
-            // 🗺️ أزرار الخرائط المنفصلة (الجديد)
+            // 🗺️ أزرار الخرائط
             _buildMapButtons(),
             const SizedBox(height: 15),
 
-            // 📋 بطاقة تفاصيل الطلب
+            // 📋 بطاقة تفاصيل الطلب (التصميم الحديث)
             Card(
               elevation: 2,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
               child: ListTile(
                 onTap: _showOrderDetailsDialog,
                 leading: const CircleAvatar(
-                    backgroundColor: Colors.grey,
-                    child: Icon(Icons.list_alt, color: Colors.white)
+                    backgroundColor: Colors.orange,
+                    child: Icon(Icons.shopping_basket, color: Colors.white)
                 ),
-                title: const Text("عرض محتويات الطلب", style: TextStyle(fontWeight: FontWeight.bold)),
+                title: const Text("عرض محتويات الطلب",
+                    style: TextStyle(fontWeight: FontWeight.bold)),
                 trailing: const Icon(Icons.arrow_forward_ios, size: 16),
               ),
             ),
             const SizedBox(height: 40),
 
-            // 🗺️ زر الخريطة العامة (اختياري)
+            // 🗺️ زر الخريطة العامة
             SizedBox(
               width: double.infinity,
               height: 55,
               child: OutlinedButton.icon(
                 onPressed: _launchWaze,
                 icon: const Icon(Icons.map, size: 26),
-                label: const Text("فتح الخريطة العامة", style: TextStyle(fontSize: 18)),
+                label: const Text("فتح الخريطة العامة في Waze",
+                    style: TextStyle(fontSize: 18)),
                 style: OutlinedButton.styleFrom(
                   side: BorderSide(color: stateColor, width: 2),
                   foregroundColor: stateColor,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
                 ),
               ),
             ),
             const SizedBox(height: 16),
 
-            // ✅ زر تغيير الحالة الرئيسي
+            // ✅ زر تغيير الحالة
             _buildActionButton(),
             const SizedBox(height: 20),
 
@@ -3673,7 +3671,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
             if (status != 'delivered' && status != 'cancelled')
               TextButton(
                 onPressed: () => _updateStatus('cancelled'),
-                child: const Text("إلغاء الرحلة", style: TextStyle(color: Colors.red, fontSize: 16)),
+                child: const Text("إلغاء الرحلة",
+                    style: TextStyle(color: Colors.red, fontSize: 16)),
               ),
           ],
         ),
@@ -3681,6 +3680,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     );
   }
 }
+
 
 // =============================================================================
 // HISTORY & POINTS
@@ -3852,11 +3852,13 @@ class PointsTab extends StatelessWidget {
     );
   }
 }
-class DriverCallPage extends StatelessWidget {
+
+class DriverCallPage extends StatefulWidget {
   final String channelName;
   final String customerName;
   final String customerPhone;
   final String agoraAppId;
+
   const DriverCallPage({
     super.key,
     required this.channelName,
@@ -3866,44 +3868,177 @@ class DriverCallPage extends StatelessWidget {
   });
 
   @override
+  State<DriverCallPage> createState() => _DriverCallPageState();
+}
+
+class _DriverCallPageState extends State<DriverCallPage> {
+  late RtcEngine _engine;
+  bool _isJoined = false;
+  bool _isMuted = false;
+  bool _isSpeaker = false; // السبيكر مغلق افتراضياً ليكون كالمكالمة العادية
+  int? _remoteUid;
+
+  @override
+  void initState() {
+    super.initState();
+    _initAgora();
+  }
+
+  Future<void> _initAgora() async {
+    // 1. طلب صلاحية المايكروفون
+    await [Permission.microphone].request();
+
+    // 2. تهيئة محرك الصوت باستخدام الـ App ID القادم من السيرفر
+    _engine = createAgoraRtcEngine();
+    await _engine.initialize(RtcEngineContext(
+      appId: widget.agoraAppId,
+      channelProfile: ChannelProfileType.channelProfileCommunication,
+    ));
+
+    // 3. الاستماع لأحداث المكالمة
+    _engine.registerEventHandler(
+      RtcEngineEventHandler(
+        onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
+          setState(() => _isJoined = true);
+          // ضبط السماعة بعد الانضمام
+          _engine.setEnableSpeakerphone(_isSpeaker);
+        },
+        onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
+          setState(() => _remoteUid = remoteUid);
+        },
+        onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
+          // إذا خرج الزبون، ننهي المكالمة للسائق أيضاً
+          _endCall();
+        },
+        onLeaveChannel: (RtcConnection connection, RtcStats stats) {
+          setState(() => _isJoined = false);
+        },
+      ),
+    );
+
+    // 4. تمكين الصوت والانضمام للغرفة (باستخدام القناة المشتركة)
+    await _engine.enableAudio();
+    await _engine.joinChannel(
+      token: '', // نتركها فارغة إذا لم تكن تستخدم Security Token في حساب Agora
+      channelId: widget.channelName,
+      uid: 0,
+      options: const ChannelMediaOptions(),
+    );
+  }
+
+  void _toggleMute() {
+    setState(() => _isMuted = !_isMuted);
+    _engine.muteLocalAudioStream(_isMuted);
+  }
+
+  void _toggleSpeaker() {
+    setState(() => _isSpeaker = !_isSpeaker);
+    _engine.setEnableSpeakerphone(_isSpeaker);
+  }
+
+  void _endCall() async {
+    await _engine.leaveChannel();
+    await _engine.release();
+    if (mounted) Navigator.pop(context);
+  }
+
+  @override
+  void dispose() {
+    _endCall();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text("مكالمة مع $customerName"),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.call_end, color: Colors.red),
-            onPressed: () => Navigator.pop(context),
-          ),
-        ],
-      ),
-      body: Center(
+      backgroundColor: Colors.blueGrey.shade900,
+      body: SafeArea(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.call, size: 80, color: Colors.green),
+            const Spacer(),
+            // صورة المتصل
+            const CircleAvatar(
+              radius: 60,
+              backgroundColor: Colors.white24,
+              child: Icon(Icons.person, size: 60, color: Colors.white),
+            ),
             const SizedBox(height: 20),
+            // اسم المتصل
             Text(
-              "جارٍ الاتصال بـ $customerName",
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              widget.customerName,
+              style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 5),
+            Text(
+              widget.customerPhone,
+              style: const TextStyle(color: Colors.white54, fontSize: 16),
             ),
             const SizedBox(height: 10),
+            // حالة المكالمة
             Text(
-              "الرقم: $customerPhone",
-              style: const TextStyle(fontSize: 16, color: Colors.grey),
+              _remoteUid != null ? '00:00 (متصل)' : (_isJoined ? 'جاري الاتصال...' : 'تهيئة...'),
+              style: const TextStyle(color: Colors.white70, fontSize: 16),
             ),
-            const SizedBox(height: 40),
-            Text(
-              "ملاحظة: هذه مكالمة داخلية مجانية عبر الإنترنت",
-              style: const TextStyle(fontSize: 14, color: Colors.blue),
-              textAlign: TextAlign.center,
-            ),
-          ], // <-- لازم تقفل القوس المربع قبل القوس العادي
+            const Spacer(),
 
+            // أزرار التحكم
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 30),
+              decoration: const BoxDecoration(
+                color: Colors.black26,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  // المايكروفون
+                  _buildControlButton(
+                    icon: _isMuted ? Icons.mic_off : Icons.mic,
+                    color: _isMuted ? Colors.white : Colors.white24,
+                    iconColor: _isMuted ? Colors.black : Colors.white,
+                    onPressed: _toggleMute,
+                  ),
+                  // إنهاء المكالمة
+                  _buildControlButton(
+                    icon: Icons.call_end,
+                    color: Colors.red,
+                    iconColor: Colors.white,
+                    size: 65,
+                    onPressed: _endCall,
+                  ),
+                  // السبيكر
+                  _buildControlButton(
+                    icon: _isSpeaker ? Icons.volume_up : Icons.volume_down,
+                    color: _isSpeaker ? Colors.white : Colors.white24,
+                    iconColor: _isSpeaker ? Colors.black : Colors.white,
+                    onPressed: _toggleSpeaker,
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
-}
 
+  Widget _buildControlButton({
+    required IconData icon,
+    required Color color,
+    required Color iconColor,
+    required VoidCallback onPressed,
+    double size = 55,
+  }) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        child: Icon(icon, color: iconColor, size: size * 0.5),
+      ),
+    );
+  }
+}
 
