@@ -62,19 +62,34 @@ class BalanceManager {
     _token = token;
     try {
       await _initLocalNotifications();
-      // نجبر التحديث عند الفتح
-      _balance = await getPointsV3(token);
+
+      // 🔥 على أندرويد: محاولة واحدة (سريعة)
+      // 🔥 على iOS: 3 محاولات مع تأخير
+      int maxAttempts = Platform.isIOS ? 3 : 1;
+      int delayMs = Platform.isIOS ? 800 : 0;
+
+      int attempts = 0;
+      while (attempts < maxAttempts) {
+        try {
+          print("🔄 [BalanceManager] Attempt ${attempts + 1}/$maxAttempts");
+          _balance = await getPointsV3(token);
+          if (_balance >= 0) break;
+        } catch (e) {
+          attempts++;
+          if (attempts < maxAttempts && delayMs > 0) {
+            await Future.delayed(Duration(milliseconds: delayMs * attempts));
+          }
+        }
+      }
+
       _isInitialized = true;
       balanceNotifier.value = _balance;
-      print("✅ BalanceManager initialized with $_balance points (V3 - AntiCache)");
       return _balance > 0;
     } catch (e) {
-      print("⚠️ BalanceManager initialization failed: $e");
       _isInitialized = false;
       return false;
     }
   }
-
   // ✅ الدالة الأساسية لجلب الرصيد (معدلة لمنع الكاش)
   static Future<int> getPointsV3(String token) async {
     try {
@@ -371,12 +386,23 @@ final ValueNotifier<int> orderRefreshCounter = ValueNotifier(0);
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
-  await NotificationService.initialize();
 
-  // ❌ لا تضع DebugOverlay هنا
+  final storedAuth = await ApiService.getStoredAuthData();
+
+  if (storedAuth != null) {
+    // 🔥 تأخير 1.5 ثانية فقط على iOS
+    if (Platform.isIOS) {
+      print("🍎 [iOS] Adding network initialization delay...");
+      await Future.delayed(const Duration(milliseconds: 1500));
+    }
+
+    final hasBalance = await BalanceManager.initialize(storedAuth.token);
+    print("✅ BalanceManager initialized: ${BalanceManager.current} points");
+  }
+
+  await NotificationService.initialize();
   runApp(const DeliveryApp());
 }
-
 // =============================================================================
 // 🔥 التطبيق الرئيسي مع DebugOverlay
 // =============================================================================

@@ -3,7 +3,7 @@ description: OvoRide is a complete ride-sharing solution.
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.3+18
+version: 1.0.3+19
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -34,10 +34,10 @@ dependencies:
   geolocator: ^14.0.2
   google_fonts: ^6.2.1
   get: ^4.7.2
-  latlong2: ^0.9.1 # ✅ أضف هذا السطر
+  latlong2: ^0.9.1
   flutter_secure_storage: any
   firebase_auth: any
-  agora_rtc_engine: ^6.3.0  # محرك الاتصال
+  agora_rtc_engine: ^6.3.0
   audioplayers: any
   google_sign_in: ^7.2.0
   image_gallery_saver_plus: ^4.0.1
@@ -61,15 +61,19 @@ dependencies:
   url_launcher: ^6.3.2
   vibration: ^3.1.4
   zoom_tap_animation: ^1.1.0
+
 dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_test:
     sdk: flutter
+  # ✅ المكتبة المضافة لتغيير الأيقونة
+  flutter_launcher_icons: ^0.13.1
 
 dependency_overrides:
   intl: any
   file_picker: any
   just_audio: any
+
 flutter:
   uses-material-design: true
   assets:
@@ -90,3 +94,24 @@ flutter:
         - asset: assets/fonts/Inter-Regular.ttf
         - asset: assets/fonts/Inter-SemiBold.ttf
         - asset: assets/fonts/Inter-Thin.ttf
+
+# =============================================================================
+# ✅ إعدادات flutter_launcher_icons (في نهاية الملف)
+# =============================================================================
+flutter_launcher_icons:
+  image_path: "assets/icon/app_icon.png"
+  min_sdk_android: 21
+
+  # إعدادات iOS
+  ios:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+    background_color: "#ffffff"
+    adaptive_icon_background: "#ffffff"
+
+  # إعدادات Android للأيقونة التكيفية (Android 8.0+)
+  android:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+    adaptive_icon_background: "#ffffff"
+    adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
