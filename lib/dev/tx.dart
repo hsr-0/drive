@@ -60,35 +60,40 @@ class BalanceManager {
   // ✅ التهيئة الأولية
   static Future<bool> initialize(String token) async {
     _token = token;
+
+    // 1. عزل خطأ الإشعارات في try-catch منفصل
+    // بهذا الشكل، حتى لو فشلت تهيئة الإشعارات لأي سبب، لن يتوقف التطبيق وسيكمل جلب الرصيد
     try {
       await _initLocalNotifications();
+    } catch (e) {
+      print("⚠️ [BalanceManager] Notification Init Error: $e");
+    }
 
-      // 🔥 على أندرويد: محاولة واحدة (سريعة)
-      // 🔥 على iOS: 3 محاولات مع تأخير
-      int maxAttempts = Platform.isIOS ? 3 : 1;
-      int delayMs = Platform.isIOS ? 800 : 0;
+    int maxAttempts = Platform.isIOS ? 3 : 1;
+    int delayMs = Platform.isIOS ? 800 : 0;
 
-      int attempts = 0;
-      while (attempts < maxAttempts) {
-        try {
-          print("🔄 [BalanceManager] Attempt ${attempts + 1}/$maxAttempts");
-          _balance = await getPointsV3(token);
-          if (_balance >= 0) break;
-        } catch (e) {
-          attempts++;
-          if (attempts < maxAttempts && delayMs > 0) {
-            await Future.delayed(Duration(milliseconds: delayMs * attempts));
-          }
+    // 2. استخدام حلقة for بدلاً من while لضمان زيادة العداد في كل محاولة
+    // هذا يمنع الدخول في حلقة لا نهائية (Infinite Loop)
+    for (int attempts = 0; attempts < maxAttempts; attempts++) {
+      try {
+        print("🔄 [BalanceManager] Attempt ${attempts + 1}/$maxAttempts");
+        _balance = await getPointsV3(token);
+
+        // إذا رجع الرصيد بشكل صحيح (صفر أو أكثر)، نكسر الحلقة ونكمل
+        if (_balance >= 0) break;
+      } catch (e) {
+        // إذا حدث خطأ بالاتصال، ننتظر قبل المحاولة التالية (حسب النظام)
+        if (attempts < maxAttempts - 1 && delayMs > 0) {
+          await Future.delayed(Duration(milliseconds: delayMs * (attempts + 1)));
         }
       }
-
-      _isInitialized = true;
-      balanceNotifier.value = _balance;
-      return _balance > 0;
-    } catch (e) {
-      _isInitialized = false;
-      return false;
     }
+
+    // 3. تحديث القيم النهائية
+    _isInitialized = true;
+    balanceNotifier.value = _balance;
+
+    return _balance > 0;
   }
   // ✅ الدالة الأساسية لجلب الرصيد (معدلة لمنع الكاش)
   static Future<int> getPointsV3(String token) async {
@@ -191,14 +196,32 @@ class BalanceManager {
 
   // 🔔 إعداد الإشعارات المحلية
   static Future<void> _initLocalNotifications() async {
+    // 1. إعدادات الأندرويد (كما هي في كودك الأصلي)
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    final initializationSettings = const InitializationSettings(android: android);
-    await _localParams.initialize(initializationSettings);
-    await _localParams
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(_channel);
-  }
 
+    // 2. 🔥 إضافة إعدادات الآيفون (iOS) الضرورية لمنع انهيار التطبيق
+    const ios = DarwinInitializationSettings(
+      requestSoundPermission: false,
+      requestBadgePermission: false,
+      requestAlertPermission: false,
+    );
+
+    // 3. دمج إعدادات النظامين في متغير واحد
+    final initializationSettings = InitializationSettings(
+      android: android,
+      iOS: ios,
+    );
+
+    // 4. تهيئة مكتبة الإشعارات
+    await _localParams.initialize(initializationSettings);
+
+    // 5. إنشاء قناة الإشعارات (مخصصة للأندرويد فقط)
+    if (Platform.isAndroid) {
+      await _localParams
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          ?.createNotificationChannel(_channel);
+    }
+  }
   // 🔔 منطق التنبيه عند انخفاض الرصيد
   static void _showBalanceAlert(int points) {
     if (points == 10 || points == 5 || points == 1) {
@@ -814,6 +837,25 @@ class _DebugOverlayState extends State<DebugOverlay> {
   Widget build(BuildContext context) => widget.child;
 }
 
+// =============================================================================
+// باقي الكود الأصلي (BalanceManager, NotificationService, ApiService, etc.)
+// =============================================================================
+// ... (ضع هنا باقي الكود من ملفك الأصلي دون تغيير) ...
+// =============================================================================
+// SERVICES
+// =============================================================================
+// =============================================================================
+// 🔔 NOTIFICATION SERVICE (المصدر الوحيد لاستقبال الإشعارات - احترافي V3)
+// =============================================================================
+// =============================================================================
+// 🔔 NOTIFICATION SERVICE (التعديل الهام هنا)
+// =============================================================================
+// =============================================================================
+// 🔔 NOTIFICATION SERVICE (تم الإصلاح: سريع وفوري مع نظام الرصيد V3)
+// =============================================================================
+// =============================================================================
+// 🔔 NOTIFICATION SERVICE (المصدر الوحيد لاستقبال الإشعارات - احترافي V3)
+// =============================================================================
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _localParams = FlutterLocalNotificationsPlugin();
 
@@ -1438,76 +1480,56 @@ class _AuthGateState extends State<AuthGate> {
 
   Future<void> _initializeApp() async {
     try {
-      print("🚀 [AuthGate] بدء تهيئة التطبيق...");
-
-      // 1. تسجيل الدخول المجهول (مع مهلة زمنية لضمان عدم التعليق)
+      // 1. تسجيل الدخول المجهول (سريع جداً)
       if (fb_auth.FirebaseAuth.instance.currentUser == null) {
         try {
-          await fb_auth.FirebaseAuth.instance
-              .signInAnonymously()
-              .timeout(const Duration(seconds: 3));
-        } catch (e) {
-          print("⚠️ [AuthGate] فشل تسجيل الدخول المجهول أو انتهت المهلة: $e");
-        }
+          await fb_auth.FirebaseAuth.instance.signInAnonymously().timeout(const Duration(seconds: 3));
+        } catch (_) {}
       }
 
-      // 2. جلب بيانات التخزين المحلي (التوكن والمعلومات المخزنة)
+      // 2. جلب بيانات التخزين المحلي
       final storedAuth = await ApiService.getStoredAuthData();
       if (storedAuth == null) {
-        print("ℹ️ [AuthGate] لا توجد بيانات دخول مخزنة، التوجه لصفحة التسجيل.");
-        if (mounted) {
-          setState(() {
-            _auth = null;
-            _isLoading = false;
-          });
-        }
-        return;
-      }
-
-      // 3. 🔥 الفحص المركزي للرصيد (مع إضافة timeout لضمان استمرارية التطبيق على iOS)
-      try {
-        // نضع مهلة 8 ثوانٍ؛ إذا لم يرد السيرفر، يدخل التطبيق بناءً على آخر حالة معروفة
-        _hasBalance = await BalanceManager.initialize(storedAuth.token)
-            .timeout(const Duration(seconds: 8));
-      } catch (e) {
-        print("⚠️ [AuthGate] فحص الرصيد استغرق وقتاً طويلاً أو حدث خطأ: $e");
-        // في حال الخطأ، نفترض وجود رصيد إذا كان الرصيد المحلي السابق > 0 لكي لا نحظر السائق
-        _hasBalance = BalanceManager.current > 0;
-      }
-
-      // ✅✅✅ 4. تحديث FCM Token في الخلفية (بدون await) ✅✅✅
-      // هذا هو التعديل الجوهري لحل مشكلة تعليق الآيفون
-      NotificationService.getFcmToken().then((fcm) {
-        if (fcm != null && fcm.isNotEmpty) {
-          ApiService.updateFcmToken(storedAuth.token, fcm);
-          print("✅ [Background] تم تحديث FCM Token بنجاح في الخلفية.");
-        } else {
-          print("⚠️ [Background] FCM Token غير متوفر حالياً، سيتم المحاولة لاحقاً.");
-        }
-      }).catchError((error) {
-        print("❌ [Background] خطأ في جلب التوكن: $error");
-      });
-
-      // 5. تحديث الواجهة فوراً للدخول إلى الرئيسية
-      // التطبيق الآن سينتقل للرئيسية حتى لو كان تحديث التوكن لا يزال جارياً
-      if (mounted) {
-        setState(() {
-          _auth = storedAuth;
-          _isLoading = false;
-        });
-        print("✅ [AuthGate] تمت التهيئة بنجاح، الدخول للرئيسية. الرصيد: ${BalanceManager.current}");
-      }
-
-    } catch (e) {
-      print("❌ [AuthGate] خطأ حرج أثناء التهيئة: $e");
-      if (mounted) {
-        setState(() {
+        if (mounted) setState(() {
           _auth = null;
           _isLoading = false;
         });
+        return;
       }
+
+      // 3. 🔥 الفحص المركزي للرصيد (قبل عرض أي شاشة)
+      _hasBalance = await BalanceManager.initialize(storedAuth.token);
+
+      // ✅✅✅ 4. تحديث FCM Token فوراً (مع معالجة الأخطاء والتسجيل) ✅✅✅
+      try {
+        final fcm = await NotificationService.getFcmToken();
+        if (fcm != null && fcm.isNotEmpty) {
+          // تحديث التوكن في السيرفر مع الانتظار للتأكد من النجاح
+          await ApiService.updateFcmToken(storedAuth.token, fcm);
+          print("✅ [AuthGate] FCM Token updated successfully: ${fcm.substring(0, 20)}...");
+        } else {
+          print("⚠️ [AuthGate] FCM Token is null or empty, will retry later");
+        }
+      } catch (e) {
+        print("❌ [AuthGate] Failed to update FCM Token: $e");
+        // لا نوقف التطبيق إذا فشل تحديث التوكن
+      }
+
+      // 5. تخزين بيانات المصادقة وتحديث الواجهة
+      if (mounted) setState(() {
+        _auth = storedAuth;
+        _isLoading = false;
+      });
+
+    } catch (e) {
+      print("AuthGate initialization error: $e");
+      if (mounted) setState(() {
+        _auth = null;
+        _isLoading = false;
+      });
     }
   }
+
   void _recharge() {
     launchUrl(
       Uri.parse("https://wa.me/+9647854076931"),
@@ -1676,6 +1698,7 @@ class ZeroBalanceLockScreen extends StatelessWidget {
 
   // 🔥 زر "تم الشحن؟" يعيد فحص الرصيد من السيرفر مباشرة
 // في ملف main.dart - داخل كلاس ZeroBalanceLockScreen
+// 🔥 زر "تم الشحن؟" يعيد فحص الرصيد من السيرفر مباشرة
   Future<void> _refreshBalance(BuildContext context) async {
     try {
       // 1. تحديث الرصيد من السيرفر
@@ -1684,16 +1707,13 @@ class ZeroBalanceLockScreen extends StatelessWidget {
       // 2. الانتظار قليلاً لضمان اكتمال التحديث
       await Future.delayed(const Duration(milliseconds: 300));
 
+      // ✅ حماية إضافية: التأكد من أن الشاشة لا تزال مفتوحة قبل استخدام context
+      if (!context.mounted) return;
+
       // 3. التحقق من الرصيد الجديد
       if (BalanceManager.hasBalance) {
-        // ✅ الحل: إعادة توجيه كامل بدلاً من pop فقط
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => AuthGate(), // إعادة تهيئة AuthGate من الصفر
-          ),
-        );
 
+        // إظهار رسالة النجاح
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text("✅ تم شحن المحفظة بنجاح!"),
@@ -1701,6 +1721,16 @@ class ZeroBalanceLockScreen extends StatelessWidget {
             duration: Duration(seconds: 2),
           ),
         );
+
+        // ✅ الحل الجذري: مسح جميع الشاشات السابقة وإعادة فتح AuthGate بنظافة
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const AuthGate(), // تأكد من إضافة const إذا كانت تدعمها
+          ),
+              (route) => false, // يمسح كل الشاشات المتراكمة
+        );
+
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -1710,6 +1740,7 @@ class ZeroBalanceLockScreen extends StatelessWidget {
         );
       }
     } catch (e) {
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("❌ فشل في تحديث الرصيد: ${e.toString()}"),
