@@ -814,25 +814,6 @@ class _DebugOverlayState extends State<DebugOverlay> {
   Widget build(BuildContext context) => widget.child;
 }
 
-// =============================================================================
-// باقي الكود الأصلي (BalanceManager, NotificationService, ApiService, etc.)
-// =============================================================================
-// ... (ضع هنا باقي الكود من ملفك الأصلي دون تغيير) ...
-// =============================================================================
-// SERVICES
-// =============================================================================
-// =============================================================================
-// 🔔 NOTIFICATION SERVICE (المصدر الوحيد لاستقبال الإشعارات - احترافي V3)
-// =============================================================================
-// =============================================================================
-// 🔔 NOTIFICATION SERVICE (التعديل الهام هنا)
-// =============================================================================
-// =============================================================================
-// 🔔 NOTIFICATION SERVICE (تم الإصلاح: سريع وفوري مع نظام الرصيد V3)
-// =============================================================================
-// =============================================================================
-// 🔔 NOTIFICATION SERVICE (المصدر الوحيد لاستقبال الإشعارات - احترافي V3)
-// =============================================================================
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _localParams = FlutterLocalNotificationsPlugin();
 
@@ -1119,6 +1100,7 @@ class Order {
 }
 
 class ApiService {
+
   static const String baseUrl = 'https://banner.beytei.com/wp-json';
   static const _storage = FlutterSecureStorage();
 
@@ -1456,56 +1438,76 @@ class _AuthGateState extends State<AuthGate> {
 
   Future<void> _initializeApp() async {
     try {
-      // 1. تسجيل الدخول المجهول (سريع جداً)
+      print("🚀 [AuthGate] بدء تهيئة التطبيق...");
+
+      // 1. تسجيل الدخول المجهول (مع مهلة زمنية لضمان عدم التعليق)
       if (fb_auth.FirebaseAuth.instance.currentUser == null) {
         try {
-          await fb_auth.FirebaseAuth.instance.signInAnonymously().timeout(const Duration(seconds: 3));
-        } catch (_) {}
+          await fb_auth.FirebaseAuth.instance
+              .signInAnonymously()
+              .timeout(const Duration(seconds: 3));
+        } catch (e) {
+          print("⚠️ [AuthGate] فشل تسجيل الدخول المجهول أو انتهت المهلة: $e");
+        }
       }
 
-      // 2. جلب بيانات التخزين المحلي
+      // 2. جلب بيانات التخزين المحلي (التوكن والمعلومات المخزنة)
       final storedAuth = await ApiService.getStoredAuthData();
       if (storedAuth == null) {
-        if (mounted) setState(() {
-          _auth = null;
-          _isLoading = false;
-        });
+        print("ℹ️ [AuthGate] لا توجد بيانات دخول مخزنة، التوجه لصفحة التسجيل.");
+        if (mounted) {
+          setState(() {
+            _auth = null;
+            _isLoading = false;
+          });
+        }
         return;
       }
 
-      // 3. 🔥 الفحص المركزي للرصيد (قبل عرض أي شاشة)
-      _hasBalance = await BalanceManager.initialize(storedAuth.token);
-
-      // ✅✅✅ 4. تحديث FCM Token فوراً (مع معالجة الأخطاء والتسجيل) ✅✅✅
+      // 3. 🔥 الفحص المركزي للرصيد (مع إضافة timeout لضمان استمرارية التطبيق على iOS)
       try {
-        final fcm = await NotificationService.getFcmToken();
-        if (fcm != null && fcm.isNotEmpty) {
-          // تحديث التوكن في السيرفر مع الانتظار للتأكد من النجاح
-          await ApiService.updateFcmToken(storedAuth.token, fcm);
-          print("✅ [AuthGate] FCM Token updated successfully: ${fcm.substring(0, 20)}...");
-        } else {
-          print("⚠️ [AuthGate] FCM Token is null or empty, will retry later");
-        }
+        // نضع مهلة 8 ثوانٍ؛ إذا لم يرد السيرفر، يدخل التطبيق بناءً على آخر حالة معروفة
+        _hasBalance = await BalanceManager.initialize(storedAuth.token)
+            .timeout(const Duration(seconds: 8));
       } catch (e) {
-        print("❌ [AuthGate] Failed to update FCM Token: $e");
-        // لا نوقف التطبيق إذا فشل تحديث التوكن
+        print("⚠️ [AuthGate] فحص الرصيد استغرق وقتاً طويلاً أو حدث خطأ: $e");
+        // في حال الخطأ، نفترض وجود رصيد إذا كان الرصيد المحلي السابق > 0 لكي لا نحظر السائق
+        _hasBalance = BalanceManager.current > 0;
       }
 
-      // 5. تخزين بيانات المصادقة وتحديث الواجهة
-      if (mounted) setState(() {
-        _auth = storedAuth;
-        _isLoading = false;
+      // ✅✅✅ 4. تحديث FCM Token في الخلفية (بدون await) ✅✅✅
+      // هذا هو التعديل الجوهري لحل مشكلة تعليق الآيفون
+      NotificationService.getFcmToken().then((fcm) {
+        if (fcm != null && fcm.isNotEmpty) {
+          ApiService.updateFcmToken(storedAuth.token, fcm);
+          print("✅ [Background] تم تحديث FCM Token بنجاح في الخلفية.");
+        } else {
+          print("⚠️ [Background] FCM Token غير متوفر حالياً، سيتم المحاولة لاحقاً.");
+        }
+      }).catchError((error) {
+        print("❌ [Background] خطأ في جلب التوكن: $error");
       });
+
+      // 5. تحديث الواجهة فوراً للدخول إلى الرئيسية
+      // التطبيق الآن سينتقل للرئيسية حتى لو كان تحديث التوكن لا يزال جارياً
+      if (mounted) {
+        setState(() {
+          _auth = storedAuth;
+          _isLoading = false;
+        });
+        print("✅ [AuthGate] تمت التهيئة بنجاح، الدخول للرئيسية. الرصيد: ${BalanceManager.current}");
+      }
 
     } catch (e) {
-      print("AuthGate initialization error: $e");
-      if (mounted) setState(() {
-        _auth = null;
-        _isLoading = false;
-      });
+      print("❌ [AuthGate] خطأ حرج أثناء التهيئة: $e");
+      if (mounted) {
+        setState(() {
+          _auth = null;
+          _isLoading = false;
+        });
+      }
     }
   }
-
   void _recharge() {
     launchUrl(
       Uri.parse("https://wa.me/+9647854076931"),
@@ -3324,42 +3326,45 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
   Future<void> _startInternalCall() async {
     print("📞 [CALL] ========== بدء المكالمة الداخلية ==========");
-    print("📞 [CALL] Order ID: ${_currentDelivery['id']}");
-    print("📞 [CALL] Customer Phone: ${_currentDelivery['end_customer_phone']}");
-
     setState(() => _isLoading = true);
 
     try {
-      final orderId = _currentDelivery['id'].toString();
-      final customerPhone = _currentDelivery['end_customer_phone'] ?? '';
-      final driverName = widget.authResult.displayName ?? 'سائق';
-      final driverPhone = widget.authResult.userId ?? '';
+      // --- التعديل هنا ---
+      // استخدم 'source_order_id' إذا كان موجودًا، وإلا استخدم 'id'
+      final String orderId = _currentDelivery['source_order_id']?.toString() ?? _currentDelivery['id'].toString();
+      // -------------------
 
-      print("📡 [CALL] إرسال طلب المكالمة للسيرفر...");
+      final String driverName = widget.authResult.displayName ?? 'سائق بيتي';
+      final String driverPhone = widget.authResult.userId?.toString() ?? '';
+
+      final String callUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/start'; // تأكد من إزالة المسافة في نهاية الرابط أيضًا
+
+      print("📡 [CALL] جاري الاتصال بالرابط: $callUrl");
+      print("📡 [CALL] باستخدام رقم الطلب: $orderId (من المفروض أن يكون من المطعم)");
 
       final response = await http.post(
-        Uri.parse('${ApiService.baseUrl}/restaurant-app/v1/incoming-call'),
+        Uri.parse(callUrl),
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'application/json',
         },
         body: json.encode({
           'secret_key': 'BEYTEI_SECURE_2025',
-          'order_id': orderId,
+          'order_id': orderId, // <-- الآن يُرسل الرقم الصحيح
           'driver_name': driverName,
           'driver_phone': driverPhone,
-          'customer_phone': customerPhone,
         }),
       );
 
-      print("📡 [CALL] استجابة السيرفر: ${response.statusCode}");
-      print("📡 [CALL] Response Body: ${response.body}");
+      print("📡 [CALL] كود الاستجابة: ${response.statusCode}");
+      print("📡 [CALL] تفاصيل الرد: ${response.body}");
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        print("✅ [CALL] تم إنشاء قناة المكالمة: ${data['channel_name']}");
 
-        if (data['success'] == true) {
-          // الانتقال لشاشة المكالمة
+        if (data['success'] == true || data['success'] == 'true') {
+          print("✅ [CALL] تم إنشاء الغرفة بنجاح: ${data['channel_name']}");
+
           if (mounted) {
             Navigator.push(
               context,
@@ -3367,31 +3372,26 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                 builder: (_) => DriverCallPage(
                   channelName: data['channel_name'],
                   customerName: 'الزبون',
-                  customerPhone: customerPhone,
-                  agoraAppId: data['agora_app_id'],
+                  customerPhone: _currentDelivery['end_customer_phone']?.toString() ?? '',
+                  agoraAppId: data['agora_app_id'] ?? '3924f8eebe7048f8a65cb3bd4a4adcec',
                 ),
               ),
             );
           }
         } else {
-          print("❌ [CALL] فشل بدء المكالمة: ${data['message']}");
-          _showError('فشل بدء المكالمة: ${data['message']}');
+          _showError(data['message'] ?? 'الزبون غير متصل أو لا يملك التطبيق');
         }
       } else {
-        print("❌ [CALL] خطأ من السيرفر: ${response.statusCode}");
-        _showError('خطأ في الاتصال بالسيرفر');
+        _showError('خطأ في السيرفر: ${response.statusCode}');
       }
-    } catch (e, stackTrace) {
-      print("❌ [CALL] استثناء: $e");
-      print("❌ [CALL] Stack Trace: $stackTrace");
-      _showError('خطأ: ${e.toString()}');
+    } catch (e) {
+      print("❌ [CALL] خطأ: $e");
+      _showError('تأكد من اتصالك بالإنترنت');
     } finally {
       if (mounted) setState(() => _isLoading = false);
+      print("📞 [CALL] ========== نهاية محاولة المكالمة ==========\n");
     }
-
-    print("📞 [CALL] ========== نهاية محاولة المكالمة ==========\n");
   }
-
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), backgroundColor: Colors.red),

@@ -15,6 +15,16 @@
         </dict>
     </array>
 
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>whatsapp</string>
+        <string>waze</string>
+        <string>tel</string>
+        <string>https</string>
+        <string>http</string>
+        <string>googlemaps</string>
+    </array>
+
     <key>NSCameraUsageDescription</key>
     <string>This App needs access to your camera to take profile photos, verify identity, and capture trip-related images.</string>
 
@@ -41,7 +51,9 @@
        <string>fetch</string>
        <string>remote-notification</string>
        <string>location</string>
-       <string>audio</string> <string>voip</string>  </array>
+       <string>audio</string>
+       <string>voip</string>
+    </array>
 
     <key>BGTaskSchedulerPermittedIdentifiers</key>
     <array>
@@ -49,7 +61,7 @@
     </array>
 
     <key>FirebaseAppDelegateProxyEnabled</key>
-    <false/>
+    <true/>
 
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
