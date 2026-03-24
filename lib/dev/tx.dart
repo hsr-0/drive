@@ -3909,7 +3909,9 @@ class PointsTab extends StatelessWidget {
     );
   }
 }
-
+// =============================================================================
+// 📞 شاشة المكالمة الخاصة بالسائق (محدثة مع مؤقت ذكي وإجبار الصوت)
+// =============================================================================
 class DriverCallPage extends StatefulWidget {
   final String channelName;
   final String customerName;
@@ -3932,39 +3934,47 @@ class _DriverCallPageState extends State<DriverCallPage> {
   late RtcEngine _engine;
   bool _isJoined = false;
   bool _isMuted = false;
-  bool _isSpeaker = false; // السبيكر مغلق افتراضياً ليكون كالمكالمة العادية
+  bool _isSpeaker = true; // 🟢 جعلنا السبيكر مفتوحاً تلقائياً للسائق
   int? _remoteUid;
+  Timer? _timeoutTimer; // 🟢 مؤقت ذكي لإنهاء المكالمة إذا لم يرد الزبون
 
   @override
   void initState() {
     super.initState();
     _initAgora();
+
+    // 🟢 إنهاء المكالمة تلقائياً بعد 30 ثانية إذا لم يدخل الزبون
+    _timeoutTimer = Timer(const Duration(seconds: 30), () {
+      if (_remoteUid == null) {
+        print("⏳ انتهى الوقت ولم يرد الزبون، جاري إنهاء المكالمة.");
+        _endCall();
+      }
+    });
   }
 
   Future<void> _initAgora() async {
-    // 1. طلب صلاحية المايكروفون
+    // طلب صلاحية المايكروفون
     await [Permission.microphone].request();
 
-    // 2. تهيئة محرك الصوت باستخدام الـ App ID القادم من السيرفر
     _engine = createAgoraRtcEngine();
     await _engine.initialize(RtcEngineContext(
       appId: widget.agoraAppId,
       channelProfile: ChannelProfileType.channelProfileCommunication,
     ));
 
-    // 3. الاستماع لأحداث المكالمة
     _engine.registerEventHandler(
       RtcEngineEventHandler(
         onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
           setState(() => _isJoined = true);
-          // ضبط السماعة بعد الانضمام
           _engine.setEnableSpeakerphone(_isSpeaker);
         },
         onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
+          // 🟢 الزبون دخل! نوقف المؤقت
+          _timeoutTimer?.cancel();
           setState(() => _remoteUid = remoteUid);
         },
         onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
-          // إذا خرج الزبون، ننهي المكالمة للسائق أيضاً
+          // 🟢 الزبون أغلق الخط، ننهي المكالمة عند السائق فوراً
           _endCall();
         },
         onLeaveChannel: (RtcConnection connection, RtcStats stats) {
@@ -3973,13 +3983,21 @@ class _DriverCallPageState extends State<DriverCallPage> {
       ),
     );
 
-    // 4. تمكين الصوت والانضمام للغرفة (باستخدام القناة المشتركة)
     await _engine.enableAudio();
+
+    // 🔥 الحل السحري: إجبار الهاتف على بث المايكروفون واستقبال الصوت
+    const ChannelMediaOptions options = ChannelMediaOptions(
+      clientRoleType: ClientRoleType.clientRoleBroadcaster,
+      publishMicrophoneTrack: true,
+      autoSubscribeAudio: true,
+    );
+
+    // الانضمام للغرفة مع الخيارات الجديدة
     await _engine.joinChannel(
-      token: '', // نتركها فارغة إذا لم تكن تستخدم Security Token في حساب Agora
+      token: '',
       channelId: widget.channelName,
       uid: 0,
-      options: const ChannelMediaOptions(),
+      options: options, // 🟢 تم التمرير هنا
     );
   }
 
@@ -3994,87 +4012,98 @@ class _DriverCallPageState extends State<DriverCallPage> {
   }
 
   void _endCall() async {
-    await _engine.leaveChannel();
-    await _engine.release();
+    _timeoutTimer?.cancel();
+    try {
+      await _engine.leaveChannel();
+      await _engine.release();
+    } catch (e) {
+      print("Error ending call: $e");
+    }
     if (mounted) Navigator.pop(context);
   }
 
   @override
   void dispose() {
+    _timeoutTimer?.cancel();
     _endCall();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.blueGrey.shade900,
-      body: SafeArea(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Spacer(),
-            // صورة المتصل
-            const CircleAvatar(
-              radius: 60,
-              backgroundColor: Colors.white24,
-              child: Icon(Icons.person, size: 60, color: Colors.white),
-            ),
-            const SizedBox(height: 20),
-            // اسم المتصل
-            Text(
-              widget.customerName,
-              style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 5),
-            Text(
-              widget.customerPhone,
-              style: const TextStyle(color: Colors.white54, fontSize: 16),
-            ),
-            const SizedBox(height: 10),
-            // حالة المكالمة
-            Text(
-              _remoteUid != null ? '00:00 (متصل)' : (_isJoined ? 'جاري الاتصال...' : 'تهيئة...'),
-              style: const TextStyle(color: Colors.white70, fontSize: 16),
-            ),
-            const Spacer(),
+    return WillPopScope(
+      onWillPop: () async {
+        _endCall();
+        return false;
+      },
+      child: Scaffold(
+        backgroundColor: Colors.blueGrey.shade900,
+        body: SafeArea(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Spacer(),
+              const CircleAvatar(
+                radius: 60,
+                backgroundColor: Colors.white24,
+                child: Icon(Icons.person, size: 60, color: Colors.white),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                widget.customerName,
+                style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 5),
+              Text(
+                widget.customerPhone,
+                style: const TextStyle(color: Colors.white54, fontSize: 16),
+              ),
+              const SizedBox(height: 10),
 
-            // أزرار التحكم
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 30),
-              decoration: const BoxDecoration(
-                color: Colors.black26,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+              // 🟢 حالة المكالمة المحدثة
+              Text(
+                _remoteUid != null ? 'متصل 00:00' : (_isJoined ? 'يرن عند الزبون...' : 'تهيئة الاتصال...'),
+                style: TextStyle(
+                    color: _remoteUid != null ? Colors.greenAccent : Colors.white70,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold
+                ),
               ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  // المايكروفون
-                  _buildControlButton(
-                    icon: _isMuted ? Icons.mic_off : Icons.mic,
-                    color: _isMuted ? Colors.white : Colors.white24,
-                    iconColor: _isMuted ? Colors.black : Colors.white,
-                    onPressed: _toggleMute,
-                  ),
-                  // إنهاء المكالمة
-                  _buildControlButton(
-                    icon: Icons.call_end,
-                    color: Colors.red,
-                    iconColor: Colors.white,
-                    size: 65,
-                    onPressed: _endCall,
-                  ),
-                  // السبيكر
-                  _buildControlButton(
-                    icon: _isSpeaker ? Icons.volume_up : Icons.volume_down,
-                    color: _isSpeaker ? Colors.white : Colors.white24,
-                    iconColor: _isSpeaker ? Colors.black : Colors.white,
-                    onPressed: _toggleSpeaker,
-                  ),
-                ],
+
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 30),
+                decoration: const BoxDecoration(
+                  color: Colors.black26,
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildControlButton(
+                      icon: _isMuted ? Icons.mic_off : Icons.mic,
+                      color: _isMuted ? Colors.white : Colors.white24,
+                      iconColor: _isMuted ? Colors.black : Colors.white,
+                      onPressed: _toggleMute,
+                    ),
+                    _buildControlButton(
+                      icon: Icons.call_end,
+                      color: Colors.red,
+                      iconColor: Colors.white,
+                      size: 65,
+                      onPressed: _endCall,
+                    ),
+                    _buildControlButton(
+                      icon: _isSpeaker ? Icons.volume_up : Icons.volume_down,
+                      color: _isSpeaker ? Colors.white : Colors.white24,
+                      iconColor: _isSpeaker ? Colors.black : Colors.white,
+                      onPressed: _toggleSpeaker,
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -4098,4 +4127,3 @@ class _DriverCallPageState extends State<DriverCallPage> {
     );
   }
 }
-
