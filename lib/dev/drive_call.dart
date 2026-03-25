@@ -25,10 +25,12 @@ class DriverCallPage extends StatefulWidget {
 class _DriverCallPageState extends State<DriverCallPage> {
   late RtcEngine _engine;
   bool _localUserJoined = false;
+  int? _remoteUid; // 🔴 لتتبع دخول الزبون للغرفة
   bool _muted = false;
   bool _speaker = true;
   int _callDuration = 0;
   Timer? _timer;
+  Timer? _timeoutTimer; // 🔴 مؤقت الإغلاق التلقائي إذا لم يرد الزبون
   bool _isLoading = true;
   bool _hasError = false;
   String _errorMessage = "";
@@ -37,11 +39,22 @@ class _DriverCallPageState extends State<DriverCallPage> {
   void initState() {
     super.initState();
     _initAgora();
-    _startTimer();
+
+    // 🔴 إغلاق المكالمة تلقائياً بعد 30 ثانية إذا لم يرد الزبون
+    _timeoutTimer = Timer(const Duration(seconds: 30), () {
+      if (_remoteUid == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('الزبون لا يرد حالياً')),
+          );
+        }
+        _endCall();
+      }
+    });
   }
 
   Future<void> _initAgora() async {
-    // اهتزاز عند بدء المكالمة (مثل الواتساب)
+    // اهتزاز عند بدء المكالمة
     if (await Vibration.hasVibrator()) {
       Vibration.vibrate(duration: 500);
     }
@@ -49,11 +62,13 @@ class _DriverCallPageState extends State<DriverCallPage> {
     // طلب صلاحية المايكروفون
     final status = await Permission.microphone.request();
     if (status.isDenied || status.isPermanentlyDenied) {
-      setState(() {
-        _hasError = true;
-        _errorMessage = "يرجى منح صلاحية المايكروفون في إعدادات الجهاز";
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _hasError = true;
+          _errorMessage = "يرجى منح صلاحية المايكروفون في إعدادات الجهاز";
+          _isLoading = false;
+        });
+      }
       return;
     }
 
@@ -70,18 +85,22 @@ class _DriverCallPageState extends State<DriverCallPage> {
         onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
           if (mounted) {
             setState(() => _localUserJoined = true);
-            // 🔥 تفعيل السماعة فور الانضمام للقناة (الحل الأهم)
-            _engine.setEnableSpeakerphone(true);
+            _engine.setEnableSpeakerphone(_speaker);
           }
         },
         onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
+          // 🔴 الزبون دخل الغرفة!
           if (mounted && !_hasError) {
+            _timeoutTimer?.cancel(); // إيقاف المؤقت لأن الزبون رد
             setState(() {
+              _remoteUid = remoteUid;
               _isLoading = false;
             });
+            _startTimer(); // بدء عداد المكالمة
           }
         },
         onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
+          // 🔴 الزبون أنهى المكالمة
           if (mounted && _localUserJoined) {
             _showCallEndedDialog("الزبون أنهى المكالمة");
           }
@@ -97,16 +116,21 @@ class _DriverCallPageState extends State<DriverCallPage> {
         },
       ));
 
-      // تفعيل الصوت وتحديد الدور
       await _engine.enableAudio();
-      await _engine.setClientRole(role: ClientRoleType.clientRoleBroadcaster);
 
-      // الانضمام للقناة (استخدم "" بدل null للـ token)
+      // 🔥 الحل السحري لتوصيل الصوت بين الطرفين
+      const ChannelMediaOptions options = ChannelMediaOptions(
+        clientRoleType: ClientRoleType.clientRoleBroadcaster,
+        publishMicrophoneTrack: true,
+        autoSubscribeAudio: true,
+      );
+
+      // الانضمام للقناة
       await _engine.joinChannel(
         token: "",
         channelId: widget.channelName,
         uid: 0,
-        options: const ChannelMediaOptions(),
+        options: options, // 🔴 تمرير الخيارات
       );
 
     } catch (e) {
@@ -121,8 +145,9 @@ class _DriverCallPageState extends State<DriverCallPage> {
   }
 
   void _startTimer() {
+    _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted && _localUserJoined) {
+      if (mounted && _remoteUid != null) {
         setState(() => _callDuration++);
       }
     });
@@ -136,6 +161,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
 
   void _showCallEndedDialog(String message) {
     _timer?.cancel();
+    _timeoutTimer?.cancel();
 
     if (mounted) {
       showDialog(
@@ -163,7 +189,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
             TextButton(
               onPressed: () {
                 Navigator.pop(context); // إغلاق الـ Dialog
-                Navigator.pop(context); // الرجوع للشاشة السابقة
+                _endCall(); // إغلاق الشاشة وتفريغ الموارد
               },
               child: const Text("موافق", style: TextStyle(fontWeight: FontWeight.bold)),
             ),
@@ -185,6 +211,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
 
   void _endCall() async {
     _timer?.cancel();
+    _timeoutTimer?.cancel();
 
     try {
       await _engine.leaveChannel();
@@ -201,6 +228,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
   @override
   void dispose() {
     _timer?.cancel();
+    _timeoutTimer?.cancel();
     try {
       _engine.leaveChannel();
       _engine.release();
@@ -208,6 +236,14 @@ class _DriverCallPageState extends State<DriverCallPage> {
       print("Error in dispose: $e");
     }
     super.dispose();
+  }
+
+  // 💡 دالة لمعرفة حالة الاتصال لعرضها في الواجهة
+  String _getCallStatus() {
+    if (_hasError) return _errorMessage;
+    if (_remoteUid != null) return "متصل الآن 🟢";
+    if (_localUserJoined) return "يرن عند الزبون... 🔔";
+    return "جاري الاتصال بالسيرفر... ⏳";
   }
 
   @override
@@ -298,20 +334,20 @@ class _DriverCallPageState extends State<DriverCallPage> {
                   ),
                   const SizedBox(height: 20),
 
-                  // حالة الاتصال
+                  // حالة الاتصال المحدثة 🔴
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
                     decoration: BoxDecoration(
                       color: _hasError
                           ? Colors.red.withOpacity(0.2)
-                          : (_localUserJoined
+                          : (_remoteUid != null
                           ? Colors.green.withOpacity(0.2)
                           : Colors.blue.withOpacity(0.2)),
                       borderRadius: BorderRadius.circular(25),
                       border: Border.all(
                         color: _hasError
                             ? Colors.red
-                            : (_localUserJoined ? Colors.green : Colors.blue),
+                            : (_remoteUid != null ? Colors.green : Colors.blue),
                         width: 1.5,
                       ),
                     ),
@@ -321,17 +357,15 @@ class _DriverCallPageState extends State<DriverCallPage> {
                         Icon(
                           _hasError
                               ? Icons.error
-                              : (_localUserJoined ? Icons.check_circle : Icons.access_time),
+                              : (_remoteUid != null ? Icons.check_circle : Icons.access_time),
                           color: _hasError
                               ? Colors.red
-                              : (_localUserJoined ? Colors.green : Colors.blue),
+                              : (_remoteUid != null ? Colors.green : Colors.blue),
                           size: 20,
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          _hasError
-                              ? _errorMessage
-                              : (_localUserJoined ? "متصل الآن" : "جاري الاتصال..."),
+                          _getCallStatus(), // 🔴 استخدام دالة النص المخصصة
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 16,
@@ -403,7 +437,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
                           ],
                         ),
 
-                        // زر إنهاء المكالمة (الأحمر الكبير)
+                        // زر إنهاء المكالمة
                         GestureDetector(
                           onTap: _endCall,
                           child: Container(
@@ -467,11 +501,11 @@ class _DriverCallPageState extends State<DriverCallPage> {
                     const SizedBox(height: 20),
 
                     // رسالة إرشادية
-                    if (!_localUserJoined && !_hasError)
+                    if (_remoteUid == null && !_hasError)
                       const Padding(
                         padding: EdgeInsets.symmetric(horizontal: 30),
                         child: Text(
-                          "في انتظار اتصال الزبون...\nتأكد من رفع صوت الجهاز",
+                          "يرن عند الزبون...\nالرجاء الانتظار",
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Colors.white70,
