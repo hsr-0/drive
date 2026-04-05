@@ -1129,7 +1129,7 @@ class Order {
       destinationAddress: json['destination_address'] ?? '',
       destinationLat: json['destination_lat'],
       destinationLng: json['destination_lng'],
-      deliveryFee: json['delivery_fee'] ?? 0,
+      deliveryFee: (json['delivery_fee'] as num?)?.toInt() ?? 0,
       dateCreated: json['date_created'] ?? '',
       itemsDescription: json['items_description'] ?? '',
       notes: json['notes'],
@@ -2915,6 +2915,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     }
   }
 }// =============================================================================
+
 class DriverCurrentDeliveryScreen extends StatefulWidget {
   final Map<String, dynamic> initialDelivery;
   final AuthResult authResult;
@@ -2961,9 +2962,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   // ========================================================================
-  // 🔥 عرض تفاصيل الطلب (نفس تصميم التيم ليدر)
-  // ========================================================================
-// ========================================================================
   // 🔥 عرض تفاصيل الطلب (التصميم الجديد المطابق للصور)
   // ========================================================================
 
@@ -3360,18 +3358,26 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     setState(() => _isLoading = true);
 
     try {
-      // --- التعديل هنا ---
-      // استخدم 'source_order_id' إذا كان موجودًا، وإلا استخدم 'id'
+      // 1. جلب رقم الطلب الأصلي
       final String orderId = _currentDelivery['source_order_id']?.toString() ?? _currentDelivery['id'].toString();
-      // -------------------
 
       final String driverName = widget.authResult.displayName ?? 'سائق بيتي';
       final String driverPhone = widget.authResult.userId?.toString() ?? '';
 
-      final String callUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/start'; // تأكد من إزالة المسافة في نهاية الرابط أيضًا
+      // 🔥 التوجيه الديناميكي بناءً على نوع الطلب
+      final String sourceType = _currentDelivery['source_type']?.toString() ?? 'restaurant';
 
+      // الافتراضي هو سيرفر المطعم
+      String callUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/start';
+
+      // إذا كان الطلب من المسواك، نوجه الاتصال لسيرفر المسواك
+      if (sourceType == 'market' || sourceType == 'store' || sourceType == 'pharmacy') {
+        callUrl = 'https://beytei.com/wp-json/beytei-calls/v1/start';
+      }
+
+      print("📡 [CALL] نوع الطلب: $sourceType");
       print("📡 [CALL] جاري الاتصال بالرابط: $callUrl");
-      print("📡 [CALL] باستخدام رقم الطلب: $orderId (من المفروض أن يكون من المطعم)");
+      print("📡 [CALL] باستخدام رقم الطلب: $orderId");
 
       final response = await http.post(
         Uri.parse(callUrl),
@@ -3381,7 +3387,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         },
         body: json.encode({
           'secret_key': 'BEYTEI_SECURE_2025',
-          'order_id': orderId, // <-- الآن يُرسل الرقم الصحيح
+          'order_id': orderId,
           'driver_name': driverName,
           'driver_phone': driverPhone,
         }),
@@ -3405,6 +3411,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   customerName: 'الزبون',
                   customerPhone: _currentDelivery['end_customer_phone']?.toString() ?? '',
                   agoraAppId: data['agora_app_id'] ?? '3924f8eebe7048f8a65cb3bd4a4adcec',
+                  orderId: orderId,         // 👈 التعديل هنا: تمرير orderId
+                  sourceType: sourceType,   // 👈 التعديل هنا: تمرير sourceType
                 ),
               ),
             );
@@ -3423,6 +3431,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       print("📞 [CALL] ========== نهاية محاولة المكالمة ==========\n");
     }
   }
+
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), backgroundColor: Colors.red),
@@ -3738,7 +3747,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 }
 
-
 // =============================================================================
 // HISTORY & POINTS
 // =============================================================================
@@ -3917,6 +3925,8 @@ class DriverCallPage extends StatefulWidget {
   final String customerName;
   final String customerPhone;
   final String agoraAppId;
+  final String orderId;    // 👈 جديد: لمعرفة رقم الطلب المراد إلغاء مكالمته
+  final String sourceType; // 👈 جديد: لمعرفة السيرفر (مطعم أم مسواك)
 
   const DriverCallPage({
     super.key,
@@ -3924,6 +3934,8 @@ class DriverCallPage extends StatefulWidget {
     required this.customerName,
     required this.customerPhone,
     required this.agoraAppId,
+    required this.orderId,    // 👈 جديد
+    required this.sourceType, // 👈 جديد
   });
 
   @override
@@ -4112,6 +4124,28 @@ class _DriverCallPageState extends State<DriverCallPage> {
     _engine.setEnableSpeakerphone(_speaker);
   }
 
+  // 🔥 الدالة الجديدة لإخبار السيرفر بإنهاء المكالمة وإسقاط الرنين
+  Future<void> _sendCancelSignalToServer() async {
+    try {
+      String cancelUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/cancel';
+      if (widget.sourceType == 'market' || widget.sourceType == 'store' || widget.sourceType == 'pharmacy') {
+        cancelUrl = 'https://beytei.com/wp-json/beytei-calls/v1/cancel';
+      }
+
+      await http.post(
+        Uri.parse(cancelUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'secret_key': 'BEYTEI_SECURE_2025',
+          'order_id': widget.orderId,
+          'channel_name': widget.channelName,
+        }),
+      );
+    } catch (e) {
+      print("Error cancelling call: $e");
+    }
+  }
+
   void _endCall() async {
     _durationTimer?.cancel();
     _timeoutTimer?.cancel();
@@ -4122,6 +4156,9 @@ class _DriverCallPageState extends State<DriverCallPage> {
     } catch (e) {
       print("Error releasing Agora engine: $e");
     }
+
+    // 🔥 إرسال إشارة إلغاء المكالمة لهاتف الزبون
+    _sendCancelSignalToServer();
 
     if (mounted) {
       Navigator.pop(context);

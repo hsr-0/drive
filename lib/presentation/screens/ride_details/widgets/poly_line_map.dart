@@ -1,6 +1,11 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
+
+// استيراد مكتبات الخرائط المجانية بدلاً من Mapbox
+import 'package:maplibre_gl/maplibre_gl.dart' as ml;
+import 'package:apple_maps_flutter/apple_maps_flutter.dart' as ap;
+
 import 'package:ovoride_driver/data/controller/map/ride_map_controller.dart';
 import '../../../../../environment.dart';
 
@@ -16,8 +21,7 @@ class _PolyLineMapScreenState extends State<PolyLineMapScreen> {
   @override
   void initState() {
     super.initState();
-    // ✅ ضبط التوكن عالمياً باستخدام المسمى الموجود في ملف environment.dart
-    MapboxOptions.setAccessToken(Environment.mapKey);
+    // 🗑️ تم إزالة MapboxOptions.setAccessToken لأننا نستخدم خرائط مجانية بالكامل
   }
 
   @override
@@ -27,28 +31,55 @@ class _PolyLineMapScreenState extends State<PolyLineMapScreen> {
         builder: (controller) {
 
           // سجل تتبع للإحداثيات
-          print("📍 [MAPBOX] بناء الخريطة في: Lat ${controller.pickupPos.lat}, Lng ${controller.pickupPos.lng}");
+          print("📍 [MAP] بناء الخريطة في: Lat ${controller.pickupLat}, Lng ${controller.pickupLng}");
 
-          return MapWidget(
-            key: const ValueKey("mapbox_driver_map"),
-            styleUri: MapboxStyles.MAPBOX_STREETS,
-            cameraOptions: CameraOptions(
-              center: Point(
-                coordinates: Position(
-                  controller.pickupPos.lng, // Longitude أولاً
-                  controller.pickupPos.lat,
+          // إذا كان النظام iOS (آيفون) -> استخدم Apple Maps
+          if (Platform.isIOS) {
+            return ap.AppleMap(
+              key: const ValueKey("apple_driver_map"),
+              initialCameraPosition: ap.CameraPosition(
+                target: ap.LatLng(
+                  controller.pickupLat,
+                  controller.pickupLng,
                 ),
+                zoom: Environment.mapDefaultZoom.toDouble(),
               ),
-              zoom: Environment.mapDefaultZoom,
-            ),
-            onMapCreated: (mapboxMap) {
-              print("✅ [MAPBOX] الخريطة تم إنشاؤها بنجاح");
-              controller.onMapCreated(mapboxMap);
-            },
-            onStyleLoadedListener: (styleLoadedEvent) {
-              print("🎨 [MAPBOX] الستايل تم تحميله - الخريطة مرئية الآن");
-            },
-          );
+              onMapCreated: (appleMapController) {
+                print("✅ [APPLE MAPS] الخريطة تم إنشاؤها بنجاح");
+                controller.onAppleMapCreated(appleMapController);
+              },
+              // هذه المتغيرات ضرورية في الآيفون لرسم الدبابيس والمسار
+              annotations: controller.appleMarkers,
+              polylines: controller.applePolylines,
+              myLocationEnabled: true,
+              compassEnabled: false,
+            );
+          }
+
+          // إذا كان النظام Android -> استخدم MapLibre / OpenStreetMap
+          else {
+            return ml.MapLibreMap(
+              key: const ValueKey("maplibre_driver_map"),
+              styleString: 'https://tiles.openfreemap.org/styles/liberty', // ستايل مجاني مفتوح المصدر
+              initialCameraPosition: ml.CameraPosition(
+                target: ml.LatLng(
+                  controller.pickupLat,
+                  controller.pickupLng,
+                ),
+                zoom: Environment.mapDefaultZoom.toDouble(),
+              ),
+              onMapCreated: (mapLibreController) {
+                print("✅ [MAPLIBRE] الخريطة تم إنشاؤها بنجاح");
+                controller.onMapLibreCreated(mapLibreController);
+              },
+              onStyleLoadedCallback: () {
+                print("🎨 [MAPLIBRE] الستايل تم تحميله - الخريطة مرئية الآن");
+              },
+              myLocationEnabled: true,
+              compassEnabled: false,
+            );
+          }
+
         },
       ),
     );
