@@ -1755,8 +1755,7 @@ class _DriverChatPageState extends State<DriverChatPage> {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(0.0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
       }
-
-      // 🔥 إرسال الإشعار للزبون عبر سيرفر بيتي (سنقوم ببرمجة هذا الـ API في الخطوة القادمة)
+// 🔥 إرسال الإشعار للزبون عبر سيرفر بيتي
       if (widget.customerFcmToken != null && widget.customerFcmToken!.isNotEmpty) {
         String notifyUrl = 'https://re.beytei.com/wp-json/beytei-chat/v1/notify';
 
@@ -1768,6 +1767,7 @@ class _DriverChatPageState extends State<DriverChatPage> {
             'sender_name': widget.driverName,
             'message': text,
             'order_id': widget.orderId,
+            'type': 'chat_message', // 👈 أضف هذا السطر هنا أيضاً
           }),
         ).then((_) => print("✅ تم إرسال طلب إشعار الدردشة للسيرفر"));
       }
