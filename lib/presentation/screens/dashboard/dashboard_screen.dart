@@ -1,7 +1,9 @@
-import 'dart:io'; // تمت الإضافة لمعرفة نوع الجهاز (آيفون أو أندرويد)
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:ovoride_driver/core/route/route.dart'; // تمت الإضافة للانتقال لمنصة بيتي
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:geolocator/geolocator.dart'; // تأكد من وجود هذه المكتبة في pubspec.yaml
+import 'package:ovoride_driver/core/route/route.dart';
 import 'package:ovoride_driver/core/utils/dimensions.dart';
 import 'package:ovoride_driver/core/utils/my_icons.dart';
 import 'package:ovoride_driver/core/utils/my_strings.dart';
@@ -44,6 +46,7 @@ class _DashBoardScreenState extends State<DashBoardScreen> {
     );
     Get.put(RideActionController(repo: Get.find()));
     Get.put(AllRideController(repo: Get.find()));
+
     _widgets = <Widget>[
       HomeScreen(),
       RideActivityScreen(
@@ -53,10 +56,76 @@ class _DashBoardScreenState extends State<DashBoardScreen> {
       ),
       const ProfileAndSettingsScreen(),
     ];
+
     super.initState();
+
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
       globalPusherController.ensureConnection();
+      // تشغيل فحص الإفصاح البارز
+      _checkLocationDisclosure();
     });
+  }
+
+  Future<void> _checkLocationDisclosure() async {
+    final prefs = await SharedPreferences.getInstance();
+    bool hasAccepted = prefs.getBool('location_accepted') ?? false;
+
+    if (!hasAccepted) {
+      _showLocationDialog(prefs);
+    }
+  }
+
+  void _showLocationDialog(SharedPreferences prefs) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+          title: const Row(
+            children: [
+              Icon(Icons.location_on, color: Colors.blue),
+              SizedBox(width: 10),
+              Text("Location Permission"),
+            ],
+          ),
+          content: const Text(
+            "Beytei Services collects location data to enable 'Real-time Trip Tracking' and 'Driver Availability' features, even when the app is closed or not in use. "
+                "This data is used to allow customers to track their rides and to calculate trip distances accurately.\n\n"
+                "To continue working as a driver, please select 'Allow all the time' in the next step.",
+            style: TextStyle(fontSize: 14, color: Colors.black87),
+          ),
+          actions: [
+            TextButton(
+              child: const Text("Exit", style: TextStyle(color: Colors.red)),
+              onPressed: () => exit(0),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: MyColor.primaryColor,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text("Accept & Continue", style: TextStyle(color: Colors.white)),
+              onPressed: () async {
+                await prefs.setBool('location_accepted', true);
+                Navigator.of(context).pop();
+
+                // --- طلب الإذن مباشرة من النظام لحل مشكلة الخطأ ---
+                LocationPermission permission = await Geolocator.checkPermission();
+                if (permission == LocationPermission.denied) {
+                  permission = await Geolocator.requestPermission();
+                }
+
+                if (permission == LocationPermission.always || permission == LocationPermission.whileInUse) {
+                  // إذا تم القبول، نقوم بتحديث البيانات في الكنترولر (اختياري حسب السكربت)
+                  Get.find<DashBoardController>().update();
+                }
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void changeScreen(int val) {
@@ -74,21 +143,15 @@ class _DashBoardScreenState extends State<DashBoardScreen> {
         child: GetBuilder<DashBoardController>(
           builder: (controller) => Scaffold(
             extendBody: true,
-
-            // 🔥🔥🔥 التعديل الجوهري هنا 🔥🔥🔥
             body: Stack(
               children: [
-                // 1. الشاشات الثلاث الخاصة بالتطبيق
                 IndexedStack(index: selectedIndex, children: _widgets),
-
-                // 2. زر الرجوع الأنيق (يظهر للآيفون فقط + في الشاشة الرئيسية فقط)
                 if (Platform.isIOS && selectedIndex == 0)
                   Positioned(
-                    top: 60, // المسافة من الأعلى لتجاوز النوتش
-                    left: 20, // مكان الزر في الجهة اليسرى كما في صورتك (إذا أردته يميناً اجعلها right: 20)
+                    top: 60,
+                    left: 20,
                     child: GestureDetector(
                       onTap: () {
-                        // العودة إلى شاشة اختيار الخدمات الرئيسية لمنصة بيتي
                         Get.offAllNamed(RouteHelper.sectionsScreen);
                       },
                       child: Container(
@@ -106,9 +169,8 @@ class _DashBoardScreenState extends State<DashBoardScreen> {
                             )
                           ],
                         ),
-                        // يمكنك تغيير الأيقونة هنا، استخدمت أيقونة القائمة لتشبه صورتك
                         child: const Icon(
-                          Icons.arrow_back_ios, // أيقونة تشبه الخطوط غير المتساوية التي في صورتك
+                          Icons.arrow_back_ios,
                           color: Colors.black87,
                           size: 24,
                         ),
@@ -117,8 +179,6 @@ class _DashBoardScreenState extends State<DashBoardScreen> {
                   ),
               ],
             ),
-            // 🔥🔥🔥 نهاية التعديل 🔥🔥🔥
-
             bottomNavigationBar: FloatingNavbar(
               inLine: true,
               fontSize: Dimensions.fontMedium,

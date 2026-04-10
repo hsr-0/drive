@@ -24,13 +24,14 @@ class LoginController extends GetxController {
   String? password;
 
   List<String> errors = [];
-  bool remember = false;
+  bool remember = true; // تم تعديل القيمة الافتراضية إلى true كإجراء إضافي للتأكيد
 
   void forgetPassword() {
     Get.toNamed(RouteHelper.forgotPasswordScreen);
   }
 
   bool isSubmitLoading = false;
+
   void loginUser() async {
     isSubmitLoading = true;
     update();
@@ -48,15 +49,17 @@ class LoginController extends GetxController {
         String accessToken = loginModel.data?.accessToken ?? "";
         String tokenType = loginModel.data?.tokenType ?? "";
         GlobalDriverInfoModel? user = loginModel.data?.user;
+
+        // التعديل الرئيسي: تمرير true بشكل ثابت دائماً لتفعيل ميزة التذكر
         await RouteHelper.checkUserStatusAndGoToNextStep(
           user,
           accessToken: accessToken,
           tokenType: tokenType,
-          isRemember: remember,
+          isRemember: true,
         );
-        if (remember) {
-          changeRememberMe();
-        }
+
+        // تم إزالة الكود الذي كان يغير حالة remember بعد تسجيل الدخول لأنه لم يعد ضرورياً
+
       } else {
         CustomSnackBar.error(
           errorList: loginModel.message ?? [MyStrings.loginFailedTryAgain],

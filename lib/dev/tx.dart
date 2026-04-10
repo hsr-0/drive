@@ -9,7 +9,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:permission_handler/permission_handler.dart';
-
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -1688,6 +1688,295 @@ class _AuthGateState extends State<AuthGate> {
     );
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+// =============================================================================
+// 💬 شاشة الدردشة الفورية المُحسنة (نظام المستند الواحد - لتوفير استهلاك Firebase)
+// =============================================================================
+class DriverChatPage extends StatefulWidget {
+  final String orderId;
+  final String customerName;
+  final String driverId;
+  final String driverName;
+  final String? customerFcmToken; // توكن الزبون لإرسال الإشعار
+
+  const DriverChatPage({
+    super.key,
+    required this.orderId,
+    required this.customerName,
+    required this.driverId,
+    required this.driverName,
+    this.customerFcmToken,
+  });
+
+  @override
+  State<DriverChatPage> createState() => _DriverChatPageState();
+}
+
+class _DriverChatPageState extends State<DriverChatPage> {
+  final TextEditingController _msgController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  bool _isSending = false;
+
+  Future<void> _sendMessage() async {
+    final text = _msgController.text.trim();
+    if (text.isEmpty) return;
+
+    setState(() => _isSending = true);
+
+    final chatDoc = FirebaseFirestore.instance.collection('OrdersChat').doc(widget.orderId);
+    final messageData = {
+      'text': text,
+      'senderId': widget.driverId,
+      'senderName': widget.driverName,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+
+    try {
+      // تحديث المستند بإضافة الرسالة للمصفوفة (يحسب كعملية كتابة واحدة فقط)
+      await chatDoc.set({
+        'messages': FieldValue.arrayUnion([messageData])
+      }, SetOptions(merge: true));
+
+      _msgController.clear();
+
+      // النزول لأسفل القائمة بسلاسة
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(0.0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+      }
+
+      // 🔥 إرسال الإشعار للزبون عبر سيرفر بيتي (سنقوم ببرمجة هذا الـ API في الخطوة القادمة)
+      if (widget.customerFcmToken != null && widget.customerFcmToken!.isNotEmpty) {
+        String notifyUrl = 'https://re.beytei.com/wp-json/beytei-chat/v1/notify';
+
+        http.post(
+          Uri.parse(notifyUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: json.encode({
+            'fcm_token': widget.customerFcmToken,
+            'sender_name': widget.driverName,
+            'message': text,
+            'order_id': widget.orderId,
+          }),
+        ).then((_) => print("✅ تم إرسال طلب إشعار الدردشة للسيرفر"));
+      }
+
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('فشل الإرسال: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+    }
+  }
+
+  String _formatTime(int? epoch) {
+    if (epoch == null) return '';
+    final date = DateTime.fromMillisecondsSinceEpoch(epoch);
+    return DateFormat('hh:mm a').format(date);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FA), // لون خلفية عصري ومريح
+      appBar: AppBar(
+        title: Row(
+          children: [
+            Stack(
+              children: [
+                const CircleAvatar(
+                  backgroundColor: Colors.white24,
+                  child: Icon(Icons.person, color: Colors.white),
+                ),
+                Positioned(
+                  bottom: 0,
+                  right: 0,
+                  child: Container(
+                    width: 12, height: 12,
+                    decoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle, border: Border.all(color: Colors.indigo, width: 2)),
+                  ),
+                )
+              ],
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(widget.customerName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  Text("طلب #${widget.orderId}", style: const TextStyle(fontSize: 12, color: Colors.white70)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: Colors.indigo,
+        elevation: 0,
+        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(bottom: Radius.circular(20))),
+      ),
+      body: Column(
+        children: [
+          // 📜 منطقة عرض الرسائل
+          Expanded(
+            child: StreamBuilder<DocumentSnapshot>(
+              stream: FirebaseFirestore.instance.collection('OrdersChat').doc(widget.orderId).snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                if (!snapshot.hasData || !snapshot.data!.exists) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.chat_bubble_outline, size: 80, color: Colors.grey.shade300),
+                        const SizedBox(height: 15),
+                        Text('ابدأ الدردشة مع الزبون الآن', style: TextStyle(color: Colors.grey.shade500, fontSize: 16)),
+                      ],
+                    ),
+                  );
+                }
+
+                final data = snapshot.data!.data() as Map<String, dynamic>;
+                List<dynamic> messages = data['messages'] ?? [];
+
+                // ترتيب الرسائل من الأحدث للأقدم
+                messages.sort((a, b) => (b['timestamp'] as int).compareTo(a['timestamp'] as int));
+
+                return ListView.builder(
+                  reverse: true,
+                  controller: _scrollController,
+                  padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 20),
+                  itemCount: messages.length,
+                  itemBuilder: (context, index) {
+                    final msg = messages[index] as Map<String, dynamic>;
+                    final isMe = msg['senderId'] == widget.driverId;
+                    return _buildMessageBubble(msg, isMe);
+                  },
+                );
+              },
+            ),
+          ),
+
+          // ⌨️ منطقة إدخال النص العصرية
+          Container(
+            padding: const EdgeInsets.only(left: 10, right: 10, bottom: 20, top: 10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, -5))],
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+            ),
+            child: SafeArea(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _msgController,
+                      decoration: InputDecoration(
+                        hintText: 'اكتب رسالة...',
+                        hintStyle: TextStyle(color: Colors.grey.shade400),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(30), borderSide: BorderSide.none),
+                        filled: true,
+                        fillColor: Colors.grey.shade100,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                      ),
+                      maxLines: null,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _sendMessage(),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  GestureDetector(
+                    onTap: _isSending ? null : _sendMessage,
+                    child: Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(colors: [Colors.indigo, Colors.indigoAccent]),
+                        shape: BoxShape.circle,
+                        boxShadow: [BoxShadow(color: Colors.indigo.withOpacity(0.3), blurRadius: 8, offset: const Offset(0, 4))],
+                      ),
+                      child: _isSending
+                          ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                          : const Icon(Icons.send_rounded, color: Colors.white, size: 24),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 💬 تصميم فقاعة الرسالة
+  Widget _buildMessageBubble(Map<String, dynamic> msg, bool isMe) {
+    return Align(
+      alignment: isMe ? Alignment.centerLeft : Alignment.centerRight,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+        decoration: BoxDecoration(
+          gradient: isMe
+              ? const LinearGradient(colors: [Colors.indigo, Color(0xFF5C6BC0)])
+              : const LinearGradient(colors: [Colors.white, Colors.white]),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(20),
+            topRight: const Radius.circular(20),
+            bottomLeft: Radius.circular(isMe ? 0 : 20),
+            bottomRight: Radius.circular(isMe ? 20 : 0),
+          ),
+          boxShadow: [
+            BoxShadow(
+                color: isMe ? Colors.indigo.withOpacity(0.2) : Colors.black.withOpacity(0.05),
+                blurRadius: 8,
+                offset: const Offset(0, 3)
+            )
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: isMe ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+          children: [
+            Text(
+              msg['text'] ?? '',
+              style: TextStyle(color: isMe ? Colors.white : Colors.black87, fontSize: 16, height: 1.3),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _formatTime(msg['timestamp'] as int?),
+              style: TextStyle(color: isMe ? Colors.white70 : Colors.grey.shade500, fontSize: 11),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
 // =============================================================================
 // شاشة إيقاف الحساب عند 0 نقاط (محسّنة وصحيحة)
 // =============================================================================
@@ -3648,40 +3937,76 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
             const SizedBox(height: 20),
 
             // 📞 أزرار الاتصال
+            // 📞 و 💬 أزرار التواصل (دردشة + اتصال مجاني + اتصال عادي)
             Row(
               children: [
+                // 1. زر الدردشة الفورية (الجديد والمعدل) 🔥🔥🔥
                 Expanded(
+                  flex: 2,
                   child: ElevatedButton.icon(
-                    onPressed: _callCustomer,
-                    icon: const Icon(Icons.phone, size: 20),
-                    label: const Text("اتصال عادي",
-                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                    onPressed: () {
+                      // 🔥 الحل هنا: استخراج رقم طلب المطعم (source_order_id) ليتطابق مع ما يملكه الزبون
+                      final String realOrderId = _currentDelivery['source_order_id']?.toString() ?? _currentDelivery['id'].toString();
+
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => DriverChatPage(
+                            orderId: realOrderId, // 🔥 تمرير رقم الطلب الصحيح هنا
+                            customerName: _currentDelivery['customer_name'] ?? 'الزبون',
+                            driverId: widget.authResult.userId,
+                            driverName: widget.authResult.displayName ?? 'سائق بيتي',
+                            customerFcmToken: _currentDelivery['end_customer_fcm'] ?? _currentDelivery['customer_fcm_token'],
+                          ),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.chat_bubble_rounded, size: 20),
+                    label: const Text("محادثة", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      foregroundColor: Colors.green,
+                      backgroundColor: Colors.indigo,
+                      foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      side: const BorderSide(color: Colors.green, width: 2),
-                      elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      elevation: 2,
                     ),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 8),
+
+                // 2. زر الاتصال المجاني الداخلي
                 Expanded(
+                  flex: 2,
                   child: ElevatedButton.icon(
                     onPressed: _startInternalCall,
                     icon: const Icon(Icons.headset_mic, size: 20),
-                    label: const Text("اتصال مجاني",
-                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                    label: const Text("مجاني", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.lightBlue,
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       elevation: 2,
                     ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+
+                // 3. زر الاتصال العادي (مربع صغير كأيقونة لتوفير المساحة)
+                SizedBox(
+                  width: 55,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: _callCustomer,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.green,
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      side: const BorderSide(color: Colors.green, width: 2),
+                      elevation: 0,
+                    ),
+                    child: const Icon(Icons.phone),
                   ),
                 ),
               ],
@@ -3746,7 +4071,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     );
   }
 }
-
 // =============================================================================
 // HISTORY & POINTS
 // =============================================================================
@@ -3827,6 +4151,12 @@ class HistoryTabV3 extends StatelessWidget {
               // تحويل هيكل البيانات ليتناسب مع Active Order
               final activeMap = {
                 'id': o['id'],
+
+                // 🔥 التعديل هنا: تمرير رقم طلب المطعم لتعمل الدردشة والمكالمة برقم صحيح
+                'source_order_id': o['source_order_id'] ?? o['id'],
+                // 🔥 التعديل هنا: تمرير توكن الزبون لتعمل الإشعارات
+                'end_customer_fcm': o['end_customer_fcm'] ?? o['customer_fcm_token'],
+
                 'order_status': o['status'],
                 'delivery_fee': o['delivery_fee'],
                 'pickup_location_name': o['pickup_location'],
