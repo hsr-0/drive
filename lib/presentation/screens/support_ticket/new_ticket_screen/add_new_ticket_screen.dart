@@ -195,7 +195,7 @@ class _AddNewTicketScreenState extends State<AddNewTicketScreen> {
                               ),
                             ),
                             TextSpan(
-                              text: " .jpg, .jpeg, .png, .pdf, .doc, .docx",
+                              text: " .jpg, .jpeg, car_top.png, .pdf, .doc, .docx",
                               style: regularDefault.copyWith(
                                 color: MyColor.highPriorityPurpleColor,
                               ),

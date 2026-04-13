@@ -1,7 +1,7 @@
 class Environment {
   // ATTENTION Please update your desired data.
   static const String appName = 'OvoRide Driver';
-  static const String version = '1.1.3';
+  static const String version = '1.1.5';
 
   static const int bidAcceptSecond = 30; //Bid ACCEPT second
   static const int driverLocationUpdateAfterNmetersOrMovements = 50; //Driver location update after n meters or movements

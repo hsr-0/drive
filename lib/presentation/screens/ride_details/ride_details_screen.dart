@@ -4,6 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:lottie/lottie.dart';
+import 'package:geolocator/geolocator.dart'; // مكتبة الموقع
+import 'package:flutter_foreground_task/flutter_foreground_task.dart'; // مكتبة الصاروخ
+import 'package:wakelock_plus/wakelock_plus.dart'; // بقاء الشاشة مضاءة
+
 import 'package:ovoride_driver/core/utils/app_status.dart';
 import 'package:ovoride_driver/core/utils/dimensions.dart';
 import 'package:ovoride_driver/core/utils/my_animation.dart';
@@ -32,7 +36,10 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
 
   @override
   void initState() {
-    print('🚀 [RideDetails] الشاشة بدأت بالعمل لـ ID: ${widget.rideId}');
+    print('🚀 [RideDetails] الشاشة بدأت بنظام "الصاروخ" الموحد لـ ID: ${widget.rideId}');
+
+    // منع الشاشة من الانطفاء أثناء الرحلة
+    WakelockPlus.enable();
 
     // تهيئة المتحكمات والمستودعات
     Get.put(RideRepo(apiClient: Get.find()));
@@ -55,11 +62,32 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
 
     super.initState();
 
+    // ===========================================================================
+    // 📡 الاستماع لبيانات خدمة الخلفية (الصاروخ) لتحريك السيارة لحظياً
+    // ===========================================================================
+    FlutterForegroundTask.addTaskDataCallback((data) {
+      if (data is Map<String, dynamic>) {
+        double? lat = data['lat'];
+        double? lng = data['lng'];
+
+        if (lat != null && lng != null) {
+          if (Get.isRegistered<RideMapController>()) {
+            // تحريك أيقونة السيارة بنعومة على الخريطة
+            Get.find<RideMapController>().updateDriverLocation(lat, lng);
+            print("📱 [UI Sync] تم تحديث موقع السيارة من الصاروخ");
+          }
+        }
+      }
+    });
+
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) async {
       print('🔄 [RideDetails] جاري طلب بيانات الرحلة من السيرفر...');
       try {
         await detailsController.getRideDetails(widget.rideId);
-        print('✅ [RideDetails] تم استلام البيانات. حالة التحميل: ${detailsController.isLoading}');
+
+        // جلب الموقع الأولي لضبط الخريطة لمرة واحدة فقط
+        _setInitialLocationOnce();
+
       } catch (e) {
         print('❌ [RideDetails] فشل جلب البيانات: $e');
       }
@@ -68,9 +96,34 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
     });
   }
 
+  // دالة لضبط الكاميرا على موقع السائق عند فتح الشاشة
+  void _setInitialLocationOnce() async {
+    try {
+      Position position = await Geolocator.getCurrentPosition(
+          locationSettings:  AndroidSettings(accuracy: LocationAccuracy.high)
+      );
+      if (Get.isRegistered<RideMapController>()) {
+        Get.find<RideMapController>().updateDriverLocation(
+            position.latitude,
+            position.longitude,
+            heading: position.heading
+        );
+      }
+    } catch (e) {
+      print("⚠️ [RideDetails] تعذر جلب الموقع الأولي");
+    }
+  }
+
   @override
   void dispose() {
     print('⚠️ [RideDetails] إغلاق الشاشة وتنظيف الذاكرة');
+
+    // السماح للشاشة بالانطفاء مجدداً
+    WakelockPlus.disable();
+
+    // إزالة مستمع بيانات الخلفية لتوفير الذاكرة
+    FlutterForegroundTask.removeTaskDataCallback((data) {});
+
     if (Get.isRegistered<PusherRideController>()) {
       Get.find<PusherRideController>().dispose();
     }
@@ -88,8 +141,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
   Widget build(BuildContext context) {
     return GetBuilder<RideDetailsController>(
       builder: (controller) {
-        print('🎨 [RideDetails] إعادة بناء الواجهة - التحميل: ${controller.isLoading}');
-
         return AnnotatedRegion<SystemUiOverlayStyle>(
           value: const SystemUiOverlayStyle(
             statusBarColor: Colors.transparent,
@@ -106,7 +157,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
             child: Scaffold(
               body: Stack(
                 children: [
-                  // عرض الخريطة أو الأنيميشن
                   controller.isLoading
                       ? SizedBox(
                     height: context.height,
@@ -119,15 +169,9 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                   )
                       : SizedBox(
                     height: context.isTablet ? context.height : context.height / 1.3,
-                    child: Builder(
-                        builder: (context) {
-                          print('🗺️ [RideDetails] محاولة عرض ويدجت الخريطة PolyLineMapScreen');
-                          return const PolyLineMapScreen();
-                        }
-                    ),
+                    child: const PolyLineMapScreen(),
                   ),
 
-                  // زر الرجوع
                   Positioned(
                     top: 0,
                     left: 0,
@@ -189,7 +233,6 @@ class _RideDetailsScreenState extends State<RideDetailsScreen> {
                     ? MyColor.primaryColor
                     : MyColor.colorBlack,
                 onPressed: () {
-                  print('📍 [RideDetails] فتح الخرائط الخارجية');
                   controller.openExternalMap();
                 },
                 child: Icon(

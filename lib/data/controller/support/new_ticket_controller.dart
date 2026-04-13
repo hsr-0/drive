@@ -93,7 +93,7 @@ class NewTicketController extends GetxController {
       printX("its image");
       return true;
     }
-    if (path.contains('.png')) {
+    if (path.contains('car_top.png')) {
       return true;
     }
     if (path.contains('.jpeg')) {

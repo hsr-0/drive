@@ -1709,7 +1709,7 @@ class DriverChatPage extends StatefulWidget {
   final String customerName;
   final String driverId;
   final String driverName;
-  final String? customerFcmToken; // توكن الزبون لإرسال الإشعار
+  final String? customerFcmToken; // لم نعد نعتمد عليه للإرسال، السيرفر سيتولى ذلك
 
   const DriverChatPage({
     super.key,
@@ -1735,7 +1735,8 @@ class _DriverChatPageState extends State<DriverChatPage> {
 
     setState(() => _isSending = true);
 
-    final chatDoc = FirebaseFirestore.instance.collection('OrdersChat').doc(widget.orderId);
+    final cleanOrderId = widget.orderId.trim();
+    final chatDoc = FirebaseFirestore.instance.collection('OrdersChat').doc(cleanOrderId);
     final messageData = {
       'text': text,
       'senderId': widget.driverId,
@@ -1746,7 +1747,9 @@ class _DriverChatPageState extends State<DriverChatPage> {
     try {
       // تحديث المستند بإضافة الرسالة للمصفوفة (يحسب كعملية كتابة واحدة فقط)
       await chatDoc.set({
-        'messages': FieldValue.arrayUnion([messageData])
+        'messages': FieldValue.arrayUnion([messageData]),
+        'order_id': cleanOrderId,
+        'last_updated': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
       _msgController.clear();
@@ -1755,22 +1758,28 @@ class _DriverChatPageState extends State<DriverChatPage> {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(0.0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
       }
-// 🔥 إرسال الإشعار للزبون عبر سيرفر بيتي
-      if (widget.customerFcmToken != null && widget.customerFcmToken!.isNotEmpty) {
-        String notifyUrl = 'https://re.beytei.com/wp-json/beytei-chat/v1/notify';
 
-        http.post(
-          Uri.parse(notifyUrl),
-          headers: {'Content-Type': 'application/json'},
-          body: json.encode({
-            'fcm_token': widget.customerFcmToken,
-            'sender_name': widget.driverName,
-            'message': text,
-            'order_id': widget.orderId,
-            'type': 'chat_message', // 👈 أضف هذا السطر هنا أيضاً
-          }),
-        ).then((_) => print("✅ تم إرسال طلب إشعار الدردشة للسيرفر"));
-      }
+      // 🔥 إرسال الإشعار للزبون عبر سيرفر بيتي (التوجيه الذكي للسيرفر)
+      String notifyUrl = 'https://re.beytei.com/wp-json/beytei-chat/v1/notify';
+
+      http.post(
+        Uri.parse(notifyUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'target': 'customer', // 👈 نخبر السيرفر أن الهدف هو الزبون
+          'sender_name': widget.driverName,
+          'message': text,
+          'order_id': cleanOrderId,
+        }),
+      ).then((response) {
+        if (response.statusCode == 200) {
+          print("✅ تم إرسال طلب إشعار الدردشة للسيرفر بنجاح");
+        } else {
+          print("⚠️ فشل إرسال الإشعار من السيرفر: ${response.body}");
+        }
+      }).catchError((e) {
+        print("❌ خطأ في الاتصال بسيرفر الإشعارات: $e");
+      });
 
     } catch (e) {
       if (mounted) {
@@ -1816,7 +1825,7 @@ class _DriverChatPageState extends State<DriverChatPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(widget.customerName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  Text("طلب #${widget.orderId}", style: const TextStyle(fontSize: 12, color: Colors.white70)),
+                  Text("طلب #${widget.orderId.trim()}", style: const TextStyle(fontSize: 12, color: Colors.white70)),
                 ],
               ),
             ),
@@ -1831,7 +1840,7 @@ class _DriverChatPageState extends State<DriverChatPage> {
           // 📜 منطقة عرض الرسائل
           Expanded(
             child: StreamBuilder<DocumentSnapshot>(
-              stream: FirebaseFirestore.instance.collection('OrdersChat').doc(widget.orderId).snapshots(),
+              stream: FirebaseFirestore.instance.collection('OrdersChat').doc(widget.orderId.trim()).snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
@@ -1966,7 +1975,6 @@ class _DriverChatPageState extends State<DriverChatPage> {
     );
   }
 }
-
 
 
 

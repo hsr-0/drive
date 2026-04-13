@@ -51,7 +51,8 @@ class _PolyLineMapScreenState extends State<PolyLineMapScreen> {
               // هذه المتغيرات ضرورية في الآيفون لرسم الدبابيس والمسار
               annotations: controller.appleMarkers,
               polylines: controller.applePolylines,
-              myLocationEnabled: true,
+              // 🌟 [تعديل]: تم إيقاف النقطة الزرقاء لأننا نستخدم أيقونة السيارة المخصصة
+              myLocationEnabled: false,
               compassEnabled: false,
             );
           }
@@ -70,12 +71,18 @@ class _PolyLineMapScreenState extends State<PolyLineMapScreen> {
               ),
               onMapCreated: (mapLibreController) {
                 print("✅ [MAPLIBRE] الخريطة تم إنشاؤها بنجاح");
-                controller.onMapLibreCreated(mapLibreController);
+                // 🌟 [تعديل]: هنا نحفظ الكنترولر فقط ولا نرسم الدبابيس لتجنب الكراش
+                controller.mapLibreController = mapLibreController;
               },
               onStyleLoadedCallback: () {
-                print("🎨 [MAPLIBRE] الستايل تم تحميله - الخريطة مرئية الآن");
+                print("🎨 [MAPLIBRE] الستايل تم تحميله - يمكننا رسم الدبابيس والسيارة الآن");
+                // 🌟 [تعديل]: هنا نقوم باستدعاء دالة الرسم بعد التأكد من تحميل الخريطة بالكامل
+                if (controller.mapLibreController != null) {
+                  controller.onMapLibreCreated(controller.mapLibreController!);
+                }
               },
-              myLocationEnabled: true,
+              // 🌟 [تعديل]: تم إيقاف النقطة الزرقاء لأننا نستخدم أيقونة السيارة المخصصة
+              myLocationEnabled: false,
               compassEnabled: false,
             );
           }

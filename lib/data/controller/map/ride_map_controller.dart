@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 
-// استيراد مكتبات الخرائط المجانية (بدل Mapbox)
+// استيراد مكتبات الخرائط المجانية
 import 'package:maplibre_gl/maplibre_gl.dart' as ml;
 import 'package:apple_maps_flutter/apple_maps_flutter.dart' as ap;
 
@@ -18,95 +18,173 @@ class RideMapController extends GetxController {
   bool isLoading = false;
   bool isMapReady = false;
 
-  // الإحداثيات
+  // لمنع طلب المسار أكثر من مرة
+  bool isRouteFetched = false;
+
+  // الإحداثيات الأساسية
   double pickupLat = 0.0;
   double pickupLng = 0.0;
   double destLat = 0.0;
   double destLng = 0.0;
 
-  // مراجع الخرائط الجديدة
+  // إحداثيات واتجاه السائق
+  double driverLat = 0.0;
+  double driverLng = 0.0;
+  double driverHeading = 0.0; // 🌟 المتغير الجديد لحفظ زاوية دوران السيارة
+
+  // متغير لحل مشكلة "الخريطة ليست جاهزة" - يحفظ الموقع المؤقت
+  bool _hasPendingDriverLocation = false;
+
+  // مراجع الخرائط
   ml.MapLibreMapController? mapLibreController;
   ap.AppleMapController? appleController;
 
-  // متغيرات مخصصة لخرائط آيفون (تعتمد على State)
+  // متغيرات مخصصة لآيفون
   Set<ap.Annotation> appleMarkers = {};
   Set<ap.Polyline> applePolylines = {};
 
-  // متغيرات مخصصة لخرائط أندرويد (MapLibre)
+  // متغيرات مخصصة لأندرويد
   ml.Symbol? pickupSymbol;
-  ml.Symbol? destSymbol;
+  ml.Symbol? driverLibreSymbol;
   ml.Line? routeLine;
+
+  // دبابيس آيفون
+  ap.Annotation? driverAppleMarker;
+
+  // الأيقونات
+  Uint8List? pickupIcon;
+  Uint8List? driverCarIcon;
 
   List<ml.LatLng> polylinePointsML = [];
   List<ap.LatLng> polylinePointsAP = [];
 
-  // متغير لمنع تكرار ضبط الكاميرا بشكل لانهائي
   bool _isFittingBounds = false;
 
   // ===========================================================================
   // 1. إعداد الخريطة
   // ===========================================================================
 
-  // دالة تهيئة خرائط أندرويد
   void onMapLibreCreated(ml.MapLibreMapController controller) {
-    print("🎬 [Controller] تم إنشاء خريطة MapLibre (Android)");
+    print("✅ [MAP] تم تهيئة خريطة MapLibre");
     mapLibreController = controller;
     isMapReady = true;
     _drawIfReady();
   }
 
-  // دالة تهيئة خرائط آيفون
   void onAppleMapCreated(ap.AppleMapController controller) {
-    print("🎬 [Controller] تم إنشاء خريطة Apple (iOS)");
+    print("✅ [MAP] تم تهيئة خريطة Apple");
     appleController = controller;
     isMapReady = true;
     _drawIfReady();
   }
 
   void loadMap({required double pLat, required double pLng, required double dLat, required double dLng}) {
-    print("🗺️ [Controller] تهيئة إحداثيات الرحلة...");
     pickupLat = pLat;
     pickupLng = pLng;
     destLat = dLat;
     destLng = dLng;
-
     _drawIfReady();
   }
 
   Future<void> _drawIfReady() async {
     if (!isMapReady || pickupLat == 0.0) return;
-    print("🔄 [Controller] الخريطة جاهزة، يتم الرسم الآن...");
 
     await setCustomMarkerIcon();
-    await _drawStaticMarkers();
-    await getRouteFromOSRM();
+    await _drawCustomerMarkers();
+
+    // إذا كان هناك موقع سائق وصل قبل أن تجهز الخريطة، قم برسمه الآن!
+    if (_hasPendingDriverLocation) {
+      print("🔄 [MAP] رسم موقع السائق الذي كان معلقاً...");
+      _hasPendingDriverLocation = false;
+      await updateDriverLocation(driverLat, driverLng, heading: driverHeading);
+    }
   }
 
   // ===========================================================================
-  // 2. جلب المسار من API مجاني (OSRM بديل Mapbox Directions)
+  // 2. تحديث موقع السائق الحي مع الاتجاه
   // ===========================================================================
-  Future<void> getRouteFromOSRM() async {
-    print("🛰️ [Controller] طلب المسار من خادم OSRM المجاني...");
+
+  // 🌟 أضفنا heading كمتغير اختياري
+  Future<void> updateDriverLocation(double newLat, double newLng, {double heading = 0.0}) async {
+    driverLat = newLat;
+    driverLng = newLng;
+    driverHeading = heading; // حفظ الزاوية الجديدة
+
+    // حل مشكلة "الخريطة ليست جاهزة"
+    if (!isMapReady) {
+      print("⏳ [MAP] الخريطة غير جاهزة بعد، تم حفظ موقع السائق مؤقتاً.");
+      _hasPendingDriverLocation = true;
+      return;
+    }
+
+    print("📡 [MAP] تحديث سيارة السائق على الخريطة: $newLat, $newLng | زاوية: $heading");
+
+    if (Platform.isIOS && appleController != null) {
+      // كود الأيفون
+      if (driverAppleMarker != null) appleMarkers.remove(driverAppleMarker);
+      if (driverCarIcon != null) {
+        driverAppleMarker = ap.Annotation(
+          annotationId:  ap.AnnotationId('driver_car_marker'),
+          position: ap.LatLng(driverLat, driverLng),
+          icon: ap.BitmapDescriptor.fromBytes(driverCarIcon!),
+        );
+        appleMarkers.add(driverAppleMarker!);
+      }
+      update();
+    } else if (!Platform.isIOS && mapLibreController != null) {
+      // كود الأندرويد مع الدوران
+      if (driverCarIcon != null) {
+        await mapLibreController!.addImage('driver_car_icon', driverCarIcon!);
+      }
+
+      if (driverLibreSymbol != null) {
+        await mapLibreController!.updateSymbol(
+          driverLibreSymbol!,
+          ml.SymbolOptions(
+            geometry: ml.LatLng(driverLat, driverLng),
+            iconRotate: driverHeading, // 🌟 تطبيق الدوران الحي
+          ),
+        );
+      } else {
+        driverLibreSymbol = await mapLibreController!.addSymbol(ml.SymbolOptions(
+          geometry: ml.LatLng(driverLat, driverLng),
+          iconImage: 'driver_car_icon',
+          iconSize: 1.0,
+          iconAnchor: 'center',
+          iconRotate: driverHeading, // 🌟 تطبيق الدوران عند الإنشاء
+        ));
+      }
+    }
+
+    // رسم المسار من السائق للزبون (لأول مرة فقط)
+    if (!isRouteFetched && pickupLat != 0.0) {
+      isRouteFetched = true;
+      await getRouteToCustomer();
+    }
+  }
+
+  // ===========================================================================
+  // 3. جلب المسار من OSRM (من السائق للزبون)
+  // ===========================================================================
+  Future<void> getRouteToCustomer() async {
+    print("🛰️ [MAP] طلب المسار من السائق للزبون...");
     isLoading = true;
     update();
 
     try {
-      // OSRM Public API (لا يحتاج Access Token ومجاني بالكامل)
       final String url =
-          'https://router.project-osrm.org/route/v1/driving/$pickupLng,$pickupLat;$destLng,$destLat?overview=full&geometries=geojson';
+          'https://router.project-osrm.org/route/v1/driving/$driverLng,$driverLat;$pickupLng,$pickupLat?overview=full&geometries=geojson';
 
       final response = await http.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data['routes'] != null && data['routes'].isNotEmpty) {
-          print("✅ [Controller] تم استلام المسار بنجاح");
           final List coords = data['routes'][0]['geometry']['coordinates'];
 
           polylinePointsML.clear();
           polylinePointsAP.clear();
 
-          // OSRM يُرجع الإحداثيات بصيغة [Lng, Lat]
           for (var c in coords) {
             polylinePointsML.add(ml.LatLng(c[1].toDouble(), c[0].toDouble()));
             polylinePointsAP.add(ap.LatLng(c[1].toDouble(), c[0].toDouble()));
@@ -114,14 +192,10 @@ class RideMapController extends GetxController {
 
           await _drawPolyline();
           fitPolylineBounds();
-        } else {
-          print("⚠️ [Controller] لا يوجد مسار متاح بين النقطتين");
         }
-      } else {
-        print("🔴 [Controller] خطأ في جلب المسار: ${response.statusCode}");
       }
     } catch (e) {
-      print('🔴 [Controller] Error fetching route: $e');
+      print('🔴 [MAP] خطأ في جلب المسار: $e');
     }
 
     isLoading = false;
@@ -129,30 +203,25 @@ class RideMapController extends GetxController {
   }
 
   // ===========================================================================
-  // 3. الرسم (الدبابيس والخطوط)
+  // 4. رسم الخط والدبابيس الثابتة
   // ===========================================================================
   Future<void> _drawPolyline() async {
-    print("✏️ [Controller] جاري رسم مسار الرحلة...");
-
     if (Platform.isIOS) {
       applePolylines.clear();
       applePolylines.add(
           ap.Polyline(
-            polylineId:  ap.PolylineId('route_line'),
+            polylineId:  ap.PolylineId('route_line_to_customer'),
             points: polylinePointsAP,
             color: MyColor.primaryColor,
-            width: 5,
+            width: 6,
             jointType: ap.JointType.round,
           )
       );
-      update(); // تحديث الواجهة لخرائط أبل
+      update();
     } else {
       if (mapLibreController == null) return;
-
-      // مسح الخط القديم إن وجد
       if (routeLine != null) await mapLibreController!.removeLine(routeLine!);
 
-      // تحويل لون التطبيق إلى صيغة HEX لـ MapLibre
       String hexColor = '#${MyColor.primaryColor.value.toRadixString(16).substring(2, 8)}';
 
       routeLine = await mapLibreController!.addLine(
@@ -166,11 +235,8 @@ class RideMapController extends GetxController {
     }
   }
 
-  Future<void> _drawStaticMarkers() async {
-    print("📌 [Controller] جاري وضع دبابيس الانطلاق والوجهة...");
-
+  Future<void> _drawCustomerMarkers() async {
     if (Platform.isIOS) {
-      appleMarkers.clear();
       if (pickupIcon != null) {
         appleMarkers.add(ap.Annotation(
           annotationId:  ap.AnnotationId('pickup_marker'),
@@ -178,28 +244,13 @@ class RideMapController extends GetxController {
           icon: ap.BitmapDescriptor.fromBytes(pickupIcon!),
         ));
       }
-      if (destinationIcon != null) {
-        appleMarkers.add(ap.Annotation(
-          annotationId:  ap.AnnotationId('dest_marker'),
-          position: ap.LatLng(destLat, destLng),
-          icon: ap.BitmapDescriptor.fromBytes(destinationIcon!),
-        ));
-      }
       update();
     } else {
-      if (mapLibreController == null) return;
+      if (mapLibreController == null || pickupIcon == null) return;
 
-      // MapLibre يطلب إضافة الصور للستايل أولاً قبل الاستخدام
-      if (pickupIcon != null) {
-        await mapLibreController!.addImage('pickup_icon', pickupIcon!);
-      }
-      if (destinationIcon != null) {
-        await mapLibreController!.addImage('dest_icon', destinationIcon!);
-      }
+      await mapLibreController!.addImage('pickup_icon', pickupIcon!);
 
-      // مسح الدبابيس القديمة إن وجدت
       if (pickupSymbol != null) await mapLibreController!.removeSymbol(pickupSymbol!);
-      if (destSymbol != null) await mapLibreController!.removeSymbol(destSymbol!);
 
       pickupSymbol = await mapLibreController!.addSymbol(ml.SymbolOptions(
         geometry: ml.LatLng(pickupLat, pickupLng),
@@ -207,23 +258,15 @@ class RideMapController extends GetxController {
         iconSize: 1.0,
         iconAnchor: 'bottom',
       ));
-
-      destSymbol = await mapLibreController!.addSymbol(ml.SymbolOptions(
-        geometry: ml.LatLng(destLat, destLng),
-        iconImage: 'dest_icon',
-        iconSize: 1.0,
-        iconAnchor: 'bottom',
-      ));
     }
   }
 
   // ===========================================================================
-  // 4. ضبط زوم الكاميرا لاحتواء المسار بالكامل
+  // 5. كاميرا احترافية (توسيع الرؤية لتشمل السائق والزبون بوضوح)
   // ===========================================================================
   void fitPolylineBounds() {
     if (_isFittingBounds) return;
     _isFittingBounds = true;
-    print("🔭 [Controller] جاري ضبط زوم الكاميرا لمرة واحدة...");
 
     try {
       if (Platform.isIOS && appleController != null && polylinePointsAP.isNotEmpty) {
@@ -232,70 +275,59 @@ class RideMapController extends GetxController {
         _fitMapLibreBounds();
       }
     } catch (e) {
-      print("🔴 [Controller] خطأ في زوم الكاميرا: $e");
+      print("🔴 [MAP] خطأ في زوم الكاميرا: $e");
     }
 
-    Future.delayed(const Duration(seconds: 3), () {
+    // الانتظار 4 ثواني لمنع التحديث المزعج للكاميرا إذا تحرك السائق بسرعة
+    Future.delayed(const Duration(seconds: 4), () {
       _isFittingBounds = false;
     });
   }
 
   void _fitAppleMapBounds() {
-    double minLat = polylinePointsAP.first.latitude;
-    double minLng = polylinePointsAP.first.longitude;
-    double maxLat = polylinePointsAP.first.latitude;
-    double maxLng = polylinePointsAP.first.longitude;
-
-    for (var p in polylinePointsAP) {
-      if (p.latitude < minLat) minLat = p.latitude;
-      if (p.latitude > maxLat) maxLat = p.latitude;
-      if (p.longitude < minLng) minLng = p.longitude;
-      if (p.longitude > maxLng) maxLng = p.longitude;
-    }
+    double minLat = driverLat < pickupLat ? driverLat : pickupLat;
+    double maxLat = driverLat > pickupLat ? driverLat : pickupLat;
+    double minLng = driverLng < pickupLng ? driverLng : pickupLng;
+    double maxLng = driverLng > pickupLng ? driverLng : pickupLng;
 
     ap.LatLngBounds bounds = ap.LatLngBounds(
         southwest: ap.LatLng(minLat, minLng),
         northeast: ap.LatLng(maxLat, maxLng)
     );
-    appleController!.animateCamera(ap.CameraUpdate.newLatLngBounds(bounds, 80)); // 80 Padding
+    appleController!.animateCamera(ap.CameraUpdate.newLatLngBounds(bounds, 120));
   }
 
   void _fitMapLibreBounds() {
-    double minLat = polylinePointsML.first.latitude;
-    double minLng = polylinePointsML.first.longitude;
-    double maxLat = polylinePointsML.first.latitude;
-    double maxLng = polylinePointsML.first.longitude;
-
-    for (var p in polylinePointsML) {
-      if (p.latitude < minLat) minLat = p.latitude;
-      if (p.latitude > maxLat) maxLat = p.latitude;
-      if (p.longitude < minLng) minLng = p.longitude;
-      if (p.longitude > maxLng) maxLng = p.longitude;
-    }
+    double minLat = driverLat < pickupLat ? driverLat : pickupLat;
+    double maxLat = driverLat > pickupLat ? driverLat : pickupLat;
+    double minLng = driverLng < pickupLng ? driverLng : pickupLng;
+    double maxLng = driverLng > pickupLng ? driverLng : pickupLng;
 
     ml.LatLngBounds bounds = ml.LatLngBounds(
         southwest: ml.LatLng(minLat, minLng),
         northeast: ml.LatLng(maxLat, maxLng)
     );
     mapLibreController!.animateCamera(
-        ml.CameraUpdate.newLatLngBounds(bounds, left: 60, right: 60, top: 120, bottom: 120)
+        ml.CameraUpdate.newLatLngBounds(bounds, left: 160, right: 160, top: 220, bottom: 220)
     );
   }
 
   // ===========================================================================
-  // 5. الأيقونات المخصصة
+  // 6. تحميل أيقونة الزبون وصورة السيارة الجديدة
   // ===========================================================================
-  Uint8List? pickupIcon;
-  Uint8List? destinationIcon;
-
   Future<void> setCustomMarkerIcon() async {
-    if (pickupIcon != null && destinationIcon != null) return;
+    if (pickupIcon != null && driverCarIcon != null) return;
+
     try {
       pickupIcon = await Helper.getBytesFromAsset(MyIcons.mapMarkerPickUpIcon, 120);
-      destinationIcon = await Helper.getBytesFromAsset(MyIcons.mapMarkerIcon, 120);
-      print("🖼️ [Controller] تم تحميل الأيقونات المخصصة");
+
+      // تحميل سيارة البيضاء الجديدة (تأكد أن الصورة في مجلد assets/images واسمها car_top.png)
+      driverCarIcon = await Helper.getBytesFromAsset('assets/images/car_top.png', 180);
+
+      print("🖼️ [MAP] تم تحميل صورة السيارة الاحترافية بنجاح");
     } catch (e) {
-      print("🔴 [Controller] فشل تحميل أيقونات الماركر: $e");
+      print("🔴 [MAP] فشل تحميل صورة السيارة، سيتم استخدام الأيقونة الافتراضية: $e");
+      driverCarIcon = await Helper.getBytesFromAsset(MyIcons.mapMarkerPickUpIcon, 120);
     }
   }
 }

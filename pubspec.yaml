@@ -3,7 +3,7 @@ description: OvoRide is a complete ride-sharing solution.
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.9+13
+version: 1.0.10+13
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -89,6 +89,7 @@ flutter:
     - assets/images/logo/
     - assets/images/onboard/
     - assets/images/social/
+    - assets/images/car_top.png
     - assets/icon/
     - assets/animation/
   fonts:

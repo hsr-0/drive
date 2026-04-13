@@ -385,7 +385,7 @@ class MyUtils {
     if (path.contains('.jpg')) {
       return true;
     }
-    if (path.contains('.png')) {
+    if (path.contains('car_top.png')) {
       return true;
     }
     if (path.contains('.jpeg')) {
