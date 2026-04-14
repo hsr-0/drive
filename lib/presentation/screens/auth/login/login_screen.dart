@@ -1,5 +1,8 @@
+import 'dart:io'; // تمت الإضافة من أجل دالة الخروج exit(0)
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:geolocator/geolocator.dart'; // تمت الإضافة لطلب الصلاحية
+import 'package:shared_preferences/shared_preferences.dart'; // تمت الإضافة للحفظ لمرة واحدة
 import 'package:ovoride_driver/core/route/route.dart';
 import 'package:ovoride_driver/core/utils/dimensions.dart';
 import 'package:ovoride_driver/core/utils/my_color.dart';
@@ -38,8 +41,79 @@ class _LoginScreenState extends State<LoginScreen> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Get.find<LoginController>().remember = false;
+
+      // تشغيل دالة الفحص بمجرد فتح واجهة تسجيل الدخول
+      _checkLocationDisclosure();
     });
   }
+
+  // ============== بداية الأكواد الجديدة الخاصة بالصلاحية ==============
+
+  Future<void> _checkLocationDisclosure() async {
+    final prefs = await SharedPreferences.getInstance();
+    // التحقق مما إذا كان السائق قد وافق مسبقاً (الافتراضي false)
+    bool hasAccepted = prefs.getBool('location_accepted') ?? false;
+
+    // إذا لم يوافق مسبقاً، تظهر له الشاشة
+    if (!hasAccepted) {
+      _showCustomDisclosureDialog(prefs);
+    }
+  }
+
+  void _showCustomDisclosureDialog(SharedPreferences prefs) {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // منع إغلاق النافذة عند النقر خارجها
+      builder: (BuildContext context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+          title: const Row(
+            children: [
+              Icon(Icons.location_on, color: Colors.blue),
+              SizedBox(width: 10),
+              Text("Location Permission"),
+            ],
+          ),
+          content: const Text(
+            "Beytei Services collects location data to enable 'Real-time Trip Tracking' and 'Driver Availability' features, even when the app is closed or not in use. "
+                "This data is used to allow customers to track their rides and to calculate trip distances accurately.\n\n"
+                "To continue working as a driver, please select 'Allow all the time' in the next step.",
+            style: TextStyle(fontSize: 14, color: Colors.black87),
+          ),
+          actions: [
+            TextButton(
+              child: const Text("Exit", style: TextStyle(color: Colors.red)),
+              onPressed: () => exit(0), // الخروج من التطبيق في حال الرفض
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: MyColor.primaryColor,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text("Accept & Continue", style: TextStyle(color: Colors.white)),
+              onPressed: () async {
+                // 1. حفظ الموافقة لكي لا تظهر الرسالة في المرات القادمة
+                await prefs.setBool('location_accepted', true);
+
+                // 2. إخفاء النافذة المخصصة
+                Navigator.of(context).pop();
+
+                // 3. استدعاء إشعار النظام للصلاحية (الآن فقط!)
+                LocationPermission permission = await Geolocator.checkPermission();
+                if (permission == LocationPermission.denied) {
+                  await Geolocator.requestPermission();
+                }
+
+                // بعد الانتهاء، يبقى المستخدم في نفس شاشة تسجيل الدخول لإدخال بياناته
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ============== نهاية الأكواد الجديدة الخاصة بالصلاحية ==============
 
   @override
   void dispose() {
@@ -107,8 +181,8 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         boxShadow: [
                           BoxShadow(
-                            color: MyColor.colorBlack.withValues(alpha: 0.05), // soft top shadow
-                            offset: const Offset(0, -30), // ⬆️ Shadow goes up
+                            color: MyColor.colorBlack.withValues(alpha: 0.05),
+                            offset: const Offset(0, -30),
                             blurRadius: 15,
                             spreadRadius: -3,
                           ),
@@ -202,7 +276,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                             checkColor: MyColor.colorWhite,
                                             value: controller.remember,
                                             side: WidgetStateBorderSide.resolveWith(
-                                              (states) => BorderSide(
+                                                  (states) => BorderSide(
                                                 width: 2.0,
                                                 color: controller.remember ? MyColor.getTextFieldEnableBorder() : MyColor.getTextFieldDisableBorder(),
                                               ),

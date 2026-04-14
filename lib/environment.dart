@@ -1,20 +1,20 @@
 class Environment {
   // ATTENTION Please update your desired data.
   static const String appName = 'OvoRide Driver';
-  static const String version = '1.1.5';
+  static const String version = '1.1.6';
 
   static const int bidAcceptSecond = 30; //Bid ACCEPT second
   static const int driverLocationUpdateAfterNmetersOrMovements = 50; //Driver location update after n meters or movements
 
   //Language
   // Default display name for the app's language (used in UI language selectors)
-  static String defaultLanguageName = "English";
+  static String defaultLanguageName = "Arabic"; // تم التعديل هنا إلى Arabic أو يمكنك كتابتها "العربية"
 
   // Default language code (ISO 639-1) used by the app at startup
-  static String defaultLanguageCode = "en";
+  static String defaultLanguageCode = "ar"; // تم التعديل هنا إلى ar
 
   // Default country code (ISO 3166-1 alpha-2) used for locale-specific formatting
-  static const String defaultCountryCode = 'د.ع';
+  static const String defaultCountryCode = 'IQ'; // ⚠️ تم تصحيح هذا السطر (اقرأ الملاحظة بالأسفل)
 
 
 
