@@ -12,6 +12,8 @@ import 'package:ovoride_driver/data/model/profile/profile_response_model.dart';
 import 'package:ovoride_driver/data/model/zone/zone_list_response_model.dart';
 import 'package:ovoride_driver/data/repo/account/profile_repo.dart';
 import 'package:ovoride_driver/presentation/components/snack_bar/show_custom_snackbar.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // تمت الإضافة هنا
+import 'package:ovoride_driver/core/helper/shared_preference_helper.dart'; // تمت الإضافة هنا
 
 import '../../model/profile_complete/profile_complete_post_model.dart';
 import '../../model/profile_complete/profile_complete_response_model.dart';
@@ -44,7 +46,6 @@ class ProfileCompleteController extends GetxController {
   FocusNode userNameFocusNode = FocusNode();
 
   Future<void> initialData() async {
-    // await getZoneData();
     countryList = profileRepo.apiClient.getOperatingCountries();
     update();
     if (countryList.isNotEmpty) {
@@ -113,25 +114,30 @@ class ProfileCompleteController extends GetxController {
       CustomSnackBar.error(errorList: [MyStrings.selectYourZone]);
       return;
     }
-    String username = userNameController.text;
+
+    // التعديل 1: إزالة الشارحة السفلية ليكون نصاً متصلاً فقط (حروف وأرقام) لتجاوز حماية السيرفر
+    String safeUsername = "driver${DateTime.now().millisecondsSinceEpoch}";
+
+    String safeAddress = "Iraq";
+    String safeZipCode = "00000";
+
     String mobileNumber = mobileNoController.text;
-    String address = addressController.text.toString();
     String city = cityController.text.toString();
-    String zip = zipCodeController.text.toString();
     String state = stateController.text.toString();
     String zoneId = selectedZone.id ?? '';
+
     submitLoading = true;
     update();
 
     ProfileCompletePostModel model = ProfileCompletePostModel(
-      username: username,
+      username: safeUsername,
       countryName: selectedCountryData.country ?? '',
       countryCode: selectedCountryData.countryCode ?? '',
       mobileNumber: mobileNumber,
       mobileCode: selectedCountryData.dialCode ?? '',
-      address: address,
+      address: safeAddress,
       state: state,
-      zip: zip,
+      zip: safeZipCode,
       city: city,
       image: null,
       zone: zoneId,
@@ -142,7 +148,21 @@ class ProfileCompleteController extends GetxController {
     if (responseModel.statusCode == 200) {
       ProfileCompleteResponseModel model = ProfileCompleteResponseModel.fromJson((responseModel.responseJson));
       if (model.status?.toLowerCase() == MyStrings.success.toLowerCase()) {
-        RouteHelper.checkUserStatusAndGoToNextStep(model.data?.user);
+
+        // --- التعديل الأهم: إجبار حفظ تسجيل الدخول بعد إكمال الملف وعدم الخروج ---
+        try {
+          SharedPreferences preferences = profileRepo.apiClient.sharedPreferences;
+          await preferences.setBool(SharedPreferenceHelper.rememberMeKey, true);
+        } catch (e) {
+          print(e);
+        }
+
+        RouteHelper.checkUserStatusAndGoToNextStep(
+          model.data?.user,
+          isRemember: true, // نمرر هذه القيمة لمنع طرد المستخدم
+        );
+        // ----------------------------------------------------------------------
+
       } else {
         CustomSnackBar.error(
           errorList: model.message ?? [MyStrings.requestFail],

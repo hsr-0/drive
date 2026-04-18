@@ -66,7 +66,8 @@ class _RegistrationFormState extends State<RegistrationForm> {
                 controller: controller.lNameController,
                 focusNode: controller.lastNameFocusNode,
                 textInputType: TextInputType.text,
-                nextFocus: controller.emailFocusNode,
+                // التوجيه للحقل التالي وهو رقم الهاتف
+                nextFocus: controller.phoneFocusNode,
                 prefixIcon: Padding(
                   padding: EdgeInsetsDirectional.only(
                     start: Dimensions.space12,
@@ -90,31 +91,31 @@ class _RegistrationFormState extends State<RegistrationForm> {
                 },
               ),
               const SizedBox(height: Dimensions.space20),
+
+              // --- بداية التعديل: حقل رقم الهاتف بدلاً من الإيميل ---
               CustomTextField(
-                hintText: MyStrings.email.tr,
-                controller: controller.emailController,
-                focusNode: controller.emailFocusNode,
+                hintText: "رقم الهاتف", // يمكنك استخدام MyStrings.phoneNumber.tr إذا كانت موجودة
+                controller: controller.phoneController, // تأكد من إضافة هذا المتغير في RegistrationController
+                focusNode: controller.phoneFocusNode, // تأكد من إضافة هذا المتغير
                 nextFocus: controller.passwordFocusNode,
-                textInputType: TextInputType.emailAddress,
+                textInputType: TextInputType.phone, // لوحة مفاتيح الأرقام
                 inputAction: TextInputAction.next,
                 prefixIcon: Padding(
                   padding: EdgeInsetsDirectional.only(
                     start: Dimensions.space12,
                     end: Dimensions.space8,
                   ),
-                  child: CustomSvgPicture(
-                    image: MyIcons.email,
+                  child: Icon( // استخدمنا Icon عادي لتجنب أخطاء SVG إذا لم تكن أيقونة الهاتف موجودة لديك مسبقاً
+                    Icons.phone_android,
                     color: MyColor.primaryColor,
-                    height: Dimensions.space30,
+                    size: Dimensions.space25,
                   ),
                 ),
                 validator: (value) {
                   if (value != null && value.isEmpty) {
-                    return MyStrings.enterYourEmail.tr;
-                  } else if (!MyStrings.emailValidatorRegExp.hasMatch(
-                    value ?? '',
-                  )) {
-                    return MyStrings.invalidEmailMsg.tr;
+                    return "يرجى إدخال رقم الهاتف";
+                  } else if (value!.length < 10) { // تحقق بسيط من طول الرقم
+                    return "رقم الهاتف غير صحيح";
                   } else {
                     return null;
                   }
@@ -123,6 +124,8 @@ class _RegistrationFormState extends State<RegistrationForm> {
                   return;
                 },
               ),
+              // --- نهاية التعديل ---
+
               const SizedBox(height: Dimensions.space20),
               Focus(
                 onFocusChange: (hasFocus) {
@@ -210,7 +213,7 @@ class _RegistrationFormState extends State<RegistrationForm> {
                         checkColor: MyColor.colorWhite,
                         value: controller.agreeTC,
                         side: WidgetStateBorderSide.resolveWith(
-                          (states) => BorderSide(
+                              (states) => BorderSide(
                             width: 2.0,
                             color: controller.agreeTC ? MyColor.getTextFieldEnableBorder() : MyColor.getTextFieldDisableBorder(),
                           ),
@@ -263,6 +266,7 @@ class _RegistrationFormState extends State<RegistrationForm> {
                 text: MyStrings.register.tr,
                 press: () {
                   if (formKey.currentState!.validate()) {
+                    // الدالة التي سترسل البيانات للسيرفر
                     controller.signUpUser();
                   }
                 },

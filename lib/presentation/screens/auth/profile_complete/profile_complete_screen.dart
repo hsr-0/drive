@@ -127,8 +127,8 @@ class _ProfileCompleteScreenState extends State<ProfileCompleteScreen> {
                         ),
                         boxShadow: [
                           BoxShadow(
-                            color: MyColor.colorBlack.withValues(alpha: 0.05), // soft top shadow
-                            offset: const Offset(0, -30), // ⬆️ Shadow goes up
+                            color: MyColor.colorBlack.withValues(alpha: 0.05),
+                            offset: const Offset(0, -30),
                             blurRadius: 15,
                             spreadRadius: -3,
                           ),
@@ -138,229 +138,199 @@ class _ProfileCompleteScreenState extends State<ProfileCompleteScreen> {
                       child: controller.isLoading
                           ? const CustomLoader()
                           : Form(
-                              key: formKey,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  CustomTextField(
-                                    labelText: MyStrings.username.tr,
-                                    hintText: "${MyStrings.enterYour.tr} ${MyStrings.username.toLowerCase().tr}",
-                                    textInputType: TextInputType.text,
-                                    inputAction: TextInputAction.next,
-                                    focusNode: controller.userNameFocusNode,
-                                    controller: controller.userNameController,
-                                    nextFocus: controller.mobileNoFocusNode,
-                                    onChanged: (value) {
-                                      return;
-                                    },
-                                    validator: (value) {
-                                      if (value != null && value.isEmpty) {
-                                        return MyStrings.enterYourUsername.tr;
-                                      } else if (value.length < 6) {
-                                        return MyStrings.kShortUserNameError;
-                                      } else {
-                                        return null;
-                                      }
-                                    },
+                        key: formKey,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+
+                            // --- التعديل 1: حقل اسم المستخدم ---
+                            CustomTextField(
+                              labelText: MyStrings.username.tr,
+                              hintText: "اكتب اسمك", // جعلنا التلميح أسهل
+                              textInputType: TextInputType.text,
+                              inputAction: TextInputAction.next,
+                              focusNode: controller.userNameFocusNode,
+                              controller: controller.userNameController,
+                              nextFocus: controller.mobileNoFocusNode,
+                              onChanged: (value) {
+                                return;
+                              },
+                              validator: (value) {
+                                // تم مسح القيود (مثل الطول واللغة) لكي يقبل العربي والمسافات
+                                if (value == null || value.trim().isEmpty) {
+                                  return "يرجى إدخال اسمك";
+                                }
+                                return null; // سيقبل أي نص مدخل
+                              },
+                            ),
+                            const SizedBox(
+                              height: Dimensions.space20,
+                            ),
+
+                            // حقل رقم الهاتف (بقي كما هو)
+                            CustomTextField(
+                              labelText: MyStrings.phone.tr,
+                              hintText: "XXX-XXX-XXXX",
+                              textInputType: TextInputType.number,
+                              inputAction: TextInputAction.next,
+                              focusNode: controller.countryFocusNode,
+                              controller: controller.mobileNoController,
+                              nextFocus: controller.stateFocusNode, // تم التعديل لينتقل للمحافظة بعد إلغاء العنوان
+                              prefixIcon: IntrinsicWidth(
+                                child: Padding(
+                                  padding: EdgeInsetsGeometry.symmetric(
+                                    horizontal: Dimensions.space10,
                                   ),
-                                  const SizedBox(
-                                    height: Dimensions.space20,
-                                  ),
-                                  CustomTextField(
-                                    labelText: MyStrings.phone.tr,
-                                    hintText: "XXX-XXX-XXXX",
-                                    textInputType: TextInputType.number,
-                                    inputAction: TextInputAction.next,
-                                    focusNode: controller.countryFocusNode,
-                                    controller: controller.mobileNoController,
-                                    nextFocus: controller.addressFocusNode,
-                                    prefixIcon: IntrinsicWidth(
-                                      child: Padding(
-                                        padding: EdgeInsetsGeometry.symmetric(
-                                          horizontal: Dimensions.space10,
-                                        ),
-                                        child: GestureDetector(
-                                          onTap: () {
-                                            CountryBottomSheet.profileBottomSheet(
-                                              context,
-                                              controller,
-                                            );
-                                          },
-                                          child: Row(
-                                            crossAxisAlignment: CrossAxisAlignment.center,
-                                            mainAxisAlignment: MainAxisAlignment.center,
-                                            children: [
-                                              spaceSide(
-                                                Dimensions.space3,
-                                              ),
-                                              MyImageWidget(
-                                                imageUrl: UrlContainer.countryFlagImageLink.replaceAll(
-                                                  "{countryCode}",
-                                                  controller.selectedCountryData.countryCode.toString().toLowerCase(),
-                                                ),
-                                                height: Dimensions.space25,
-                                                width: Dimensions.space40,
-                                              ),
-                                              spaceSide(
-                                                Dimensions.space5,
-                                              ),
-                                              Text(
-                                                "+${controller.selectedCountryData.dialCode}",
-                                                style: regularMediumLarge.copyWith(
-                                                  fontSize: Dimensions.fontOverLarge,
-                                                ),
-                                              ),
-                                              Icon(
-                                                Icons.keyboard_arrow_down_rounded,
-                                                color: MyColor.getBodyTextColor(),
-                                              ),
-                                              spaceSide(
-                                                Dimensions.space2,
-                                              ),
-                                              Container(
-                                                color: MyColor.naturalTextColor,
-                                                width: 1,
-                                                height: Dimensions.space30,
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    onChanged: (value) {
-                                      return;
-                                    },
-                                    validator: (value) {
-                                      if (value != null && value.isEmpty) {
-                                        return MyStrings.enterYourPhoneNumber.tr;
-                                      } else {
-                                        return null;
-                                      }
-                                    },
-                                  ),
-                                  const SizedBox(
-                                    height: Dimensions.space20,
-                                  ),
-                                  CustomTextField(
-                                    readOnly: true,
-                                    labelText: MyStrings.selectYourZone.tr,
-                                    hintText: MyStrings.selectYourZone.tr,
-                                    textInputType: TextInputType.text,
-                                    inputAction: TextInputAction.next,
-                                    focusNode: controller.zoneFocusNode,
-                                    controller: TextEditingController(
-                                      text: controller.selectedZone.id == "-1" ? MyStrings.selectYourZone.tr : (controller.selectedZone.name ?? '').toTitleCase(),
-                                    ),
-                                    nextFocus: controller.stateFocusNode,
+                                  child: GestureDetector(
                                     onTap: () {
-                                      ZoneBottomSheet.bottomSheet(
+                                      CountryBottomSheet.profileBottomSheet(
                                         context,
                                         controller,
                                       );
                                     },
-                                    isShowSuffixIcon: true,
-                                    suffixWidget: SizedBox(
-                                      height: 30,
-                                      width: 30,
-                                      child: Icon(
-                                        Icons.keyboard_arrow_down,
-                                        color: MyColor.colorGrey,
-                                      ),
+                                    child: Row(
+                                      crossAxisAlignment: CrossAxisAlignment.center,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        spaceSide(
+                                          Dimensions.space3,
+                                        ),
+                                        MyImageWidget(
+                                          imageUrl: UrlContainer.countryFlagImageLink.replaceAll(
+                                            "{countryCode}",
+                                            controller.selectedCountryData.countryCode.toString().toLowerCase(),
+                                          ),
+                                          height: Dimensions.space25,
+                                          width: Dimensions.space40,
+                                        ),
+                                        spaceSide(
+                                          Dimensions.space5,
+                                        ),
+                                        Text(
+                                          "+${controller.selectedCountryData.dialCode}",
+                                          style: regularMediumLarge.copyWith(
+                                            fontSize: Dimensions.fontOverLarge,
+                                          ),
+                                        ),
+                                        Icon(
+                                          Icons.keyboard_arrow_down_rounded,
+                                          color: MyColor.getBodyTextColor(),
+                                        ),
+                                        spaceSide(
+                                          Dimensions.space2,
+                                        ),
+                                        Container(
+                                          color: MyColor.naturalTextColor,
+                                          width: 1,
+                                          height: Dimensions.space30,
+                                        ),
+                                      ],
                                     ),
-                                    onChanged: (value) {
-                                      return;
-                                    },
                                   ),
-                                  const SizedBox(
-                                    height: Dimensions.space20,
-                                  ),
-                                  CustomTextField(
-                                    labelText: MyStrings.address.tr,
-                                    hintText: "${MyStrings.enterYour.tr} ${MyStrings.address.toLowerCase().tr}",
-                                    textInputType: TextInputType.text,
-                                    inputAction: TextInputAction.next,
-                                    focusNode: controller.addressFocusNode,
-                                    controller: controller.addressController,
-                                    nextFocus: controller.stateFocusNode,
-                                    onChanged: (value) {
-                                      return;
-                                    },
-                                  ),
-                                  const SizedBox(
-                                    height: Dimensions.space20,
-                                  ),
-                                  CustomTextField(
-                                    labelText: MyStrings.state,
-                                    hintText: "${MyStrings.enterYour.tr} ${MyStrings.state.toLowerCase().tr}",
-                                    textInputType: TextInputType.text,
-                                    inputAction: TextInputAction.next,
-                                    focusNode: controller.stateFocusNode,
-                                    controller: controller.stateController,
-                                    nextFocus: controller.cityFocusNode,
-                                    onChanged: (value) {
-                                      return;
-                                    },
-                                  ),
-                                  const SizedBox(
-                                    height: Dimensions.space20,
-                                  ),
-                                  CustomTextField(
-                                    labelText: MyStrings.city.tr,
-                                    hintText: "${MyStrings.enterYour.tr} ${MyStrings.city.toLowerCase().tr}",
-                                    textInputType: TextInputType.text,
-                                    inputAction: TextInputAction.next,
-                                    focusNode: controller.cityFocusNode,
-                                    controller: controller.cityController,
-                                    nextFocus: controller.zipCodeFocusNode,
-                                    onChanged: (value) {
-                                      return;
-                                    },
-                                  ),
-                                  const SizedBox(
-                                    height: Dimensions.space20,
-                                  ),
-                                  CustomTextField(
-                                    labelText: MyStrings.zipCode.tr,
-                                    hintText: "${MyStrings.enterYour.tr} ${MyStrings.zipCode.toLowerCase().tr}",
-                                    textInputType: TextInputType.text,
-                                    inputAction: TextInputAction.done,
-                                    focusNode: controller.zipCodeFocusNode,
-                                    controller: controller.zipCodeController,
-                                    onChanged: (value) {
-                                      return;
-                                    },
-                                  ),
-                                  // if (controller.loginType == "google") ...[
-                                  //   const SizedBox(
-                                  //     height: Dimensions.space20,
-                                  //   ),
-                                  //   CustomTextField(
-                                  //     labelText: MyStrings.referanceName,
-                                  //     hintText: MyStrings.referanceName.tr,
-                                  //     textInputType: TextInputType.text,
-                                  //     inputAction: TextInputAction.next,
-                                  //     controller: controller.referController,
-                                  //     nextFocus: controller.addressFocusNode,
-                                  //     onChanged: (value) {
-                                  //       return;
-                                  //     },
-                                  //   ),
-                                  // ],
-                                  const SizedBox(
-                                    height: Dimensions.space35,
-                                  ),
-                                  RoundedButton(
-                                    isLoading: controller.submitLoading,
-                                    text: MyStrings.completeProfile.tr,
-                                    press: () {
-                                      if (formKey.currentState!.validate()) {
-                                        controller.updateProfile();
-                                      }
-                                    },
-                                  ),
-                                ],
+                                ),
                               ),
+                              onChanged: (value) {
+                                return;
+                              },
+                              validator: (value) {
+                                if (value != null && value.isEmpty) {
+                                  return MyStrings.enterYourPhoneNumber.tr;
+                                } else {
+                                  return null;
+                                }
+                              },
                             ),
+                            const SizedBox(
+                              height: Dimensions.space20,
+                            ),
+
+                            // حقل اختيار المنطقة (الزون)
+                            CustomTextField(
+                              readOnly: true,
+                              labelText: MyStrings.selectYourZone.tr,
+                              hintText: MyStrings.selectYourZone.tr,
+                              textInputType: TextInputType.text,
+                              inputAction: TextInputAction.next,
+                              focusNode: controller.zoneFocusNode,
+                              controller: TextEditingController(
+                                text: controller.selectedZone.id == "-1" ? MyStrings.selectYourZone.tr : (controller.selectedZone.name ?? '').toTitleCase(),
+                              ),
+                              nextFocus: controller.stateFocusNode,
+                              onTap: () {
+                                ZoneBottomSheet.bottomSheet(
+                                  context,
+                                  controller,
+                                );
+                              },
+                              isShowSuffixIcon: true,
+                              suffixWidget: SizedBox(
+                                height: 30,
+                                width: 30,
+                                child: Icon(
+                                  Icons.keyboard_arrow_down,
+                                  color: MyColor.colorGrey,
+                                ),
+                              ),
+                              onChanged: (value) {
+                                return;
+                              },
+                            ),
+                            const SizedBox(
+                              height: Dimensions.space20,
+                            ),
+
+                            // --- تم حذف حقل "العنوان" (Address) من هنا ---
+
+                            // حقل المحافظة (State)
+                            CustomTextField(
+                              labelText: MyStrings.state,
+                              hintText: "${MyStrings.enterYour.tr} ${MyStrings.state.toLowerCase().tr}",
+                              textInputType: TextInputType.text,
+                              inputAction: TextInputAction.next,
+                              focusNode: controller.stateFocusNode,
+                              controller: controller.stateController,
+                              nextFocus: controller.cityFocusNode,
+                              onChanged: (value) {
+                                return;
+                              },
+                            ),
+                            const SizedBox(
+                              height: Dimensions.space20,
+                            ),
+
+                            // حقل المدينة (City)
+                            CustomTextField(
+                              labelText: MyStrings.city.tr,
+                              hintText: "${MyStrings.enterYour.tr} ${MyStrings.city.toLowerCase().tr}",
+                              textInputType: TextInputType.text,
+                              inputAction: TextInputAction.done, // التعديل 2: تغيير لـ done لإغلاق الكيبورد بدلاً من next
+                              focusNode: controller.cityFocusNode,
+                              controller: controller.cityController,
+                              // تم إزالة nextFocus لأن هذا هو آخر حقل الآن
+                              onChanged: (value) {
+                                return;
+                              },
+                            ),
+
+                            // --- تم حذف حقل "الرمز البريدي" (Zip Code) من هنا ---
+
+                            const SizedBox(
+                              height: Dimensions.space35,
+                            ),
+
+                            // زر استكمال الملف الشخصي
+                            RoundedButton(
+                              isLoading: controller.submitLoading,
+                              text: MyStrings.completeProfile.tr,
+                              press: () {
+                                if (formKey.currentState!.validate()) {
+                                  controller.updateProfile();
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
                 ],

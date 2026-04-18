@@ -1,8 +1,10 @@
-import 'dart:io'; // تمت الإضافة من أجل دالة الخروج exit(0)
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:geolocator/geolocator.dart'; // تمت الإضافة لطلب الصلاحية
-import 'package:shared_preferences/shared_preferences.dart'; // تمت الإضافة للحفظ لمرة واحدة
+import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import 'package:ovoride_driver/core/route/route.dart';
 import 'package:ovoride_driver/core/utils/dimensions.dart';
 import 'package:ovoride_driver/core/utils/my_color.dart';
@@ -40,21 +42,45 @@ class _LoginScreenState extends State<LoginScreen> {
     super.initState();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Get.find<LoginController>().remember = false;
-
-      // تشغيل دالة الفحص بمجرد فتح واجهة تسجيل الدخول
       _checkLocationDisclosure();
     });
   }
 
-  // ============== بداية الأكواد الجديدة الخاصة بالصلاحية ==============
+  // --- دالة فتح الواتساب ---
+  Future<void> _openWhatsAppSupport() async {
+    String phone = Get.find<LoginController>().emailController.text.trim();
+    String supportNumber = "+96478554076931";
+    String message = phone.isNotEmpty
+        ? "مرحباً، أنا كابتن في منصة بيتي ونسيت كلمة المرور لحسابي. رقم هاتفي المسجل هو: $phone"
+        : "مرحباً، أنا كابتن في منصة بيتي ونسيت كلمة المرور لحسابي.";
 
+    String encodedMessage = Uri.encodeComponent(message);
+    Uri whatsappUrl = Uri.parse("https://wa.me/$supportNumber?text=$encodedMessage");
+
+    if (await canLaunchUrl(whatsappUrl)) {
+      await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
+    } else {
+      Get.snackbar("تنبيه", "تطبيق واتساب غير مثبت على جهازك", backgroundColor: Colors.redAccent, colorText: Colors.white);
+    }
+  }
+
+  // --- دالة فتح شرح اليوتيوب ---
+  Future<void> _openYouTubeTutorial() async {
+    // ضع رابط فيديو اليوتيوب الخاص بك هنا بمجرد رفعه
+    final Uri youtubeUrl = Uri.parse('https://www.youtube.com/channel/UCilI5RfhwMpRi7r_ioY2GXw');
+
+    if (await canLaunchUrl(youtubeUrl)) {
+      await launchUrl(youtubeUrl, mode: LaunchMode.externalApplication);
+    } else {
+      Get.snackbar("تنبيه", "لا يمكن فتح الرابط", backgroundColor: Colors.redAccent, colorText: Colors.white);
+    }
+  }
+
+  // --- نافذة الصلاحية ---
   Future<void> _checkLocationDisclosure() async {
     final prefs = await SharedPreferences.getInstance();
-    // التحقق مما إذا كان السائق قد وافق مسبقاً (الافتراضي false)
     bool hasAccepted = prefs.getBool('location_accepted') ?? false;
 
-    // إذا لم يوافق مسبقاً، تظهر له الشاشة
     if (!hasAccepted) {
       _showCustomDisclosureDialog(prefs);
     }
@@ -63,7 +89,7 @@ class _LoginScreenState extends State<LoginScreen> {
   void _showCustomDisclosureDialog(SharedPreferences prefs) {
     showDialog(
       context: context,
-      barrierDismissible: false, // منع إغلاق النافذة عند النقر خارجها
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
@@ -83,7 +109,7 @@ class _LoginScreenState extends State<LoginScreen> {
           actions: [
             TextButton(
               child: const Text("Exit", style: TextStyle(color: Colors.red)),
-              onPressed: () => exit(0), // الخروج من التطبيق في حال الرفض
+              onPressed: () => exit(0),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
@@ -92,32 +118,19 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               child: const Text("Accept & Continue", style: TextStyle(color: Colors.white)),
               onPressed: () async {
-                // 1. حفظ الموافقة لكي لا تظهر الرسالة في المرات القادمة
                 await prefs.setBool('location_accepted', true);
-
-                // 2. إخفاء النافذة المخصصة
                 Navigator.of(context).pop();
 
-                // 3. استدعاء إشعار النظام للصلاحية (الآن فقط!)
                 LocationPermission permission = await Geolocator.checkPermission();
                 if (permission == LocationPermission.denied) {
                   await Geolocator.requestPermission();
                 }
-
-                // بعد الانتهاء، يبقى المستخدم في نفس شاشة تسجيل الدخول لإدخال بياناته
               },
             ),
           ],
         );
       },
     );
-  }
-
-  // ============== نهاية الأكواد الجديدة الخاصة بالصلاحية ==============
-
-  @override
-  void dispose() {
-    super.dispose();
   }
 
   @override
@@ -169,7 +182,6 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
 
-                  // Foreground content
                   Transform.translate(
                     offset: Offset(0, -Dimensions.space20),
                     child: Container(
@@ -203,26 +215,28 @@ class _LoginScreenState extends State<LoginScreen> {
                                 spaceDown(Dimensions.space20),
                                 CustomTextField(
                                   controller: controller.emailController,
-                                  hintText: MyStrings.usernameOrEmail.tr,
+                                  hintText: "رقم الهاتف",
                                   onChanged: (value) {},
                                   focusNode: controller.emailFocusNode,
                                   nextFocus: controller.passwordFocusNode,
-                                  textInputType: TextInputType.emailAddress,
+                                  textInputType: TextInputType.phone,
                                   inputAction: TextInputAction.next,
                                   prefixIcon: Padding(
                                     padding: EdgeInsetsDirectional.only(
                                       start: Dimensions.space12,
                                       end: Dimensions.space8,
                                     ),
-                                    child: CustomSvgPicture(
-                                      image: MyIcons.user,
+                                    child: Icon(
+                                      Icons.phone_android,
                                       color: MyColor.primaryColor,
-                                      height: Dimensions.space30,
+                                      size: Dimensions.space25,
                                     ),
                                   ),
                                   validator: (value) {
-                                    if (value!.isEmpty) {
-                                      return MyStrings.fieldErrorMsg.tr;
+                                    if (value == null || value.isEmpty) {
+                                      return "يرجى إدخال رقم الهاتف";
+                                    } else if (value.length < 10) {
+                                      return "رقم الهاتف غير صحيح";
                                     } else {
                                       return null;
                                     }
@@ -261,54 +275,29 @@ class _LoginScreenState extends State<LoginScreen> {
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Row(
-                                      children: [
-                                        SizedBox(
-                                          width: 28,
-                                          height: 28,
-                                          child: Checkbox(
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(
-                                                Dimensions.space5,
-                                              ),
-                                            ),
-                                            activeColor: MyColor.primaryColor,
-                                            checkColor: MyColor.colorWhite,
-                                            value: controller.remember,
-                                            side: WidgetStateBorderSide.resolveWith(
-                                                  (states) => BorderSide(
-                                                width: 2.0,
-                                                color: controller.remember ? MyColor.getTextFieldEnableBorder() : MyColor.getTextFieldDisableBorder(),
-                                              ),
-                                            ),
-                                            onChanged: (value) {
-                                              controller.changeRememberMe();
-                                            },
-                                          ),
-                                        ),
-                                        spaceSide(Dimensions.space8),
-                                        InkWell(
-                                          onTap: () {
-                                            controller.changeRememberMe();
-                                          },
-                                          splashFactory: NoSplash.splashFactory,
-                                          child: DefaultText(
-                                            text: MyStrings.rememberMe.tr,
-                                            textColor: MyColor.getBodyTextColor(),
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
+
+                                    // --- تم استبدال مربع الصح بزر اليوتيوب هنا ---
                                     InkWell(
                                       onTap: () {
-                                        controller.clearTextField();
-                                        Get.toNamed(
-                                          RouteHelper.forgotPasswordScreen,
-                                        );
+                                        _openYouTubeTutorial(); // فتح فيديو اليوتيوب
                                       },
                                       child: DefaultText(
-                                        text: MyStrings.forgotPassword.tr,
+                                        text: "شرح طريقة التسجيل 🎥",
+                                        textColor: MyColor.primaryColor,
+                                        textStyle: boldDefault.copyWith(
+                                          fontSize: Dimensions.fontLarge,
+                                          decoration: TextDecoration.underline, // خط تحت النص
+                                        ),
+                                      ),
+                                    ),
+                                    // ---------------------------------------------
+
+                                    InkWell(
+                                      onTap: () {
+                                        _openWhatsAppSupport();
+                                      },
+                                      child: DefaultText(
+                                        text: "نسيت الباسورد؟",
                                         textColor: MyColor.redCancelTextColor,
                                         textStyle: boldDefault.copyWith(
                                           fontSize: Dimensions.fontLarge,

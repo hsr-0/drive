@@ -33,20 +33,21 @@ class RegistrationController extends GetxController {
   bool checkPasswordStrength = false;
   bool needAgree = true;
 
-  final FocusNode emailFocusNode = FocusNode();
+  // --- التعديل 1: استبدال email بـ phone ---
+  final FocusNode phoneFocusNode = FocusNode();
   final FocusNode passwordFocusNode = FocusNode();
   final FocusNode confirmPasswordFocusNode = FocusNode();
   final FocusNode firstNameFocusNode = FocusNode();
   final FocusNode lastNameFocusNode = FocusNode();
   final FocusNode referNameFocusNode = FocusNode();
-  final TextEditingController emailController = TextEditingController();
+
+  final TextEditingController phoneController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
   final TextEditingController cPasswordController = TextEditingController();
   final TextEditingController fNameController = TextEditingController();
   final TextEditingController lNameController = TextEditingController();
   final TextEditingController referNameController = TextEditingController();
 
-  String? email;
   String? password;
   String? confirmPassword;
   String? countryName;
@@ -106,7 +107,7 @@ class RegistrationController extends GetxController {
 
   void closeAllController() {
     isLoading = false;
-    emailController.text = '';
+    phoneController.text = '';
     passwordController.text = '';
     cPasswordController.text = '';
     fNameController.text = '';
@@ -164,10 +165,16 @@ class RegistrationController extends GetxController {
       SharedPreferenceHelper.userNameKey,
       responseModel.data?.user?.username ?? '',
     );
+
+    // حفظ رقم الهاتف في الذاكرة لتستخدمه الشاشة التالية (كمل ملفك الشخصي)
     await preferences.setString(
       SharedPreferenceHelper.userPhoneNumberKey,
-      responseModel.data?.user?.mobile ?? '',
+      phoneController.text.trim(),
     );
+
+    // --- التعديل الأهم: الإجبار على تذكر الدخول بعد التسجيل مباشرة ---
+    await preferences.setBool(SharedPreferenceHelper.rememberMeKey, true);
+    // ---------------------------------------------------------------
 
     Get.offAndToNamed(RouteHelper.profileCompleteScreen);
   }
@@ -229,11 +236,15 @@ class RegistrationController extends GetxController {
     update();
   }
 
+  // توليد الإيميل الوهمي قبل إرسال البيانات
   SignUpModel getUserData() {
+    String phone = phoneController.text.trim();
+    String fakeEmail = "$phone@driver.beytei.com";
+
     SignUpModel model = SignUpModel(
       firstName: fNameController.text.toString(),
       lastName: lNameController.text.toString(),
-      email: emailController.text.toString(),
+      email: fakeEmail,
       password: passwordController.text.toString(),
       agree: agreeTC ? true : false,
     );

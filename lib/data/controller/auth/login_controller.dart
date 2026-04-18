@@ -1,5 +1,8 @@
 import 'package:flutter/cupertino.dart';
 import 'package:get/get.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:ovoride_driver/core/helper/shared_preference_helper.dart';
+
 import 'package:ovoride_driver/core/route/route.dart';
 import 'package:ovoride_driver/core/utils/my_strings.dart';
 import 'package:ovoride_driver/data/model/auth/login/login_response_model.dart';
@@ -24,7 +27,7 @@ class LoginController extends GetxController {
   String? password;
 
   List<String> errors = [];
-  bool remember = true; // تم تعديل القيمة الافتراضية إلى true كإجراء إضافي للتأكيد
+  bool remember = true;
 
   void forgetPassword() {
     Get.toNamed(RouteHelper.forgotPasswordScreen);
@@ -36,8 +39,11 @@ class LoginController extends GetxController {
     isSubmitLoading = true;
     update();
 
+    String phone = emailController.text.trim();
+    String fakeEmail = "$phone@driver.beytei.com";
+
     ResponseModel model = await loginRepo.loginUser(
-      emailController.text.toString(),
+      fakeEmail,
       passwordController.text.toString(),
     );
 
@@ -50,15 +56,30 @@ class LoginController extends GetxController {
         String tokenType = loginModel.data?.tokenType ?? "";
         GlobalDriverInfoModel? user = loginModel.data?.user;
 
-        // التعديل الرئيسي: تمرير true بشكل ثابت دائماً لتفعيل ميزة التذكر
+        // --- بداية التعديل: إجبار التطبيق على حفظ التوكن والبيانات محلياً وتذكر الدخول ---
+        try {
+          SharedPreferences preferences = loginRepo.apiClient.sharedPreferences;
+          await preferences.setString(SharedPreferenceHelper.userIdKey, user?.id.toString() ?? '-1');
+          await preferences.setString(SharedPreferenceHelper.accessTokenKey, accessToken);
+          await preferences.setString(SharedPreferenceHelper.accessTokenType, tokenType);
+          await preferences.setString(SharedPreferenceHelper.userEmailKey, user?.email ?? '');
+          await preferences.setString(SharedPreferenceHelper.userNameKey, user?.username ?? '');
+          await preferences.setString(SharedPreferenceHelper.userPhoneNumberKey, user?.mobile ?? '');
+
+          // السطر السحري لمنع تسجيل الخروج عند إغلاق التطبيق
+          await preferences.setBool(SharedPreferenceHelper.rememberMeKey, true);
+
+        } catch (e) {
+          print("خطأ في حفظ البيانات: $e");
+        }
+        // --- نهاية التعديل ---
+
         await RouteHelper.checkUserStatusAndGoToNextStep(
           user,
           accessToken: accessToken,
           tokenType: tokenType,
           isRemember: true,
         );
-
-        // تم إزالة الكود الذي كان يغير حالة remember بعد تسجيل الدخول لأنه لم يعد ضرورياً
 
       } else {
         CustomSnackBar.error(
@@ -81,10 +102,5 @@ class LoginController extends GetxController {
   void clearTextField() {
     passwordController.text = '';
     emailController.text = '';
-
-    if (remember) {
-      remember = false;
-    }
-    update();
   }
 }

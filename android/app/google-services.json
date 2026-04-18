@@ -31,6 +31,14 @@
           }
         },
         {
+          "client_id": "266994090766-e5r5cfr23t2ktti65qhmuiieo8hum6t9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "co.beytei.android.taxi",
+            "certificate_hash": "f297f4ab779be0031dc2bedbb0227e02264bd659"
+          }
+        },
+        {
           "client_id": "266994090766-6c1kpde2if3ume5i7l6hkubmtc72859l.apps.googleusercontent.com",
           "client_type": 3
         }
@@ -66,6 +74,14 @@
         }
       },
       "oauth_client": [
+        {
+          "client_id": "266994090766-5uknbo0e3occ3jujs1tqcuuo2v4mdr8l.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "co.median.android.wqwnby",
+            "certificate_hash": "037ab32e01723b40a6107f2f6b3265e8b1d011d7"
+          }
+        },
         {
           "client_id": "266994090766-ckp6fmse2a2svmv8hv46h6k9crfjhmer.apps.googleusercontent.com",
           "client_type": 1,
