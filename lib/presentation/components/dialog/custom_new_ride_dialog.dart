@@ -1,7 +1,6 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:ovoride_driver/core/route/route.dart';
 import 'package:ovoride_driver/core/utils/my_strings.dart';
@@ -23,25 +22,6 @@ import '../buttons/rounded_button.dart';
 import '../divider/custom_spacer.dart';
 
 class CustomNewRideDialog {
-  // Static map to store controllers for each ride
-  static final Map<String, TextEditingController> _controllers = {};
-
-  // Get or create controller for a specific ride
-  static TextEditingController _getControllerForRide(RideModel ride) {
-    printE("Calling ${ride.id}");
-    if (!_controllers.containsKey(ride.id)) {
-      _controllers[ride.id ?? ""] = TextEditingController(
-        text: "${double.tryParse(ride.amount.toString()) ?? 0}",
-      );
-    }
-    return _controllers[ride.id]!;
-  }
-
-  // Dispose controller for a specific ride
-  static void _disposeController() {
-    _controllers.clear();
-  }
-
   static void newRide({
     required RideModel ride,
     required String currency,
@@ -52,27 +32,20 @@ class CustomNewRideDialog {
     VoidCallback? onDispose,
     int duration = 120,
   }) {
-    _disposeController();
-    // Get or create controller for this ride
-    final amountController = _getControllerForRide(ride);
     toastification.showCustom(
-      context: Get.context, // optional if you use ToastificationWrapper
+      context: Get.context,
       autoCloseDuration: Duration(seconds: duration),
-
       alignment: Alignment.bottomCenter,
-
       dismissDirection: DismissDirection.horizontal,
       callbacks: ToastificationCallbacks(
         onDismissed: (toastItem) {
           if (onDispose != null) {
             onDispose();
-            printE("Dispose Called");
           }
         },
         onAutoCompleteCompleted: (toastItem) {
           if (onDispose != null) {
             onDispose();
-            printE("onAutoCompleteCompleted Called");
           }
         },
       ),
@@ -85,7 +58,6 @@ class CustomNewRideDialog {
           dashboardController: dashboardController,
           holder: holder,
           onCancel: onCancel,
-          amountController: amountController,
         );
       },
     );
@@ -99,7 +71,6 @@ class CustomNewRideDialog {
     required VoidCallback onCancel,
     required DashBoardController dashboardController,
     required ToastificationItem holder,
-    required TextEditingController amountController,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(
@@ -119,14 +90,12 @@ class CustomNewRideDialog {
             color: MyColor.colorWhite,
             borderRadius: BorderRadius.circular(Dimensions.moreRadius),
             boxShadow: [
-              // Top shadow
               BoxShadow(
                 color: Colors.black.withValues(alpha: 0.1),
                 offset: const Offset(0, -20),
                 blurRadius: 10,
                 spreadRadius: 1,
               ),
-              // Bottom shadow
               BoxShadow(
                 color: Colors.black.withValues(alpha: 0.15),
                 offset: const Offset(0, 6),
@@ -142,7 +111,6 @@ class CustomNewRideDialog {
                 onTimeout: () {
                   toastification.dismissById(holder.id);
                   onCancel();
-                  printE("Timer ended → Auto close called");
                 },
               ),
               GestureDetector(
@@ -203,6 +171,7 @@ class CustomNewRideDialog {
                 destination: ride.destination ?? '',
               ),
               const SizedBox(height: Dimensions.space10),
+              // ✅ عرض السعر الموصى به كعرض تلقائي
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(Dimensions.space10),
@@ -224,51 +193,22 @@ class CustomNewRideDialog {
                 ),
               ),
               spaceDown(Dimensions.space10),
+              // ✅ عرض السعر الثابت (بدون إمكانية التعديل)
               Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(Dimensions.space10),
                 decoration: BoxDecoration(
-                  shape: BoxShape.rectangle,
-                  color: MyColor.primaryColor.withValues(alpha: 0.05),
+                  color: MyColor.primaryColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(Dimensions.space5),
                 ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      Get.find<ApiClient>().getCurrency(isSymbol: true),
-                      style: mediumExtraLarge.copyWith(
-                        fontSize: 30,
-                        color: MyColor.primaryColor,
-                      ),
+                child: Center(
+                  child: Text(
+                    "${Get.find<ApiClient>().getCurrency(isSymbol: true)}${StringConverter.formatNumber(ride.recommendAmount.toString())}",
+                    style: boldExtraLarge.copyWith(
+                      color: MyColor.primaryColor,
+                      fontSize: 30,
                     ),
-                    IntrinsicWidth(
-                      child: TextFormField(
-                        onChanged: (val) {},
-                        expands: false,
-                        controller: amountController,
-                        scrollPadding: EdgeInsets.zero,
-                        inputFormatters: [LengthLimitingTextInputFormatter(8)],
-                        decoration: InputDecoration(
-                          contentPadding: const EdgeInsets.symmetric(
-                            vertical: Dimensions.space10,
-                          ),
-                          border: InputBorder.none,
-                          hintText: amountController.text.isNotEmpty ? '0' : '0.0',
-                          hintStyle: mediumDefault.copyWith(
-                            fontSize: 30,
-                            color: amountController.text.isNotEmpty ? MyColor.primaryColor : Colors.grey.shade500,
-                          ),
-                        ),
-                        style: mediumDefault.copyWith(
-                          fontSize: 30,
-                          color: amountController.text.isNotEmpty ? MyColor.primaryColor : Colors.grey.shade500,
-                        ),
-                        clipBehavior: Clip.antiAliasWithSaveLayer,
-                        selectionHeightStyle: BoxHeightStyle.includeLineSpacingTop,
-                        keyboardType: TextInputType.number,
-                        cursorColor: Colors.grey.shade400,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
               if (ride.note != null) ...[
@@ -341,34 +281,15 @@ class CustomNewRideDialog {
                         text: MyStrings.bidNOW.tr,
                         isLoading: dashboardController.isSendBidLoading,
                         press: () async {
-                          double enterValue = StringConverter.formatDouble(
-                            amountController.text,
+                          // ✅ إرسال السعر الموصى به مباشرةً
+                          await dashboardController.sendBid(
+                            ride.id ?? '-1',
+                            amount: ride.recommendAmount.toString(),
+                            onActon: () {
+                              onBidClick();
+                              toastification.dismissById(holder.id);
+                            },
                           );
-                          double min = StringConverter.formatDouble(
-                            ride.minAmount ?? '0.0',
-                          );
-                          double max = StringConverter.formatDouble(
-                            ride.maxAmount ?? '0.0',
-                          );
-
-                          if (enterValue >= min && enterValue <= max) {
-                            await dashboardController.sendBid(
-                              ride.id ?? '-1',
-                              amount: enterValue.toString(),
-                              onActon: () {
-                                onBidClick();
-                                toastification.dismissById(holder.id);
-                              },
-                            );
-                          } else {
-                            CustomSnackBar.error(
-                              errorList: [
-                                '${MyStrings.pleaseEnterMinimum.tr} ${controller.currencySym}${StringConverter.formatNumber(ride.minAmount ?? '0')} '
-                                    '- ${controller.currencySym}${StringConverter.formatNumber(ride.maxAmount ?? '0')}',
-                              ],
-                              dismissAll: false,
-                            );
-                          }
                         },
                         isColorChange: true,
                       ),
@@ -443,8 +364,6 @@ class _RidePopupTimerState extends State<_RidePopupTimer> with SingleTickerProvi
 
     _controller.addStatusListener((status) {
       if (status == AnimationStatus.completed) {
-        // Auto close when timer ends
-
         widget.onTimeout();
       }
     });
@@ -464,7 +383,7 @@ class _RidePopupTimerState extends State<_RidePopupTimer> with SingleTickerProvi
         return Column(
           children: [
             LinearProgressIndicator(
-              value: 1 - _controller.value, // countdown style (reverse)
+              value: 1 - _controller.value,
               minHeight: 6,
               color: MyColor.primaryColor,
               backgroundColor: MyColor.primaryColor.withValues(alpha: 0.2),

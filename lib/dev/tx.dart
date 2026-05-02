@@ -3274,13 +3274,16 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       items = _currentDelivery['items'];
     }
 
-    // حساب الأسعار بأمان
-    final double deliveryFee = double.tryParse(_currentDelivery['delivery_fee']?.toString() ?? '0') ?? 0;
-    final double totalToCollect = double.tryParse(_currentDelivery['total_to_collect']?.toString() ?? '0') ?? 0;
+    // =========================================================
+    // 🧮 التطبيق هو من يقوم بالحساب (تفادياً لأي خطأ من السيرفر)
+    // =========================================================
 
-    // إذا كان الإجمالي الكلي غير متوفر، نعتبره سعر التوصيل + سعر الطلب (إن وجد)
-    final double orderTotal = totalToCollect > deliveryFee ? totalToCollect - deliveryFee : totalToCollect;
-    final double finalGrandTotal = totalToCollect > 0 ? totalToCollect : (orderTotal + deliveryFee);
+    // 1. استلام الأرقام الصافية كما جاءت من السيرفر
+    final double deliveryFee = double.tryParse(_currentDelivery['delivery_fee']?.toString() ?? '0') ?? 0;
+    final double orderTotal = double.tryParse(_currentDelivery['order_total']?.toString() ?? '0') ?? 0; // سعر الوجبات الصافي
+
+    // 2. التطبيق يقوم بعملية الجمع (الإجمالي المطلوب تحصيله من الزبون)
+    final double finalGrandTotal = orderTotal + deliveryFee;
 
     showModalBottomSheet(
       context: context,
@@ -3358,15 +3361,14 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                 const Divider(height: 30),
 
                 // 💰 الملخص المالي
-                _buildSummaryRow("سعر الطلب:", orderTotal),
-                const SizedBox(height: 10),
-                _buildSummaryRow("سعر التوصيل:", deliveryFee),
+                _buildSummaryRow("سعر الطلبات:", orderTotal),
+                const SizedBox(height: 12),
+                _buildSummaryRow("أجرة التوصيل:", deliveryFee),
                 const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 10),
+                  padding: EdgeInsets.symmetric(vertical: 15),
                   child: Divider(),
                 ),
-                _buildSummaryRow("الإجمالي الكلي:", finalGrandTotal, isBold: true, color: Colors.green),
-
+                _buildSummaryRow("المطلوب من الزبون:", finalGrandTotal, isBold: true, color: Colors.green.shade700, size: 18),
                 const SizedBox(height: 30),
 
                 // زر الإغلاق
@@ -3393,12 +3395,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   // دالة مساعدة لبناء صفوف الأسعار
-  Widget _buildSummaryRow(String label, double amount, {bool isBold = false, Color? color}) {
+  Widget _buildSummaryRow(String label, double amount, {bool isBold = false, Color? color, double size = 16}) {
     return Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: TextStyle(fontSize: 16, fontWeight: isBold ? FontWeight.bold : FontWeight.w500)),
-          Text("${NumberFormat('#,###').format(amount)} د.ع", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color ?? Colors.black87)),
+          Text(label, style: TextStyle(fontSize: size, fontWeight: isBold ? FontWeight.bold : FontWeight.w500)),
+          Text("${NumberFormat('#,###').format(amount)} د.ع", style: TextStyle(fontSize: size, fontWeight: FontWeight.bold, color: color ?? Colors.black87)),
         ]
     );
   }
@@ -4079,6 +4081,10 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     );
   }
 }
+
+
+
+
 // =============================================================================
 // HISTORY & POINTS
 // =============================================================================
@@ -4727,3 +4733,5 @@ class _DriverCallPageState extends State<DriverCallPage> {
     );
   }
 }
+
+
