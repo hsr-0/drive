@@ -58,93 +58,67 @@ class BalanceManager {
   }
 
   // ✅ التهيئة الأولية
+
   static Future<bool> initialize(String token) async {
     _token = token;
+    try { await _initLocalNotifications(); } catch (e) {}
 
-    // 1. عزل خطأ الإشعارات في try-catch منفصل
-    // بهذا الشكل، حتى لو فشلت تهيئة الإشعارات لأي سبب، لن يتوقف التطبيق وسيكمل جلب الرصيد
-    try {
-      await _initLocalNotifications();
-    } catch (e) {
-      print("⚠️ [BalanceManager] Notification Init Error: $e");
-    }
+    int maxAttempts = Platform.isIOS ? 4 : 2;
+    int delayMs = Platform.isIOS ? 1200 : 600;
 
-    int maxAttempts = Platform.isIOS ? 3 : 1;
-    int delayMs = Platform.isIOS ? 800 : 0;
-
-    // 2. استخدام حلقة for بدلاً من while لضمان زيادة العداد في كل محاولة
-    // هذا يمنع الدخول في حلقة لا نهائية (Infinite Loop)
     for (int attempts = 0; attempts < maxAttempts; attempts++) {
       try {
-        print("🔄 [BalanceManager] Attempt ${attempts + 1}/$maxAttempts");
         _balance = await getPointsV3(token);
+        if (_balance >= 0) break; // ✅ نجاح حقيقي
 
-        // إذا رجع الرصيد بشكل صحيح (صفر أو أكثر)، نكسر الحلقة ونكمل
-        if (_balance >= 0) break;
+        if (attempts < maxAttempts - 1) {
+          await Future.delayed(Duration(milliseconds: delayMs * (attempts + 1)));
+        }
       } catch (e) {
-        // إذا حدث خطأ بالاتصال، ننتظر قبل المحاولة التالية (حسب النظام)
-        if (attempts < maxAttempts - 1 && delayMs > 0) {
+        if (attempts < maxAttempts - 1) {
           await Future.delayed(Duration(milliseconds: delayMs * (attempts + 1)));
         }
       }
     }
 
-    // 3. تحديث القيم النهائية
     _isInitialized = true;
     balanceNotifier.value = _balance;
-
     return _balance > 0;
   }
+
+
   // ✅ الدالة الأساسية لجلب الرصيد (معدلة لمنع الكاش)
   static Future<int> getPointsV3(String token) async {
     try {
-      // 1. إضافة طابع زمني فريد لكسر الكاش (TimeStamp)
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-
-      // ملاحظة: تأكد من أن ApiService.baseUrl لا ينتهي بـ /
       final String url = '${ApiService.baseUrl}/taxi/v3/driver/hub?_t=$timestamp';
-      final uri = Uri.parse(url);
-
-      print("🔍 [DEBUG] Fetching balance (No-Cache): $uri");
 
       final res = await http.get(
-        uri,
+        Uri.parse(url),
         headers: {
           'Authorization': 'Bearer $token',
-          // 2. هيدرز إضافية لمنع السيرفر والوسيط من تخزين الاستجابة
           'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
           'Pragma': 'no-cache',
+          'Expires': '0', // 🔥 حاسم لـ iOS
         },
       ).timeout(const Duration(seconds: 15));
 
-      print("🔍 [DEBUG] Status Code: ${res.statusCode}");
-
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
-
         if (data['success'] == true) {
-          dynamic rawBalance;
-
-          // محاولة العثور على الرصيد في أماكن مختلفة محتملة في الاستجابة
-          if (data['data'] != null && data['data']['wallet_balance'] != null) {
-            rawBalance = data['data']['wallet_balance'];
-          } else if (data['wallet_balance'] != null) {
-            rawBalance = data['wallet_balance'];
-          }
-
+          dynamic rawBalance = data['data']?['wallet_balance'] ?? data['wallet_balance'];
           final finalBalance = _safeInt(rawBalance);
-          print("🔍 [DEBUG] Realtime Server Balance: $finalBalance");
-
           setCurrent(finalBalance);
           return finalBalance;
         }
       }
+      // 🔥 إرجاع -1 للإشارة لفشل الطلب بدلاً من 0 الصامت
+      return -1;
     } catch (e) {
-      print("❌ [DEBUG] Error in getPointsV3: $e");
+      print("❌ [BalanceManager] getPointsV3 Error: $e");
+      return -1; // 🔥 منع الرجوع بـ 0 عند أي خطأ شبكة أو كاش
     }
-    return _balance;
   }
-
   // ✅ تحديث الرصيد محلياً وتحديث الواجهة
   static void setCurrent(int newBalance) {
     if (_balance != newBalance) {
@@ -2065,79 +2039,79 @@ class _DriverChatPageState extends State<DriverChatPage> {
 
 // =============================================================================
 // شاشة إيقاف الحساب عند 0 نقاط (محسّنة وصحيحة)
-// =============================================================================
-class ZeroBalanceLockScreen extends StatelessWidget {
+class ZeroBalanceLockScreen extends StatefulWidget {
   final String token;
   final VoidCallback onRecharge;
-  const ZeroBalanceLockScreen({super.key, required this.token, required this.onRecharge,});
+  const ZeroBalanceLockScreen({super.key, required this.token, required this.onRecharge});
 
-  // 🔥 زر "تم الشحن؟" يعيد فحص الرصيد من السيرفر مباشرة
-// في ملف main.dart - داخل كلاس ZeroBalanceLockScreen
-// 🔥 زر "تم الشحن؟" يعيد فحص الرصيد من السيرفر مباشرة
+  @override
+  State<ZeroBalanceLockScreen> createState() => _ZeroBalanceLockScreenState();
+}
+
+class _ZeroBalanceLockScreenState extends State<ZeroBalanceLockScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // 🔥 الاستماع الفوري لأي تحديث في الرصيد (سواء من زر التحديث أو إشعار خلفية)
+    BalanceManager.balanceNotifier.addListener(_autoUnlock);
+  }
+
+  void _autoUnlock() {
+    // إذا أصبح الرصيد > 0، اغلق الشاشة فوراً وعد للواجهة الرئيسية
+    if (BalanceManager.current > 0 && mounted) {
+      BalanceManager.balanceNotifier.removeListener(_autoUnlock);
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const AuthGate()),
+            (route) => false,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    BalanceManager.balanceNotifier.removeListener(_autoUnlock);
+    super.dispose();
+  }
+
   Future<void> _refreshBalance(BuildContext context) async {
     try {
-      // 1. تحديث الرصيد من السيرفر
       await BalanceManager.refresh();
-
-      // 2. الانتظار قليلاً لضمان اكتمال التحديث
-      await Future.delayed(const Duration(milliseconds: 300));
-
-      // ✅ حماية إضافية: التأكد من أن الشاشة لا تزال مفتوحة قبل استخدام context
+      await Future.delayed(const Duration(milliseconds: 500));
       if (!context.mounted) return;
 
-      // 3. التحقق من الرصيد الجديد
       if (BalanceManager.hasBalance) {
-
-        // إظهار رسالة النجاح
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("✅ تم شحن المحفظة بنجاح!"),
-            backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
-          ),
+          const SnackBar(content: Text("✅ تم شحن المحفظة بنجاح!"), backgroundColor: Colors.green),
         );
-
-        // ✅ الحل الجذري: مسح جميع الشاشات السابقة وإعادة فتح AuthGate بنظافة
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(
-            builder: (_) => const AuthGate(), // تأكد من إضافة const إذا كانت تدعمها
-          ),
-              (route) => false, // يمسح كل الشاشات المتراكمة
-        );
-
+        // الـ Listener في initState سيغلق الشاشة تلقائياً، لكن نضيفها هنا كضمان
+        if (mounted) {
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const AuthGate()),
+                (route) => false,
+          );
+        }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("⚠️ الرصيد لا يزال منخفضًا. يرجى الشحن مرة أخرى"),
-            backgroundColor: Colors.orange,
-          ),
+          const SnackBar(content: Text("⚠️ الرصيد لا يزال منخفضًا. يرجى الشحن مرة أخرى"), backgroundColor: Colors.orange),
         );
       }
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("❌ فشل في تحديث الرصيد: ${e.toString()}"),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text("❌ فشل في تحديث الرصيد: ${e.toString()}"), backgroundColor: Colors.red),
       );
     }
   }
+
   @override
   Widget build(BuildContext context) {
+    // 🔽 ضع هنا نفس كود الـ UI الأصلي الخاص بك دون أي تغيير
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              Color(0xFF667eea),
-              Color(0xFF764ba2),
-              Color(0xFFf093fb),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
+          gradient: LinearGradient(colors: [Color(0xFF667eea), Color(0xFF764ba2), Color(0xFFf093fb)], begin: Alignment.topLeft, end: Alignment.bottomRight),
         ),
         child: Center(
           child: Column(
@@ -2145,68 +2119,27 @@ class ZeroBalanceLockScreen extends StatelessWidget {
             children: [
               const Icon(Icons.credit_card, size: 80, color: Colors.white),
               const SizedBox(height: 20),
-              Text(
-                'رصيدك ${BalanceManager.current} نقطة',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              Text('رصيدك ${BalanceManager.current} نقطة', style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
               const SizedBox(height: 30),
               Container(
                 padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(15),
-                ),
+                decoration: BoxDecoration(color: Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(15)),
                 child: Column(
                   children: [
-                    const Text(
-                      "لقد نفذت نقاطك",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                    const Text("لقد نفذت نقاطك", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
-                    const Text(
-                      "للاستمرار في قبول الطلبات، عليك شحن محفظتك",
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                      ),
-                    ),
+                    const Text("للاستمرار في قبول الطلبات، عليك شحن محفظتك", textAlign: TextAlign.center, style: TextStyle(color: Colors.white, fontSize: 16)),
                     const SizedBox(height: 20),
                     OutlinedButton.icon(
-                      onPressed: onRecharge,
+                      onPressed: widget.onRecharge,
                       icon: const Icon(Icons.phone, color: Colors.green),
-                      label: const Text(
-                        "شحن عبر واتساب",
-                        style: TextStyle(color: Colors.white),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Colors.white, width: 2),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        foregroundColor: Colors.white,
-                      ),
+                      label: const Text("شحن عبر واتساب", style: TextStyle(color: Colors.white)),
+                      style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white, width: 2), padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), foregroundColor: Colors.white),
                     ),
                     const SizedBox(height: 15),
                     TextButton(
                       onPressed: () => _refreshBalance(context),
-                      child: const Text(
-                        "تم الشحن؟ اضغط للتحديث",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+                      child: const Text("تم الشحن؟ اضغط للتحديث", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
                     ),
                   ],
                 ),
@@ -2218,6 +2151,8 @@ class ZeroBalanceLockScreen extends StatelessWidget {
     );
   }
 }
+
+
 // =============================================================================
 // AUTH SYSTEM
 // =============================================================================
