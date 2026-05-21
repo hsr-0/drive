@@ -1091,7 +1091,6 @@ class Order {
   final String destinationAddress;
   final String? destinationLat;
   final String? destinationLng;
-  final int deliveryFee;
   final String dateCreated;
   final String itemsDescription;
   final String? notes;
@@ -1099,6 +1098,12 @@ class Order {
   final String? pickupCode;
   final String? sourceType;
   final String? driver;
+
+  // 🔥 التعديلات المالية الجديدة (السيرفر هو الذي يرسل القيم جاهزة)
+  final int deliveryFee;
+  final int orderTotal;
+  final int platformMarkup;
+  final int totalToCollect;
 
   Order({
     required this.id,
@@ -1109,7 +1114,6 @@ class Order {
     required this.destinationAddress,
     this.destinationLat,
     this.destinationLng,
-    required this.deliveryFee,
     required this.dateCreated,
     required this.itemsDescription,
     this.notes,
@@ -1117,6 +1121,10 @@ class Order {
     this.pickupCode,
     this.sourceType,
     this.driver,
+    required this.deliveryFee,
+    required this.orderTotal,
+    required this.platformMarkup,
+    required this.totalToCollect,
   });
 
   factory Order.fromJson(Map<String, dynamic> json) {
@@ -1124,29 +1132,44 @@ class Order {
       id: json['id'].toString(),
       orderStatus: json['order_status'],
       pickupLocationName: json['pickup_location_name'] ?? '',
-      pickupLat: json['pickup_lat'],
-      pickupLng: json['pickup_lng'],
+      pickupLat: json['pickup_lat']?.toString(),
+      pickupLng: json['pickup_lng']?.toString(),
       destinationAddress: json['destination_address'] ?? '',
-      destinationLat: json['destination_lat'],
-      destinationLng: json['destination_lng'],
-      deliveryFee: (json['delivery_fee'] as num?)?.toInt() ?? 0,
+      destinationLat: json['destination_lat']?.toString(),
+      destinationLng: json['destination_lng']?.toString(),
       dateCreated: json['date_created'] ?? '',
       itemsDescription: json['items_description'] ?? '',
       notes: json['notes'],
-      customerPhone: json['end_customer_phone'],
-      pickupCode: json['pickup_code'],
+      customerPhone: json['end_customer_phone']?.toString(),
+      pickupCode: json['pickup_code']?.toString(),
       sourceType: json['source_type'],
-      driver: json['driver'],
+      driver: json['driver'] != null ? json['driver'].toString() : null,
+
+      // جلب المبالغ المالية الجديدة بأمان
+      deliveryFee: (json['delivery_fee'] as num?)?.toInt() ?? 0,
+      orderTotal: (json['order_total'] as num?)?.toInt() ?? 0,
+      platformMarkup: (json['platform_markup'] as num?)?.toInt() ?? 0,
+      totalToCollect: (json['total_to_collect'] as num?)?.toInt() ?? 0,
     );
   }
 }
-
 class ApiService {
 
   static const String baseUrl = 'https://banner.beytei.com/wp-json';
   static const _storage = FlutterSecureStorage();
 
-
+// جلب الملف المالي الكامل للسائق
+  static Future<Map<String, dynamic>> getFinancialProfile(String t) async {
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/taxi/v3/driver/financial-profile'),
+        headers: {'Authorization': 'Bearer $t'},
+      );
+      return json.decode(res.body);
+    } catch (e) {
+      return {'success': false, 'message': 'فشل الاتصال'};
+    }
+  }
 
   static Future<void> storeAuthData(AuthResult auth) async {
     await _storage.write(key: 'token', value: auth.token);
@@ -1216,6 +1239,38 @@ class ApiService {
     }
   }
 
+// مسار رفع الفاتورة للحصول على تعويض
+  static Future<Map<String, dynamic>> uploadReceiptForCompensation(String t, String orderId, String base64Image, double collectedAmount) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/taxi/v3/complete-order-with-receipt'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $t'},
+        body: json.encode({
+          'order_id': orderId,
+          'receipt_image': base64Image,
+          'collected_amount': collectedAmount
+        }),
+      );
+      return json.decode(res.body);
+    } catch (e) {
+      print("Error uploading receipt: $e");
+      return {'success': false, 'message': 'فشل في رفع الفاتورة.'};
+    }
+  }
+
+  // مسار توليد الباركود لتصفية الذمة من قبل التيم ليدر
+  static Future<Map<String, dynamic>> generateSettlementBarcode(String t) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/taxi/v3/driver/generate-settlement-barcode'),
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $t'},
+      );
+      return json.decode(res.body);
+    } catch (e) {
+      print("Error generating barcode: $e");
+      return {'success': false, 'message': 'فشل في توليد الباركود.'};
+    }
+  }
   // استخدام الإصدار 3 لجلب الطلبات المتاحة
   static Future<List<Order>> getAvailableOrdersV3(String token) async {
     final response = await http.get(
@@ -1434,6 +1489,29 @@ class ApiService {
       }
     } catch (_) {}
     return [];
+  }
+
+// 🔥 دالة جلب إحصائيات الأرباح
+  static Future<Map<String, dynamic>> getDriverEarnings(String t) async {
+    try {
+      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final res = await http.get(
+        Uri.parse('$baseUrl/taxi/v3/driver/earnings?_t=$timestamp'),
+        headers: {
+          'Authorization': 'Bearer $t',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+        },
+      );
+
+      if (res.statusCode == 200) {
+        return json.decode(res.body);
+      }
+      return {'success': false, 'message': 'خطأ في السيرفر'};
+    } catch (e) {
+      print("Error fetching earnings: $e");
+      return {'success': false, 'message': 'فشل الاتصال'};
+    }
   }
 }
 
@@ -2486,6 +2564,7 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
 
   // ✅ مفاتيح ثابتة للحفاظ على حالة الشاشات الفرعية
   static const _deliveriesKey = ValueKey('deliveries_screen');
+  static const _earningsKey = ValueKey('earnings_screen'); // 🔥 مفتاح شاشة الأرباح الجديد
   static const _historyKey = ValueKey('history_screen');
   static const _pointsKey = ValueKey('points_screen');
   static const _currentDeliveryKey = ValueKey('current_delivery_screen');
@@ -2535,7 +2614,13 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
 
   Future<void> _chk() async {
     final o = await ApiService.getMyActiveDelivery(widget.authResult.token);
-    if (mounted) setState(() => _active = o);
+    if (mounted) {
+      // 🔥 الحل السحري: لا تقم بإعادة بناء الشاشة الرئيسية إذا كان السائق في شريط الطلبات
+      // (لم يتغير شيء). هذا يمنع مقاطعة الشاشة الفرعية أثناء جلبها للطلبات الجديدة!
+      if (_active == null && o == null) return;
+
+      setState(() => _active = o);
+    }
   }
 
   // 🔥 عند قبول الطلب - الانتقال الفوري لشاشة الطلب النشط
@@ -2581,7 +2666,14 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
         onDeliveryAccepted: _onDeliveryAccepted,
         onRefresh: _chk,
       ),
-      // الصفحة 1: السجل
+
+      // 🔥 الصفحة 1: شاشة أرباحي (الجديدة)
+      EarningsTab(
+        key: _earningsKey,
+        token: widget.authResult.token,
+      ),
+
+      // الصفحة 2: السجل
       HistoryTabV3(
         key: _historyKey, // ✅ مفتاح للحفاظ على الحالة
         token: widget.authResult.token,
@@ -2589,11 +2681,12 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
           print("🔹 [MAIN-LAYOUT] 📂 فتح طلب من السجل: #${order['id']}");
           setState(() {
             _active = order;
-            _idx = 0;
+            _idx = 0; // إرجاعه للرئيسية لفتح الطلب
           });
         },
       ),
-      // الصفحة 2: الحساب
+
+      // الصفحة 3: الحساب والمحفظة
       PointsTab(
         key: _pointsKey, // ✅ مفتاح للحفاظ على الحالة
         token: widget.authResult.token,
@@ -2604,9 +2697,10 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
+          // 👈 تعديل العناوين للتعامل مع 4 شاشات بذكاء
           _idx == 0
               ? (_active != null ? "طلب جاري" : "الطلبات")
-              : (_idx == 1 ? "السجل" : "حسابي"),
+              : (_idx == 1 ? "أرباحي" : (_idx == 2 ? "السجل" : "حسابي")),
         ),
         actions: [
           if (_idx == 0 && _active == null)
@@ -2632,7 +2726,7 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
               icon: const Icon(Icons.refresh),
               onPressed: () {
                 print("🔄 [MAIN-LAYOUT] 🔄 تحديث الطلب النشط يدوياً");
-                _chk();
+                if (_idx == 0) _chk(); // تحديث الطلب فقط إذا كنا في الشاشة الرئيسية
               },
             ),
         ],
@@ -2640,12 +2734,16 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
       body: pages[_idx],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _idx,
+        type: BottomNavigationBarType.fixed, // 🔥 ضروري عندما يكون عدد الأزرار أكثر من 3 لكي لا تختفي النصوص
+        selectedItemColor: Colors.indigo,
+        unselectedItemColor: Colors.grey,
         onTap: (i) {
           print("🔹 [MAIN-LAYOUT] 📱 تغيير التبويب إلى: $i");
           setState(() => _idx = i);
         },
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: "الرئيسية"),
+          BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet), label: "أرباحي"), // 🔥 الزر الجديد
           BottomNavigationBarItem(icon: Icon(Icons.history), label: "السجل"),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: "حسابي"),
         ],
@@ -2696,7 +2794,6 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
 
 
 
-
 // =============================================================================
 
 
@@ -2723,9 +2820,9 @@ class DriverAvailableDeliveriesV3Screen extends StatefulWidget {
   final Function(Map<String, dynamic>) onDeliveryAccepted;
   final VoidCallback onRefresh;
 
-  // ✅ المفتاح ضروري للحفاظ على الحالة عند إعادة بناء الأب
+  // ✅ المفتاح ضروري للحفاظ على حالة الشاشات الفرعية ومنع إعادة تهيئتها عند بناء الأب
   const DriverAvailableDeliveriesV3Screen({
-    super.key, // <--- هذا هو التعديل الأهم
+    super.key,
     required this.authResult,
     required this.onDeliveryAccepted,
     required this.onRefresh,
@@ -2760,10 +2857,24 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     super.dispose();
   }
 
+  // 🔥 تعديل دالة الاستماع لإشعارات السيرفر الخلفية لكسر "حالة السباق"
   Future<void> _handleNotification() async {
-    await Future.delayed(const Duration(milliseconds: 500));
+    print("🔄 [Auto-Refresh] إشعار جديد وصل، جاري تحديث القائمة تلقائياً...");
+
+    if (!mounted) return;
+
+    // 1. إظهار علامة التحميل الدائرية فوراً ليعرف السائق أن التطبيق يستجيب للرنة
+    setState(() {
+      _isLoading = true;
+    });
+
+    // 2. 🔥 تأخير ذكي (1.2 ثانية): إعطاء فرصة كاملة لقاعدة بيانات السيرفر لإنهاء حفظ الطلب الجديد
+    await Future.delayed(const Duration(milliseconds: 1200));
+
+    // 3. جلب البيانات بصمت وتحديث الواجهة
     if (mounted) {
       await _loadDataSafe(isSilent: true);
+      // رجة خفيفة للهاتف لتنبيه السائق بصرياً وحسياً أن القائمة استلمت طلب جديد
       Vibration.vibrate(duration: 100);
     }
   }
@@ -2800,8 +2911,9 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
           }
         });
 
+        // 🔥 استخدام List.from يجبر Flutter على تدمير الكاش القديم وإعادة رسم الشاشة فورا بالطلب الجديد
         setState(() {
-          _ordersList = newOrders;
+          _ordersList = List.from(newOrders);
           _isLoading = false;
           _isFirstLoad = false;
         });
@@ -2834,7 +2946,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
             const SizedBox(height: 20),
             const Text("رصيدك منتهي", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
-            Text("يتطلب $_costInPoints نقطة لقبول الطلبات"),
+            Text("يتطلب $_costInPoints نقطة قبول الطلبات"),
             const SizedBox(height: 20),
             ElevatedButton(
               onPressed: () => launchUrl(Uri.parse("https://wa.me/+9647854076931"), mode: LaunchMode.externalApplication),
@@ -2978,7 +3090,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     );
   }
 
-  // 💡 دالة لترجمة الأوزان الكسرية إلى نصوص عربية مفهومة
   String _formatFractionWeight(String qtyStr) {
     double? qty = double.tryParse(qtyStr);
     if (qty == null) return qtyStr;
@@ -2992,11 +3103,9 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     if (qty == 2.25) return "كيلوين وربع";
     if (qty == 2.5) return "كيلوين ونصف";
 
-    // إذا كان كسراً غير معروف في القائمة نرجعه مع كلمة كيلو
     return "$qty كيلو";
   }
 
-  // 🔥 عرض تفاصيل الطلب (التصميم الجديد والذكي للأوزان)
   void _showDetailsDialog(Map<String, dynamic> order, String priceStr) {
     final String orderId = order['id']?.toString() ?? '...';
     final String sourceType = order['source_type']?.toString() ?? 'restaurant';
@@ -3056,7 +3165,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                     final String rawQty = item['quantity']?.toString() ?? '1';
                     final double qtyDouble = double.tryParse(rawQty) ?? 1.0;
 
-                    // 💡 التحقق: هل هو كسر والمصدر مسواك؟
                     final bool isFraction = qtyDouble % 1 != 0 && sourceType == 'market';
 
                     return Padding(
@@ -3073,7 +3181,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                                     Expanded(
                                       child: Text(item['name'] ?? '', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
                                     ),
-                                    // 🍊 شارة الوزن المخصص (تظهر فقط إذا كان كسراً)
                                     if (isFraction)
                                       Container(
                                         margin: const EdgeInsets.only(right: 8),
@@ -3100,8 +3207,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                             ),
                           ),
                           const SizedBox(width: 15),
-                          // 📦 المربع سيتغير تصميمه حسب نوع الكمية (صحيح = أزرق / كسر = مخفي أو برتقالي حسب الشارة)
-                          // بما أن الشارة البرتقالية تكفي للمسواك، سنبقي المربع للعدد الصحيح فقط للترتيب
                           if (!isFraction)
                             Container(
                                 width: 45, height: 45,
@@ -3211,8 +3316,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
       return "وقت غير صالح";
     }
   }
-}// =============================================================================
-
+}
 class DriverCurrentDeliveryScreen extends StatefulWidget {
   final Map<String, dynamic> initialDelivery;
   final AuthResult authResult;
@@ -3262,11 +3366,13 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   // 🔥 عرض تفاصيل الطلب (التصميم الجديد المطابق للصور)
   // ========================================================================
 
+  // ========================================================================
+  // 🔥 عرض تفاصيل الطلب (التصميم الجديد المعتمد على السيرفر الناقل الأمين)
+  // ========================================================================
   void _showOrderDetailsDialog() {
     final String orderId = _currentDelivery['id']?.toString() ?? '...';
     final String sourceType = _currentDelivery['source_type']?.toString() ?? 'restaurant';
 
-    // محاولة استخراج المنتجات كقائمة (إذا كان السيرفر يرسلها كـ Array)
     List<dynamic> items = [];
     if (_currentDelivery['line_items'] != null && _currentDelivery['line_items'] is List) {
       items = _currentDelivery['line_items'];
@@ -3275,15 +3381,11 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
 
     // =========================================================
-    // 🧮 التطبيق هو من يقوم بالحساب (تفادياً لأي خطأ من السيرفر)
+    // 🧮 التطبيق لم يعد يحسب! نحن نقرأ المبالغ المجهزة من السيرفر
     // =========================================================
-
-    // 1. استلام الأرقام الصافية كما جاءت من السيرفر
+    final double orderTotal = double.tryParse(_currentDelivery['order_total']?.toString() ?? '0') ?? 0;
     final double deliveryFee = double.tryParse(_currentDelivery['delivery_fee']?.toString() ?? '0') ?? 0;
-    final double orderTotal = double.tryParse(_currentDelivery['order_total']?.toString() ?? '0') ?? 0; // سعر الوجبات الصافي
-
-    // 2. التطبيق يقوم بعملية الجمع (الإجمالي المطلوب تحصيله من الزبون)
-    final double finalGrandTotal = orderTotal + deliveryFee;
+    final double totalToCollect = double.tryParse(_currentDelivery['total_to_collect']?.toString() ?? '0') ?? 0;
 
     showModalBottomSheet(
       context: context,
@@ -3300,7 +3402,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
             child: ListView(
               controller: controller,
               children: [
-                // شريط السحب العلوي (المؤشر الرمادي)
                 Center(
                     child: Container(
                         width: 50, height: 5,
@@ -3309,7 +3410,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                     )
                 ),
 
-                // الرأس (رقم الطلب وأيقونة المصدر)
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -3325,28 +3425,23 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                 ),
                 const Divider(height: 30),
 
-                // 📋 قائمة المنتجات
                 if (items.isNotEmpty)
                   ...items.map((item) => Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8.0),
                     child: Row(
                       children: [
-                        // مربع الكمية الأزرق الفاتح
                         Container(
                             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                             decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8)),
                             child: Text("${item['quantity'] ?? '1'}x", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue))
                         ),
                         const SizedBox(width: 12),
-                        // اسم المنتج
                         Expanded(child: Text(item['name'] ?? '', style: const TextStyle(fontSize: 16))),
-                        // السعر
                         Text("${NumberFormat('#,###').format(double.tryParse(item['total']?.toString() ?? '0') ?? 0)} د.ع", style: const TextStyle(fontWeight: FontWeight.bold)),
                       ],
                     ),
                   )).toList()
                 else
-                // حل بديل: إذا كان السيرفر يرسل المنتجات كنص عادي (items_description)
                   Center(
                       child: Padding(
                         padding: const EdgeInsets.all(10.0),
@@ -3361,17 +3456,20 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                 const Divider(height: 30),
 
                 // 💰 الملخص المالي
-                _buildSummaryRow("سعر الطلبات:", orderTotal),
+                _buildSummaryRow("سعر الطلبات (يُدفع للمطعم):", orderTotal),
                 const SizedBox(height: 12),
                 _buildSummaryRow("أجرة التوصيل:", deliveryFee),
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 15),
                   child: Divider(),
                 ),
-                _buildSummaryRow("المطلوب من الزبون:", finalGrandTotal, isBold: true, color: Colors.green.shade700, size: 18),
-                const SizedBox(height: 30),
 
-                // زر الإغلاق
+                // 🔥 المبلغ الكلي المطلوب من الزبون
+                _buildSummaryRow("المطلوب من الزبون الكلي:", totalToCollect, isBold: true, color: Colors.green.shade700, size: 18),
+                const SizedBox(height: 10),
+                Text("هذا هو المبلغ الذي يجب أن تستلمه من الزبون بالكامل.", style: TextStyle(fontSize: 12, color: Colors.grey.shade600), textAlign: TextAlign.center),
+
+                const SizedBox(height: 30),
                 SizedBox(
                     width: double.infinity,
                     height: 50,
@@ -3393,7 +3491,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       },
     );
   }
-
   // دالة مساعدة لبناء صفوف الأسعار
   Widget _buildSummaryRow(String label, double amount, {bool isBold = false, Color? color, double size = 16}) {
     return Row(
@@ -3838,23 +3935,157 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
           ),
         );
       case 'picked_up':
-        return SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            icon: const Icon(Icons.check_circle, size: 28),
-            label: const Text('تم التسليم'),
-            onPressed: _isLoading ? null : () => _updateStatus('delivered'),
-            style: buttonStyle.copyWith(
-              backgroundColor: const WidgetStatePropertyAll(Colors.green),
-              foregroundColor: const WidgetStatePropertyAll(Colors.white),
+      // 🔥 هنا الإضافة: زران بدلاً من زر واحد. واحد للتسليم العادي وآخر للخصومات
+        return Column(
+          children: [
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.check_circle, size: 28),
+                label: const Text('تم التسليم (المبلغ كامل)'),
+                onPressed: _isLoading ? null : () => _updateStatus('delivered'),
+                style: buttonStyle.copyWith(
+                  backgroundColor: const WidgetStatePropertyAll(Colors.green),
+                  foregroundColor: const WidgetStatePropertyAll(Colors.white),
+                ),
+              ),
             ),
-          ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.receipt_long, size: 20),
+                label: const Text('تم التسليم (يوجد خصم / رفع فاتورة)'),
+                onPressed: _isLoading ? null : _showReceiptUploadDialog,
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  foregroundColor: Colors.indigo,
+                  side: const BorderSide(color: Colors.indigo, width: 2),
+                ),
+              ),
+            ),
+          ],
         );
       default:
         return const SizedBox.shrink();
     }
   }
 
+  // 🔥 دالة رفع الفاتورة المضافة حديثاً
+// 🔥 نافذة رفع الفاتورة (بدون إدخال مبلغ - السيرفر سيحسبه)
+  void _showReceiptUploadDialog() {
+    File? imageFile;
+    bool isUploading = false;
+
+    showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+        builder: (ctx) {
+          return StatefulBuilder(
+              builder: (BuildContext context, StateSetter setModalState) {
+                return Padding(
+                  padding: EdgeInsets.only(
+                    bottom: MediaQuery.of(context).viewInsets.bottom,
+                    left: 20, right: 20, top: 20,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("إثبات تسليم بخصم", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 10),
+                      const Text("يُرجى التقاط صورة واضحة لفاتورة المطعم التي توضح قيمة الخصم. النظام سيقوم بحساب تعويضك تلقائياً.", style: TextStyle(color: Colors.grey, height: 1.5)),
+                      const SizedBox(height: 25),
+
+                      InkWell(
+                        onTap: () async {
+                          final ImagePicker picker = ImagePicker();
+                          final XFile? image = await picker.pickImage(source: ImageSource.camera, imageQuality: 50);
+                          if (image != null) {
+                            setModalState(() {
+                              imageFile = File(image.path);
+                            });
+                          }
+                        },
+                        child: Container(
+                          height: 180,
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              border: Border.all(color: Colors.indigo.shade200, width: 2, style: BorderStyle.solid),
+                              borderRadius: BorderRadius.circular(15)
+                          ),
+                          child: imageFile == null
+                              ? Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: const [
+                              Icon(Icons.camera_alt, size: 50, color: Colors.indigo),
+                              SizedBox(height: 10),
+                              Text("التقط صورة الفاتورة", style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold))
+                            ],
+                          )
+                              : ClipRRect(
+                            borderRadius: BorderRadius.circular(13),
+                            child: Image.file(imageFile!, fit: BoxFit.cover),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 30),
+
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: isUploading ? null : () async {
+                            if (imageFile == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("يرجى التقاط صورة الفاتورة أولاً")));
+                              return;
+                            }
+
+                            setModalState(() => isUploading = true);
+
+                            final bytes = await imageFile!.readAsBytes();
+                            final base64Image = base64Encode(bytes);
+
+                            // نرسل 0 في المبلغ لأن السيرفر سيتجاهله ويحسب من عنده
+                            final res = await ApiService.uploadReceiptForCompensation(
+                                widget.authResult.token,
+                                _currentDelivery['id'].toString(),
+                                base64Image,
+                                0.0
+                            );
+
+                            setModalState(() => isUploading = false);
+                            Navigator.pop(ctx);
+
+                            if (res['success'] == true) {
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("تم رفع الفاتورة بنجاح وسيتم التدقيق"), backgroundColor: Colors.green));
+                              widget.onDeliveryFinished();
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res['message'] ?? "فشل الرفع"), backgroundColor: Colors.red));
+                            }
+                          },
+                          style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 15),
+                              backgroundColor: Colors.indigo,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
+                          ),
+                          child: isUploading
+                              ? const CircularProgressIndicator(color: Colors.white)
+                              : const Text("تأكيد التسليم ورفع الفاتورة", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                    ],
+                  ),
+                );
+              }
+          );
+        }
+    );
+  }
   @override
   Widget build(BuildContext context) {
     final status = _currentDelivery['order_status'] ?? 'pending';
@@ -4210,58 +4441,546 @@ class HistoryTabV3 extends StatelessWidget {
     );
   }
 }
-class PointsTab extends StatelessWidget {
+class PointsTab extends StatefulWidget {
   final String token;
   final VoidCallback onLogout;
   const PointsTab({super.key, required this.token, required this.onLogout});
 
   @override
+  State<PointsTab> createState() => _PointsTabState();
+}
+
+class _PointsTabState extends State<PointsTab> {
+  bool _isGeneratingBarcode = false;
+  bool _isLoadingFinances = true;
+
+  double _liability = 0; // مطلوب للمنصة
+  double _lockedComp = 0; // مطلوب للسائق (فواتير قيد التدقيق)
+  double _unlockedComp = 0; // تعويضات جاهزة للسحب
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchFinancialProfile();
+  }
+
+  Future<void> _fetchFinancialProfile() async {
+    setState(() => _isLoadingFinances = true);
+    final res = await ApiService.getFinancialProfile(widget.token);
+    if (mounted) {
+      setState(() {
+        _isLoadingFinances = false;
+        if (res['success'] == true) {
+          _liability = (res['liability'] ?? 0).toDouble();
+          _lockedComp = (res['locked_compensation'] ?? 0).toDouble();
+          _unlockedComp = (res['unlocked_compensation'] ?? 0).toDouble();
+        }
+      });
+    }
+  }
+
+  // 🔥 دالة طلب تصفية الحساب (توليد الرمز وعرض الديون)
+// 🔥 دالة طلب تصفية الحساب (الديون والتعويضات)
+  Future<void> _generateSettlement() async {
+    setState(() => _isGeneratingBarcode = true);
+    try {
+      final res = await ApiService.generateSettlementBarcode(widget.token);
+      setState(() => _isGeneratingBarcode = false);
+
+      if (res['success'] == true) {
+        _showBarcodeDialog(
+            res['barcode_token'],
+            res['current_liability'],
+            res['current_cashback'] ?? 0
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(res['message'] ?? 'لا توجد مبالغ لتصفيتها'), backgroundColor: Colors.orange),
+        );
+      }
+    } catch (e) {
+      setState(() => _isGeneratingBarcode = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('حدث خطأ في الاتصال بالسيرفر'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  // 🔥 نافذة عرض الرمز (الباركود) الشامل للتيم ليدر
+  void _showBarcodeDialog(String tokenStr, dynamic liabilityRaw, dynamic cashbackRaw) {
+    final double liability = (liabilityRaw as num).toDouble();
+    final double cashback = (cashbackRaw as num).toDouble();
+
+    // حساب الصافي (الفرق بين ما على السائق وما له)
+    final double netAmount = liability - cashback;
+
+    String netText = "";
+    Color netColor = Colors.black;
+    if (netAmount > 0) {
+      netText = "عليك دفع: ${NumberFormat('#,###').format(netAmount)} د.ع";
+      netColor = Colors.red;
+    } else if (netAmount < 0) {
+      netText = "لك استلام: ${NumberFormat('#,###').format(netAmount.abs())} د.ع";
+      netColor = Colors.green;
+    } else {
+      netText = "الحساب متصفي (0 د.ع)";
+      netColor = Colors.indigo;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('تصفية الحساب الشاملة', textAlign: TextAlign.center, style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // تفصيل الحساب
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('مطلوب للمنصة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                Text('${NumberFormat('#,###').format(liability)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('مطلوب من المنصة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                Text('${NumberFormat('#,###').format(cashback)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+              ],
+            ),
+            const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Divider(thickness: 1.5)),
+
+            // الصافي
+            const Text('الصافي النهائي:', style: TextStyle(color: Colors.black87, fontSize: 14, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 5),
+            Text(netText, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: netColor)),
+
+            const SizedBox(height: 25),
+            const Text('اعرض هذا الرمز على (التيم ليدر) لإتمام التصفية المالية:', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 10),
+
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+              decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(color: Colors.indigo, width: 2, style: BorderStyle.solid)
+              ),
+              child: SelectableText(
+                  tokenStr,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.indigo),
+                  textAlign: TextAlign.center
+              ),
+            ),
+            const SizedBox(height: 15),
+            const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.timer, size: 16, color: Colors.redAccent),
+                SizedBox(width: 5),
+                Text('الرمز صالح لمدة 10 دقائق فقط', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _fetchFinancialProfile(); // تحديث الأرقام بعد الإغلاق
+              },
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey.shade200,
+                  foregroundColor: Colors.black87,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
+              ),
+              child: const Text('إغلاق', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+          )
+        ],
+      ),
+    );
+  }
+  // 🔥 نافذة عرض الرمز (الباركود) للتيم ليدر
+
+  @override
   Widget build(BuildContext context) {
-    // ✅ استخدام ValueListenableBuilder يجعل الرقم يتحدث فوراً دون إعادة تحميل الصفحة
     return ValueListenableBuilder<int>(
       valueListenable: BalanceManager.balanceNotifier,
       builder: (context, balance, child) {
-        return Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.stars,
-                size: 80,
-                color: balance <= 3 ? Colors.red : Colors.amber,
-              ),
-              const SizedBox(height: 10),
-              Text(
-                "$balance",
-                style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold),
-              ),
-              const Text("نقطة"),
-              const SizedBox(height: 20),
+        return RefreshIndicator(
+          onRefresh: () async {
+            await BalanceManager.refresh();
+            await _fetchFinancialProfile();
+          },
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                children: [
+                  // 1️⃣ المحفظة التشغيلية (النقاط)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(25),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: balance <= 3
+                            ? [Colors.red.shade400, Colors.red.shade700]
+                            : [Colors.amber.shade400, Colors.orange.shade600],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, offset: const Offset(0, 5))],
+                    ),
+                    child: Column(
+                      children: [
+                        const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.stars, color: Colors.white, size: 24),
+                            SizedBox(width: 8),
+                            Text("رصيد العمل (النقاط)", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          "$balance",
+                          style: const TextStyle(fontSize: 45, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
+                        const SizedBox(height: 15),
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.add_circle_outline, color: Colors.white, size: 20),
+                          label: const Text("شحن النقاط", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          onPressed: () => launchUrl(Uri.parse("https://wa.me/+9647854076931"), mode: LaunchMode.externalApplication),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white.withOpacity(0.3),
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
 
-              // زر تحديث يدوي إضافي
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                onPressed: () => BalanceManager.refresh(),
-              ),
+                  const SizedBox(height: 25),
 
-              const SizedBox(height: 10),
-              ElevatedButton(
-                onPressed: () => launchUrl(
-                  Uri.parse("https://wa.me/+9647854076931"),
-                  mode: LaunchMode.externalApplication,
-                ),
-                child: const Text("شحن"),
+                  // 2️⃣ المحافظ المالية (الذمم والتعويضات)
+                  if (_isLoadingFinances)
+                    const Padding(
+                      padding: EdgeInsets.all(20.0),
+                      child: CircularProgressIndicator(),
+                    )
+                  else
+                    Row(
+                      children: [
+                        // ديون المنصة
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.all(15),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(15),
+                              border: Border.all(color: Colors.red.shade200),
+                              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 5)],
+                            ),
+                            child: Column(
+                              children: [
+                                const Icon(Icons.arrow_downward, color: Colors.red, size: 28),
+                                const SizedBox(height: 5),
+                                const Text("مطلوب للمنصة", style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold)),
+                                const SizedBox(height: 5),
+                                Text("${NumberFormat('#,###').format(_liability)}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red)),
+                                const Text("د.ع", style: TextStyle(fontSize: 10, color: Colors.red)),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 15),
+                        // تعويضات السائق
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.all(15),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(15),
+                              border: Border.all(color: Colors.green.shade200),
+                              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 5)],
+                            ),
+                            child: Column(
+                              children: [
+                                const Icon(Icons.arrow_upward, color: Colors.green, size: 28),
+                                const SizedBox(height: 5),
+                                const Text("مطلوب من المنصة", style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold)),
+                                const SizedBox(height: 5),
+                                Text("${NumberFormat('#,###').format(_lockedComp + _unlockedComp)}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
+                                const Text("د.ع", style: TextStyle(fontSize: 10, color: Colors.green)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                  const SizedBox(height: 25),
+
+                  // 3️⃣ زر تصفية الذمة
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(15),
+                      border: Border.all(color: Colors.indigo.shade100, width: 1),
+                    ),
+                    child: Column(
+                      children: [
+                        const Icon(Icons.handshake, size: 40, color: Colors.indigo),
+                        const SizedBox(height: 10),
+                        const Text("تصفية الذمة المالية", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.indigo)),
+                        const SizedBox(height: 5),
+                        const Text("لتسديد ما عليك من ديون للمنصة (واستلام تعويضاتك)، قم بتوليد كود التصفية وأعطه للتيم ليدر.", textAlign: TextAlign.center, style: TextStyle(color: Colors.grey, fontSize: 12)),
+                        const SizedBox(height: 15),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            icon: _isGeneratingBarcode
+                                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white))
+                                : const Icon(Icons.qr_code_scanner, color: Colors.white),
+                            label: const Text("توليد كود التصفية", style: TextStyle(fontSize: 16, color: Colors.white)),
+                            onPressed: _isGeneratingBarcode ? null : _generateSettlement,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.indigo,
+                              padding: const EdgeInsets.symmetric(vertical: 15),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                          ),
+                        )
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 30),
+
+                  // زر الخروج
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.logout),
+                      label: const Text("تسجيل الخروج"),
+                      onPressed: widget.onLogout,
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red,
+                          side: const BorderSide(color: Colors.red),
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                ],
               ),
-              const SizedBox(height: 20),
-              OutlinedButton(onPressed: onLogout, child: const Text("خروج")),
-            ],
+            ),
           ),
         );
       },
     );
   }
 }
+
 // =============================================================================
+// 💰 EARNINGS TAB (شاشة أرباحي العصرية)
+// =============================================================================
+class EarningsTab extends StatefulWidget {
+  final String token;
+  const EarningsTab({super.key, required this.token});
+
+  @override
+  State<EarningsTab> createState() => _EarningsTabState();
+}
+
+class _EarningsTabState extends State<EarningsTab> {
+  bool _isLoading = true;
+  double _todayEarnings = 0;
+  int _todayTrips = 0;
+  double _totalEarnings = 0;
+  int _totalTrips = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchEarnings();
+  }
+
+  Future<void> _fetchEarnings() async {
+    setState(() => _isLoading = true);
+    final res = await ApiService.getDriverEarnings(widget.token);
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        if (res['success'] == true) {
+          _todayEarnings = (res['today_earnings'] ?? 0).toDouble();
+          _todayTrips = res['today_trips'] ?? 0;
+          _totalEarnings = (res['total_earnings'] ?? 0).toDouble();
+          _totalTrips = res['total_trips'] ?? 0;
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      onRefresh: _fetchEarnings,
+      child: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 📅 بطاقة أرباح اليوم (مميزة)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(25),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF00c6ff), Color(0xFF0072ff)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(25),
+                boxShadow: [
+                  BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 8))
+                ],
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: const [
+                      Icon(Icons.today, color: Colors.white, size: 24),
+                      SizedBox(width: 8),
+                      Text("أرباح اليوم (الصافية)", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const SizedBox(height: 15),
+                  Text(
+                    "${NumberFormat('#,###').format(_todayEarnings)}",
+                    style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                  const Text("دينار عراقي", style: TextStyle(color: Colors.white70, fontSize: 16)),
+                  const Padding(padding: EdgeInsets.symmetric(vertical: 15), child: Divider(color: Colors.white30, thickness: 1)),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("الرحلات المكتملة اليوم:", style: TextStyle(color: Colors.white, fontSize: 16)),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 5),
+                        decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(20)),
+                        child: Text("$_todayTrips رحلة", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 30),
+            const Text("📊 الإحصائيات الشاملة", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.indigo)),
+            const SizedBox(height: 15),
+
+            // 💰 بطاقة الأرباح الكلية
+            Row(
+              children: [
+                Expanded(
+                  child: _buildStatCard(
+                    title: "إجمالي الأرباح",
+                    value: "${NumberFormat('#,###').format(_totalEarnings)}",
+                    unit: "د.ع",
+                    icon: Icons.account_balance_wallet,
+                    color: Colors.green,
+                  ),
+                ),
+                const SizedBox(width: 15),
+                // 🚗 بطاقة الرحلات الكلية
+                Expanded(
+                  child: _buildStatCard(
+                    title: "إجمالي الرحلات",
+                    value: "$_totalTrips",
+                    unit: "رحلة مكتملة",
+                    icon: Icons.local_shipping,
+                    color: Colors.orange,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 30),
+
+            // ملاحظة للتوضيح
+            Container(
+              padding: const EdgeInsets.all(15),
+              decoration: BoxDecoration(
+                  color: Colors.indigo.shade50,
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(color: Colors.indigo.shade100)
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.indigo.shade400),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      "هذه الأرباح تمثل (أجور التوصيل) الصافية الخاصة بك للطلبات المكتملة فقط.",
+                      style: TextStyle(color: Colors.indigo.shade800, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          ],
+        ),
+      ),
+    );
+  }
+
+  // تصميم البطاقات الصغيرة
+  Widget _buildStatCard({required String title, required String value, required String unit, required IconData icon, required MaterialColor color}) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: color.shade50, shape: BoxShape.circle),
+            child: Icon(icon, color: color.shade600, size: 28),
+          ),
+          const SizedBox(height: 15),
+          Text(title, style: TextStyle(color: Colors.grey.shade600, fontSize: 14, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 5),
+          Text(value, style: TextStyle(color: color.shade800, fontSize: 24, fontWeight: FontWeight.bold)),
+          Text(unit, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}
 // 📞 شاشة المكالمة الخاصة بالسائق (محدثة مع مؤقت ذكي وإجبار الصوت)
 // =============================================================================
 class DriverCallPage extends StatefulWidget {
