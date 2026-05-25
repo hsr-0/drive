@@ -20,15 +20,6 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart' as geolocator;
 import 'package:vibration/vibration.dart';
 
-// =============================================================================
-// 🔑 BALANCE MANAGER (المصدر الوحيد للرصيد - احترافي V3)
-// =============================================================================
-// =============================================================================
-// 🔑 BALANCE MANAGER (المصدر الوحيد للرصيد - احترافي V3)
-// =============================================================================
-// =============================================================================
-// 🔑 BALANCE MANAGER (المصدر الوحيد للرصيد - احترافي V3)
-// =============================================================================
 class BalanceManager {
   static int _balance = 0;
   static String _token = '';
@@ -58,7 +49,6 @@ class BalanceManager {
   }
 
   // ✅ التهيئة الأولية
-
   static Future<bool> initialize(String token) async {
     _token = token;
     try { await _initLocalNotifications(); } catch (e) {}
@@ -86,8 +76,7 @@ class BalanceManager {
     return _balance > 0;
   }
 
-
-  // ✅ الدالة الأساسية لجلب الرصيد (معدلة لمنع الكاش)
+  // ✅ الدالة الأساسية لجلب الرصيد (معدلة لمنع الكاش وإجبار الآيفون على اتصال جديد)
   static Future<int> getPointsV3(String token) async {
     try {
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
@@ -99,7 +88,9 @@ class BalanceManager {
           'Authorization': 'Bearer $token',
           'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
           'Pragma': 'no-cache',
-          'Expires': '0', // 🔥 حاسم لـ iOS
+          'Expires': '0',
+          'Accept': 'application/json', // 👈 ضروري جداً لمنع حظر السيرفر للآيفون
+          'Connection': 'close',        // 👈 السر هنا: يجبر الآيفون على تجاهل الاتصال الميت وفتح واحد جديد
         },
       ).timeout(const Duration(seconds: 15));
 
@@ -112,13 +103,13 @@ class BalanceManager {
           return finalBalance;
         }
       }
-      // 🔥 إرجاع -1 للإشارة لفشل الطلب بدلاً من 0 الصامت
       return -1;
     } catch (e) {
       print("❌ [BalanceManager] getPointsV3 Error: $e");
-      return -1; // 🔥 منع الرجوع بـ 0 عند أي خطأ شبكة أو كاش
+      return -1;
     }
   }
+
   // ✅ تحديث الرصيد محلياً وتحديث الواجهة
   static void setCurrent(int newBalance) {
     if (_balance != newBalance) {
@@ -144,10 +135,11 @@ class BalanceManager {
     balanceNotifier.value = _balance;
   }
 
-  // ✅ تحديث الرصيد من السيرفر يدوياً
-  static Future<void> refresh() async {
-    if (_token.isEmpty) return;
-    await getPointsV3(_token);
+  // ✅ تحديث الرصيد من السيرفر يدوياً (معدلة لترجع bool)
+  static Future<bool> refresh() async {
+    if (_token.isEmpty) return false;
+    int fetchedBalance = await getPointsV3(_token);
+    return fetchedBalance >= 0; // يرجع true إذا نجح الاتصال والسيرفر أرجع قيمة صالحة
   }
 
   // ✅ معالجة تحديث الرصيد القادم من الإشعارات الخلفية
@@ -170,7 +162,7 @@ class BalanceManager {
 
   // 🔔 إعداد الإشعارات المحلية
   static Future<void> _initLocalNotifications() async {
-    // 1. إعدادات الأندرويد (كما هي في كودك الأصلي)
+    // 1. إعدادات الأندرويد
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
 
     // 2. 🔥 إضافة إعدادات الآيفون (iOS) الضرورية لمنع انهيار التطبيق
@@ -196,6 +188,7 @@ class BalanceManager {
           ?.createNotificationChannel(_channel);
     }
   }
+
   // 🔔 منطق التنبيه عند انخفاض الرصيد
   static void _showBalanceAlert(int points) {
     if (points == 10 || points == 5 || points == 1) {
@@ -244,7 +237,6 @@ class BalanceManager {
   static bool get hasBalance => _balance > 0;
   static bool get isInitialized => _isInitialized;
 }
-
 
 
 
@@ -2039,6 +2031,9 @@ class _DriverChatPageState extends State<DriverChatPage> {
 
 // =============================================================================
 // شاشة إيقاف الحساب عند 0 نقاط (محسّنة وصحيحة)
+// =============================================================================
+// شاشة إيقاف الحساب عند 0 نقاط (مع زر تسجيل الخروج)
+// =============================================================================
 class ZeroBalanceLockScreen extends StatefulWidget {
   final String token;
   final VoidCallback onRecharge;
@@ -2052,12 +2047,10 @@ class _ZeroBalanceLockScreenState extends State<ZeroBalanceLockScreen> {
   @override
   void initState() {
     super.initState();
-    // 🔥 الاستماع الفوري لأي تحديث في الرصيد (سواء من زر التحديث أو إشعار خلفية)
     BalanceManager.balanceNotifier.addListener(_autoUnlock);
   }
 
   void _autoUnlock() {
-    // إذا أصبح الرصيد > 0، اغلق الشاشة فوراً وعد للواجهة الرئيسية
     if (BalanceManager.current > 0 && mounted) {
       BalanceManager.balanceNotifier.removeListener(_autoUnlock);
       Navigator.pushAndRemoveUntil(
@@ -2076,38 +2069,53 @@ class _ZeroBalanceLockScreenState extends State<ZeroBalanceLockScreen> {
 
   Future<void> _refreshBalance(BuildContext context) async {
     try {
-      await BalanceManager.refresh();
+      bool success = await BalanceManager.refresh();
       await Future.delayed(const Duration(milliseconds: 500));
+
       if (!context.mounted) return;
 
-      if (BalanceManager.hasBalance) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("✅ تم شحن المحفظة بنجاح!"), backgroundColor: Colors.green),
-        );
-        // الـ Listener في initState سيغلق الشاشة تلقائياً، لكن نضيفها هنا كضمان
-        if (mounted) {
+      if (success) {
+        if (BalanceManager.hasBalance) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("✅ تم تحديث المحفظة بنجاح!"), backgroundColor: Colors.green),
+          );
           Navigator.pushAndRemoveUntil(
             context,
             MaterialPageRoute(builder: (_) => const AuthGate()),
                 (route) => false,
           );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("⚠️ الرصيد الفعلي لا يزال صفر. يرجى الشحن."), backgroundColor: Colors.orange),
+          );
         }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("⚠️ الرصيد لا يزال منخفضًا. يرجى الشحن مرة أخرى"), backgroundColor: Colors.orange),
+          const SnackBar(content: Text("❌ فشل الاتصال بالسيرفر. تأكد من جودة الإنترنت وحاول مجدداً."), backgroundColor: Colors.red),
         );
       }
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("❌ فشل في تحديث الرصيد: ${e.toString()}"), backgroundColor: Colors.red),
+        SnackBar(content: Text("❌ حدث خطأ: ${e.toString()}"), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  // ✅ الدالة الجديدة لتسجيل الخروج
+  Future<void> _logout(BuildContext context) async {
+    await ApiService.logout(); // مسح البيانات من الذاكرة المحلية
+    if (context.mounted) {
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const AuthGate()),
+            (route) => false, // إزالة جميع الشاشات السابقة والعودة لبوابة الدخول
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // 🔽 ضع هنا نفس كود الـ UI الأصلي الخاص بك دون أي تغيير
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(
@@ -2137,9 +2145,20 @@ class _ZeroBalanceLockScreenState extends State<ZeroBalanceLockScreen> {
                       style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white, width: 2), padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), foregroundColor: Colors.white),
                     ),
                     const SizedBox(height: 15),
+
+                    // زر التحديث
                     TextButton(
                       onPressed: () => _refreshBalance(context),
                       child: const Text("تم الشحن؟ اضغط للتحديث", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                    ),
+
+                    const Divider(color: Colors.white30, thickness: 1, height: 20),
+
+                    // ✅ زر تسجيل الخروج الجديد
+                    TextButton.icon(
+                      onPressed: () => _logout(context),
+                      icon: const Icon(Icons.logout, color: Colors.redAccent, size: 20),
+                      label: const Text("تسجيل الخروج", style: TextStyle(color: Colors.redAccent, fontSize: 16, fontWeight: FontWeight.bold)),
                     ),
                   ],
                 ),
@@ -2151,7 +2170,6 @@ class _ZeroBalanceLockScreenState extends State<ZeroBalanceLockScreen> {
     );
   }
 }
-
 
 // =============================================================================
 // AUTH SYSTEM
