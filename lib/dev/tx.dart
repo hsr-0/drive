@@ -868,6 +868,7 @@ class NotificationService {
         ?.createNotificationChannel(_channel);
 
     // 4️⃣ 🔥 الاستماع للإشعارات الواردة (Foreground)
+// 4️⃣ 🔥 الاستماع للإشعارات الواردة والتطبيق مفتوح (Foreground)
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       RemoteNotification? notification = message.notification;
       Map<String, dynamic> data = message.data;
@@ -908,18 +909,17 @@ class NotificationService {
         if (hasVib == true) Vibration.vibrate(duration: 500);
       });
 
-      // تحديث قوائم الطلبات في الواجهة فوراً
-      //refreshTrigger.value = !refreshTrigger.value;
+      // 🔥🔥🔥 الحل الجذري: قراءة الريموت كنترول من السيرفر
+      if (data['force_refresh'] == 'true' || data['type'] == 'new_delivery') {
+        print("🔥 [SERVICE] السيرفر يطلب تحديث الشاشة الآن! جاري التحديث التلقائي...");
 
-
-// ✅ أضف هذا السطر (زيادة العداد تضمن التنبيه دائماً):
-      orderRefreshCounter.value++;
-      print("🔔 [SERVICE] 🔥 تم زيادة عداد التحديث إلى: ${orderRefreshCounter.value}");
+        // زيادة العداد ستجبر شاشة "الطلبات المتاحة" وشاشة "الواجهة الرئيسية" على التحديث
+        orderRefreshCounter.value++;
+      }
 
       // معالجة الرصيد وعمليات السيرفر في الخلفية
       _handleBackgroundData(data);
     });
-
     // 5️⃣ الاستماع عند فتح التطبيق من الإشعار
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
       print("🔔 [NotificationService] App opened from notification: ${message.data}");
@@ -1363,6 +1363,7 @@ class ApiService {
       };
     }
   }
+// --- 1. تحديث دالة القبول لإخبار السيرفر أن التطبيق يدعم الدمج ---
   static Future<Map<String, dynamic>> acceptDeliveryV3(String t, String id, {int fee = 1}) async {
     try {
       final res = await http.post(
@@ -1372,6 +1373,7 @@ class ApiService {
           'order_id': id,
           'fee': fee,
           'driver_post_id': id,
+          'supports_batch': true, // 🔥 المفتاح السري لتفعيل الطلبات المتعددة
         }),
       );
       return json.decode(res.body);
@@ -1381,6 +1383,29 @@ class ApiService {
     }
   }
 
+  // --- 2. تحديث دالة جلب الطلبات النشطة لترجع مصفوفة (List) ---
+  static Future<List<dynamic>> getMyActiveDeliveriesList(String t) async {
+    try {
+      final res = await http.get(
+        Uri.parse('$baseUrl/taxi/v3/driver/my-active-delivery'),
+        headers: {'Authorization': 'Bearer $t'},
+      );
+      if (res.statusCode == 200) {
+        final d = json.decode(res.body);
+        if (d['success'] == true) {
+          // السيرفر المحدث سيرجع active_deliveries
+          if (d['active_deliveries'] != null) {
+            return d['active_deliveries'];
+          }
+          // توافق عكسي في حال رجع طلب واحد
+          else if (d['delivery_order'] != null) {
+            return [d['delivery_order']];
+          }
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
   static Future<Map<String, dynamic>?> getMyActiveDelivery(String t) async {
     try {
       final res = await http.get(
@@ -2508,16 +2533,85 @@ class MainDeliveryLayout extends StatefulWidget {
   @override
   State<MainDeliveryLayout> createState() => _MainDeliveryLayoutState();
 }
+class DriverActiveOrdersPager extends StatelessWidget {
+  final List<dynamic> orders;
+  final AuthResult authResult;
+  final VoidCallback onDeliveryFinished;
+  final VoidCallback onDataChanged;
+  final VoidCallback onGoToAvailableOrders;
 
-class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
+  const DriverActiveOrdersPager({
+    super.key,
+    required this.orders,
+    required this.authResult,
+    required this.onDeliveryFinished,
+    required this.onDataChanged,
+    required this.onGoToAvailableOrders,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        PageView.builder(
+          itemCount: orders.length,
+          itemBuilder: (context, index) {
+            return DriverCurrentDeliveryScreen(
+              key: ValueKey('active_order_${orders[index]['id']}'),
+              initialDelivery: orders[index],
+              authResult: authResult,
+              onDeliveryFinished: onDeliveryFinished,
+              onDataChanged: onDataChanged,
+            );
+          },
+        ),
+
+        // مؤشر يوضح للمندوب أنه يمتلك أكثر من طلب
+        if (orders.length > 1)
+          Positioned(
+            top: 10,
+            left: 0,
+            right: 0,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(orders.length, (index) => Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.indigo.withOpacity(0.8),
+                  border: Border.all(color: Colors.white, width: 2),
+                ),
+              )),
+            ),
+          ),
+
+        // زر إضافي للعودة لشاشة الطلبات المتاحة إذا أراد دمج طلب آخر
+        if (orders.length < 3) // بناءً على الحد الأقصى
+          Positioned(
+            bottom: 20,
+            left: 20,
+            child: FloatingActionButton.extended(
+              onPressed: onGoToAvailableOrders,
+              backgroundColor: Colors.amber,
+              icon: const Icon(Icons.add_shopping_cart, color: Colors.black87),
+              label: const Text("دمج طلب", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+            ),
+          ),
+      ],
+    );
+  }
+}
+class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBindingObserver {
   int _idx = 0;
-  Map<String, dynamic>? _active;
+  List<dynamic> _activeOrders = []; // 🔥 التعديل 1: مصفوفة بدلاً من طلب واحد
   Timer? _locationTimer;
   bool _isRefreshingOrders = false;
+  bool _isViewingAvailableWhileActive = false; // 🔥 التعديل 2: للتحكم في عرض المتاحة أثناء النشطة
 
-  // ✅ مفاتيح ثابتة للحفاظ على حالة الشاشات الفرعية
   static const _deliveriesKey = ValueKey('deliveries_screen');
-  static const _earningsKey = ValueKey('earnings_screen'); // 🔥 مفتاح شاشة الأرباح الجديد
+  static const _earningsKey = ValueKey('earnings_screen');
   static const _historyKey = ValueKey('history_screen');
   static const _pointsKey = ValueKey('points_screen');
   static const _currentDeliveryKey = ValueKey('current_delivery_screen');
@@ -2527,34 +2621,41 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
     super.initState();
     print("🔹 [MAIN-LAYOUT] initState: تهيئة الواجهة الرئيسية");
 
+    // 🔥 تسجيل مراقب حياة التطبيق (للتحديث التلقائي عند العودة من الخلفية)
+    WidgetsBinding.instance.addObserver(this);
+
     _chk();
     _startLocationTracking();
-
-    // 🔥🔥🔥 الحل النهائي: الاستماع للعداد الرقمي بدلاً من refreshTrigger
     orderRefreshCounter.addListener(_handleGlobalRefresh);
-    print("🔹 [MAIN-LAYOUT] ✅ تم إضافة مستمع لـ orderRefreshCounter");
   }
 
   @override
   void dispose() {
     _locationTimer?.cancel();
-
-    // 🔥 إزالة المستمع من العداد الجديد
     orderRefreshCounter.removeListener(_handleGlobalRefresh);
-    print("🔹 [MAIN-LAYOUT] dispose: تنظيف مستمع orderRefreshCounter");
 
+    // 🔥 تنظيف المراقب عند إغلاق الشاشة لتجنب تسريب الذاكرة
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  // 🔥 دالة معالجة التحديث العالمي (لجلب الطلب النشط)
+  // 🔥 الدالة السحرية التي تعمل تلقائياً بمجرد استيقاظ التطبيق من الخلفية
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      print("📱 [APP] عاد التطبيق للواجهة (استيقظ)! جاري التحديث التلقائي...");
+      // إجبار التطبيق على تحديث القوائم وسحب الطلبات الجديدة فوراً
+      orderRefreshCounter.value++;
+    }
+  }
+
   void _handleGlobalRefresh() {
-    print("🔔 [MAIN-LAYOUT] 🔄 وصل تحديث عالمي، جاري فحص الطلب النشط...");
     if (mounted) _chk();
   }
 
   void _startLocationTracking() {
     _locationTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
-      if (_active != null && _idx == 0) {
+      if (_activeOrders.isNotEmpty && _idx == 0) {
         try {
           final position = await geolocator.Geolocator.getCurrentPosition(
             desiredAccuracy: geolocator.LocationAccuracy.high,
@@ -2565,121 +2666,119 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
     });
   }
 
+  // 🔥 التعديل 3: جلب مصفوفة الطلبات
   Future<void> _chk() async {
-    final o = await ApiService.getMyActiveDelivery(widget.authResult.token);
+    final orders = await ApiService.getMyActiveDeliveriesList(widget.authResult.token);
     if (mounted) {
-      // 🔥 الحل السحري: لا تقم بإعادة بناء الشاشة الرئيسية إذا كان السائق في شريط الطلبات
-      // (لم يتغير شيء). هذا يمنع مقاطعة الشاشة الفرعية أثناء جلبها للطلبات الجديدة!
-      if (_active == null && o == null) return;
+      if (_activeOrders.isEmpty && orders.isEmpty) return;
 
-      setState(() => _active = o);
+      setState(() {
+        _activeOrders = orders;
+        if (_activeOrders.isEmpty) {
+          _isViewingAvailableWhileActive = false;
+        }
+      });
     }
   }
 
-  // 🔥 عند قبول الطلب - الانتقال الفوري لشاشة الطلب النشط
   void _onDeliveryAccepted(Map<String, dynamic> order) {
-    print("✅ [MAIN-LAYOUT] 🎯 تم قبول طلب جديد، الانتقال للشاشة النشطة");
     setState(() {
-      _active = order;
+      _isViewingAvailableWhileActive = false;
       _idx = 0;
     });
+    _chk();
     BalanceManager.refresh();
   }
 
-  // 🔥 عند انتهاء الطلب
   void _handleDeliveryFinished() {
-    print("✅ [MAIN-LAYOUT] 🏁 انتهى الطلب النشط، جاري التحديث");
-    setState(() {
-      _active = null;
-    });
+    _chk();
     BalanceManager.refresh();
-
-    // 🔥🔥🔥 الحل النهائي: زيادة العداد بدلاً من عكس القيمة
     orderRefreshCounter.value++;
-    print("🔔 [MAIN-LAYOUT] 🔥 تم زيادة orderRefreshCounter إلى: ${orderRefreshCounter.value}");
   }
 
   @override
   Widget build(BuildContext context) {
-    print("🎨 [MAIN-LAYOUT] 🔄 إعادة بناء الواجهة الرئيسية، _idx=$_idx, _active=${_active != null ? 'نعم' : 'لا'}");
-
     final pages = [
-      // الصفحة 0: إما طلب جاري أو قائمة الطلبات
-      _active != null
-          ? DriverCurrentDeliveryScreen(
-        key: _currentDeliveryKey, // ✅ مفتاح للحفاظ على الحالة
-        initialDelivery: _active!,
+      // 🔥 التعديل 4: استخدام Pager الذي يحتوي على الزر الأصفر
+      (_activeOrders.isNotEmpty && !_isViewingAvailableWhileActive)
+          ? DriverActiveOrdersPager(
+        key: _currentDeliveryKey,
+        orders: _activeOrders,
         authResult: widget.authResult,
         onDeliveryFinished: _handleDeliveryFinished,
         onDataChanged: _chk,
+        onGoToAvailableOrders: () {
+          setState(() => _isViewingAvailableWhileActive = true);
+        },
       )
-          : DriverAvailableDeliveriesV3Screen(
-        key: _deliveriesKey, // ✅ هذا هو التعديل الأهم: يمنع إعادة تهيئة الشاشة
-        authResult: widget.authResult,
-        onDeliveryAccepted: _onDeliveryAccepted,
-        onRefresh: _chk,
+          : Stack(
+        children: [
+          DriverAvailableDeliveriesV3Screen(
+            key: _deliveriesKey,
+            authResult: widget.authResult,
+            activeOrdersCount: _activeOrders.length,
+            onDeliveryAccepted: _onDeliveryAccepted,
+            onRefresh: _chk,
+          ),
+          if (_isViewingAvailableWhileActive)
+            Positioned(
+              bottom: 20,
+              right: 20,
+              child: FloatingActionButton.extended(
+                onPressed: () => setState(() => _isViewingAvailableWhileActive = false),
+                backgroundColor: Colors.indigo,
+                icon: const Icon(Icons.arrow_back, color: Colors.white),
+                label: const Text("العودة لطلباتي", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ),
+        ],
       ),
 
-      // 🔥 الصفحة 1: شاشة أرباحي (الجديدة)
-      EarningsTab(
-        key: _earningsKey,
-        token: widget.authResult.token,
-      ),
-
-      // الصفحة 2: السجل
+      EarningsTab(key: _earningsKey, token: widget.authResult.token),
       HistoryTabV3(
-        key: _historyKey, // ✅ مفتاح للحفاظ على الحالة
+        key: _historyKey,
         token: widget.authResult.token,
         onOpenActive: (order) {
-          print("🔹 [MAIN-LAYOUT] 📂 فتح طلب من السجل: #${order['id']}");
           setState(() {
-            _active = order;
-            _idx = 0; // إرجاعه للرئيسية لفتح الطلب
+            if (!_activeOrders.any((o) => o['id'] == order['id'])) {
+              _activeOrders.add(order);
+            }
+            _isViewingAvailableWhileActive = false;
+            _idx = 0;
           });
         },
       ),
-
-      // الصفحة 3: الحساب والمحفظة
-      PointsTab(
-        key: _pointsKey, // ✅ مفتاح للحفاظ على الحالة
-        token: widget.authResult.token,
-        onLogout: widget.onLogout,
-      ),
+      PointsTab(key: _pointsKey, token: widget.authResult.token, onLogout: widget.onLogout),
     ];
 
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          // 👈 تعديل العناوين للتعامل مع 4 شاشات بذكاء
           _idx == 0
-              ? (_active != null ? "طلب جاري" : "الطلبات")
+              ? ((_activeOrders.isNotEmpty && !_isViewingAvailableWhileActive)
+              ? "طلبات جارية (${_activeOrders.length})"
+              : "الطلبات المتاحة")
               : (_idx == 1 ? "أرباحي" : (_idx == 2 ? "السجل" : "حسابي")),
         ),
         actions: [
-          if (_idx == 0 && _active == null)
+          if (_idx == 0 && (_activeOrders.isEmpty || _isViewingAvailableWhileActive))
             IconButton(
               icon: _isRefreshingOrders
                   ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                   : const Icon(Icons.refresh),
               onPressed: () async {
-                print("🔄 [MAIN-LAYOUT] 🔄 ضغط على زر التحديث اليدوي");
                 setState(() => _isRefreshingOrders = true);
-
-                // 🔥🔥🔥 الحل النهائي: زيادة العداد بدلاً من عكس القيمة
                 orderRefreshCounter.value++;
-                print("🔔 [MAIN-LAYOUT] 🔥 تم زيادة orderRefreshCounter يدوياً إلى: ${orderRefreshCounter.value}");
-
                 await Future.delayed(const Duration(seconds: 2));
                 if (mounted) setState(() => _isRefreshingOrders = false);
               },
             ),
-          if (_idx == 0 && _active == null) _buildBalanceWidget(),
-          if (_idx != 0 || _active != null)
+          if (_idx == 0 && (_activeOrders.isEmpty || _isViewingAvailableWhileActive)) _buildBalanceWidget(),
+          if (_idx != 0 || (_activeOrders.isNotEmpty && !_isViewingAvailableWhileActive))
             IconButton(
               icon: const Icon(Icons.refresh),
               onPressed: () {
-                print("🔄 [MAIN-LAYOUT] 🔄 تحديث الطلب النشط يدوياً");
-                if (_idx == 0) _chk(); // تحديث الطلب فقط إذا كنا في الشاشة الرئيسية
+                if (_idx == 0) _chk();
               },
             ),
         ],
@@ -2687,16 +2786,13 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
       body: pages[_idx],
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _idx,
-        type: BottomNavigationBarType.fixed, // 🔥 ضروري عندما يكون عدد الأزرار أكثر من 3 لكي لا تختفي النصوص
+        type: BottomNavigationBarType.fixed,
         selectedItemColor: Colors.indigo,
         unselectedItemColor: Colors.grey,
-        onTap: (i) {
-          print("🔹 [MAIN-LAYOUT] 📱 تغيير التبويب إلى: $i");
-          setState(() => _idx = i);
-        },
+        onTap: (i) => setState(() => _idx = i),
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: "الرئيسية"),
-          BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet), label: "أرباحي"), // 🔥 الزر الجديد
+          BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet), label: "أرباحي"),
           BottomNavigationBarItem(icon: Icon(Icons.history), label: "السجل"),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: "حسابي"),
         ],
@@ -2708,10 +2804,7 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
     return Container(
       margin: const EdgeInsets.only(right: 16),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.white24,
-        borderRadius: BorderRadius.circular(20),
-      ),
+      decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(20)),
       child: Row(
         children: [
           const Icon(Icons.monetization_on, size: 18, color: Colors.amber),
@@ -2727,13 +2820,6 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
     );
   }
 }
-
-
-
-
-
-
-
 
 
 
@@ -2767,18 +2853,18 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> {
 // شاشة الطلبات المتاحة (محسّنة)
 // =============================================================================
 // شاشة الطلبات المتاحة V3 (محسّنة + تشخيص مطبوع)
-// =============================================================================
 class DriverAvailableDeliveriesV3Screen extends StatefulWidget {
   final AuthResult authResult;
   final Function(Map<String, dynamic>) onDeliveryAccepted;
   final VoidCallback onRefresh;
+  final int activeOrdersCount; // لمعرفة عدد الطلبات الحالية للمندوب
 
-  // ✅ المفتاح ضروري للحفاظ على حالة الشاشات الفرعية ومنع إعادة تهيئتها عند بناء الأب
   const DriverAvailableDeliveriesV3Screen({
     super.key,
     required this.authResult,
     required this.onDeliveryAccepted,
     required this.onRefresh,
+    this.activeOrdersCount = 0,
   });
 
   @override
@@ -2791,44 +2877,140 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
   bool _isLoading = false;
   bool _isFirstLoad = true;
   Set<String> _newOrderIds = {};
+
+  // 🔥 مجموعة لتتبع الطلبات التي تم فك قفلها حتى لا يتكرر الاهتزاز والشعار
+  final Set<String> _unlockedOrderIds = {};
+
   final int _costInPoints = 1;
   bool _isProcessingOrder = false;
+
+  Timer? _liveUiTimer;
 
   @override
   void initState() {
     super.initState();
     _loadDataSafe(isInitial: true);
+
     orderRefreshCounter.addListener(_handleNotification);
-    BalanceManager.balanceNotifier.addListener(() {
-      if (mounted && _isFirstLoad) setState(() => _isFirstLoad = false);
+    BalanceManager.balanceNotifier.addListener(_onBalanceChange);
+
+    // 🔥 المؤقت الحي: يحدث الشاشة ويفحص فك القفل وإطلاق الشعار والاهتزاز
+    _liveUiTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+
+      bool hasNewUnlock = false;
+
+      // فحص الطلبات إذا كان المندوب لديه طلبات نشطة أقل من الحد
+      if (widget.activeOrdersCount > 0 && widget.activeOrdersCount < 3) {
+        for (var order in _ordersList) {
+          final id = order['id'].toString();
+          final dateStr = order['date_created'];
+
+          // إذا لم يتم فك قفله سابقاً
+          if (!_unlockedOrderIds.contains(id)) {
+            if (dateStr != null && dateStr.isNotEmpty) {
+              final date = DateTime.tryParse(dateStr);
+              if (date != null) {
+                final diff = DateTime.now().difference(date);
+
+                // 120 ثانية = دقيقتين (وقت السماح)
+                if (diff.inSeconds >= 120) {
+                  _unlockedOrderIds.add(id); // تسجيله كطلب مفكوك
+                  hasNewUnlock = true;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // 🔥 إذا تم فك قفل طلب جديد في هذه الثانية، نطلق الاهتزاز والشعار
+      if (hasNewUnlock) {
+        // 1. الاهتزاز
+        Vibration.hasVibrator().then((hasVib) {
+          if (hasVib == true) Vibration.vibrate(duration: 500);
+        });
+
+        // 2. الشعار المنبثق العائم
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: const [
+                Icon(Icons.lock_open, color: Colors.white),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    "تم فك القفل عن طلب! تستطيع دمجه الآن.",
+                    style: TextStyle(fontWeight: FontWeight.bold, fontFamily: 'Cairo', fontSize: 14),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Colors.green.shade700,
+            behavior: SnackBarBehavior.floating,
+            // لرفعه قليلاً عن الأزرار السفلية
+            margin: const EdgeInsets.only(bottom: 20, left: 20, right: 20),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+
+      // تحديث واجهة العداد التنازلي
+      setState(() {});
     });
+  }
+
+  void _onBalanceChange() {
+    if (mounted && _isFirstLoad) setState(() => _isFirstLoad = false);
   }
 
   @override
   void dispose() {
+    _liveUiTimer?.cancel();
     orderRefreshCounter.removeListener(_handleNotification);
+    BalanceManager.balanceNotifier.removeListener(_onBalanceChange);
     super.dispose();
   }
 
-  // 🔥 تعديل دالة الاستماع لإشعارات السيرفر الخلفية لكسر "حالة السباق"
-  Future<void> _handleNotification() async {
-    print("🔄 [Auto-Refresh] إشعار جديد وصل، جاري تحديث القائمة تلقائياً...");
+  // حساب الثواني المتبقية لفك القفل
+  int _getRemainingLockSeconds(String? dateStr) {
+    if (widget.activeOrdersCount == 0) return 0;
+    if (dateStr == null || dateStr.isEmpty) return 0;
 
+    try {
+      final date = DateTime.tryParse(dateStr);
+      if (date == null) return 0;
+
+      final diff = DateTime.now().difference(date);
+      int passedSeconds = diff.inSeconds;
+
+      if (passedSeconds < 0) return 0;
+
+      int waitTime = 120; // دقيقتين
+      int remaining = waitTime - passedSeconds;
+
+      return remaining > 0 ? remaining : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<void> _handleNotification() async {
+    print("🔄 [Auto-Refresh] إشعار وصل! جاري تحديث التطبيق فوراً...");
     if (!mounted) return;
 
-    // 1. إظهار علامة التحميل الدائرية فوراً ليعرف السائق أن التطبيق يستجيب للرنة
     setState(() {
       _isLoading = true;
     });
 
-    // 2. 🔥 تأخير ذكي (1.2 ثانية): إعطاء فرصة كاملة لقاعدة بيانات السيرفر لإنهاء حفظ الطلب الجديد
     await Future.delayed(const Duration(milliseconds: 1200));
 
-    // 3. جلب البيانات بصمت وتحديث الواجهة
     if (mounted) {
       await _loadDataSafe(isSilent: true);
-      // رجة خفيفة للهاتف لتنبيه السائق بصرياً وحسياً أن القائمة استلمت طلب جديد
-      Vibration.vibrate(duration: 100);
+      Vibration.hasVibrator().then((hasVib) {
+        if (hasVib == true) Vibration.vibrate(duration: 100);
+      });
     }
   }
 
@@ -2864,7 +3046,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
           }
         });
 
-        // 🔥 استخدام List.from يجبر Flutter على تدمير الكاش القديم وإعادة رسم الشاشة فورا بالطلب الجديد
         setState(() {
           _ordersList = List.from(newOrders);
           _isLoading = false;
@@ -2929,6 +3110,25 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
 
     return Column(
       children: [
+        if (widget.activeOrdersCount > 0 && widget.activeOrdersCount < 3)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            color: Colors.amber.shade100,
+            child: Row(
+              children: [
+                const Icon(Icons.timer, color: Colors.orange),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    "تستطيع قبول ودمج طلبات إضافية بعد انتهاء وقت الانتظار الموضح على كل طلب!",
+                    style: TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           color: Colors.grey[200],
@@ -2961,6 +3161,21 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     final shopName = order['pickup_location_name']?.toString() ?? 'المتجر';
     final address = order['destination_address']?.toString() ?? 'العنوان';
     final deliveryFee = order['delivery_fee']?.toString() ?? '---';
+
+    // 🔥 حساب وقت فك القفل بشكل حي ومباشر
+    int remainingSeconds = _getRemainingLockSeconds(order['date_created']);
+    bool isUnlocked = remainingSeconds == 0;
+    bool canAccept = isUnlocked && widget.activeOrdersCount < 3;
+
+    // تحديد نص الزر
+    String btnText = "قبول الطلب";
+    if (widget.activeOrdersCount >= 3) {
+      btnText = "الحد الأقصى";
+    } else if (!isUnlocked) {
+      final m = remainingSeconds ~/ 60;
+      final s = remainingSeconds % 60;
+      btnText = "انتظر $m:${s.toString().padLeft(2, '0')}";
+    }
 
     return Card(
       elevation: isNew ? 8 : 2,
@@ -3026,13 +3241,26 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                   ),
                 ),
                 const SizedBox(width: 12),
+
+                // 🔥 الزر المتحدث تلقائياً
                 Expanded(
                   flex: 2,
                   child: ElevatedButton.icon(
-                    icon: const Icon(Icons.check_circle_outline, size: 20),
-                    label: const Text("قبول الطلب", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 2),
-                    onPressed: _isProcessingOrder || BalanceManager.current < _costInPoints ? null : () => _acceptDelivery(id),
+                    icon: Icon(canAccept ? Icons.check_circle_outline : Icons.lock_clock, size: 20),
+                    label: Text(
+                        btnText,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: canAccept ? Colors.indigo : Colors.grey.shade400,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      elevation: canAccept ? 2 : 0,
+                    ),
+                    onPressed: (_isProcessingOrder || !canAccept || BalanceManager.current < _costInPoints)
+                        ? null
+                        : () => _acceptDelivery(id),
                   ),
                 ),
               ],
