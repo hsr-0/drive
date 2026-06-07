@@ -3544,10 +3544,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   // ========================================================================
-  // 🔥 عرض تفاصيل الطلب (التصميم الجديد المطابق للصور)
-  // ========================================================================
-
-  // ========================================================================
   // 🔥 عرض تفاصيل الطلب (التصميم الجديد المعتمد على السيرفر الناقل الأمين)
   // ========================================================================
   void _showOrderDetailsDialog() {
@@ -3567,6 +3563,10 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     final double orderTotal = double.tryParse(_currentDelivery['order_total']?.toString() ?? '0') ?? 0;
     final double deliveryFee = double.tryParse(_currentDelivery['delivery_fee']?.toString() ?? '0') ?? 0;
     final double totalToCollect = double.tryParse(_currentDelivery['total_to_collect']?.toString() ?? '0') ?? 0;
+
+    // 🔥 قراءة بيانات الخصم والسعر النهائي
+    final double discountAmount = double.tryParse(_currentDelivery['discount_amount']?.toString() ?? '0') ?? 0;
+    final double finalOrderTotal = double.tryParse(_currentDelivery['final_order_total']?.toString() ?? '0') ?? 0;
 
     showModalBottomSheet(
       context: context,
@@ -3636,8 +3636,17 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
                 const Divider(height: 30),
 
-                // 💰 الملخص المالي
-                _buildSummaryRow("سعر الطلبات (يُدفع للمطعم):", orderTotal),
+                // 💰 الملخص المالي (المحدث ليدعم الخصم)
+                _buildSummaryRow("سعر الطلبات الأصلي (يُدفع للمطعم):", orderTotal),
+
+                // 🔥 عرض الخصم إذا وجد
+                if (discountAmount > 0) ...[
+                  const SizedBox(height: 8),
+                  _buildSummaryRow("قيمة الخصم (ستُضاف لمحفظتك):", discountAmount, color: Colors.red.shade700),
+                  const SizedBox(height: 8),
+                  _buildSummaryRow("سعر الطلبات بعد الخصم:", finalOrderTotal, isBold: true),
+                ],
+
                 const SizedBox(height: 12),
                 _buildSummaryRow("أجرة التوصيل:", deliveryFee),
                 const Padding(
@@ -3672,6 +3681,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       },
     );
   }
+
   // دالة مساعدة لبناء صفوف الأسعار
   Widget _buildSummaryRow(String label, double amount, {bool isBold = false, Color? color, double size = 16}) {
     return Row(
@@ -3682,7 +3692,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         ]
     );
   }
-
 
   double? _safeParseDouble(dynamic value) {
     if (value == null) return null;
@@ -3935,26 +3944,15 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     setState(() => _isLoading = true);
 
     try {
-      // 1. جلب رقم الطلب الأصلي
       final String orderId = _currentDelivery['source_order_id']?.toString() ?? _currentDelivery['id'].toString();
-
       final String driverName = widget.authResult.displayName ?? 'سائق بيتي';
       final String driverPhone = widget.authResult.userId?.toString() ?? '';
-
-      // 🔥 التوجيه الديناميكي بناءً على نوع الطلب
       final String sourceType = _currentDelivery['source_type']?.toString() ?? 'restaurant';
 
-      // الافتراضي هو سيرفر المطعم
       String callUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/start';
-
-      // إذا كان الطلب من المسواك، نوجه الاتصال لسيرفر المسواك
       if (sourceType == 'market' || sourceType == 'store' || sourceType == 'pharmacy') {
         callUrl = 'https://beytei.com/wp-json/beytei-calls/v1/start';
       }
-
-      print("📡 [CALL] نوع الطلب: $sourceType");
-      print("📡 [CALL] جاري الاتصال بالرابط: $callUrl");
-      print("📡 [CALL] باستخدام رقم الطلب: $orderId");
 
       final response = await http.post(
         Uri.parse(callUrl),
@@ -3970,15 +3968,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         }),
       );
 
-      print("📡 [CALL] كود الاستجابة: ${response.statusCode}");
-      print("📡 [CALL] تفاصيل الرد: ${response.body}");
-
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-
         if (data['success'] == true || data['success'] == 'true') {
-          print("✅ [CALL] تم إنشاء الغرفة بنجاح: ${data['channel_name']}");
-
           if (mounted) {
             Navigator.push(
               context,
@@ -3988,8 +3980,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   customerName: 'الزبون',
                   customerPhone: _currentDelivery['end_customer_phone']?.toString() ?? '',
                   agoraAppId: data['agora_app_id'] ?? '3924f8eebe7048f8a65cb3bd4a4adcec',
-                  orderId: orderId,         // 👈 التعديل هنا: تمرير orderId
-                  sourceType: sourceType,   // 👈 التعديل هنا: تمرير sourceType
+                  orderId: orderId,
+                  sourceType: sourceType,
                 ),
               ),
             );
@@ -4001,11 +3993,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         _showError('خطأ في السيرفر: ${response.statusCode}');
       }
     } catch (e) {
-      print("❌ [CALL] خطأ: $e");
       _showError('تأكد من اتصالك بالإنترنت');
     } finally {
       if (mounted) setState(() => _isLoading = false);
-      print("📞 [CALL] ========== نهاية محاولة المكالمة ==========\n");
     }
   }
 
@@ -4024,14 +4014,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
             child: ElevatedButton.icon(
               onPressed: _launchRestaurantMap,
               icon: const Icon(Icons.store, size: 18),
-              label: const Text("خريطة المتجر",
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+              label: const Text("خريطة المتجر", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue.shade50,
                 foregroundColor: Colors.blue,
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 side: BorderSide(color: Colors.blue.shade300),
                 elevation: 1,
               ),
@@ -4042,14 +4030,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
             child: ElevatedButton.icon(
               onPressed: _launchCustomerMap,
               icon: const Icon(Icons.person_pin, size: 18),
-              label: const Text("خريطة الزبون",
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+              label: const Text("خريطة الزبون", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green.shade50,
                 foregroundColor: Colors.green.shade800,
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 side: BorderSide(color: Colors.green.shade300),
                 elevation: 1,
               ),
@@ -4063,14 +4049,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         child: ElevatedButton.icon(
           onPressed: _launchCustomerMap,
           icon: const Icon(Icons.person_pin, size: 20),
-          label: const Text("خريطة الزبون",
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+          label: const Text("خريطة الزبون", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.green,
             foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(vertical: 14),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             elevation: 2,
           ),
         ),
@@ -4116,7 +4100,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
           ),
         );
       case 'picked_up':
-      // 🔥 هنا الإضافة: زران بدلاً من زر واحد. واحد للتسليم العادي وآخر للخصومات
         return Column(
           children: [
             SizedBox(
@@ -4153,11 +4136,14 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  // 🔥 دالة رفع الفاتورة المضافة حديثاً
-// 🔥 نافذة رفع الفاتورة (بدون إدخال مبلغ - السيرفر سيحسبه)
+  // 🔥 نافذة رفع الفاتورة (المحدثة لعرض مبلغ التعويض بوضوح)
   void _showReceiptUploadDialog() {
     File? imageFile;
     bool isUploading = false;
+
+    // 🔥 جلب قيمة الخصم لتعويض السائق وعرضها له
+    final double discountAmount = double.tryParse(_currentDelivery['discount_amount']?.toString() ?? '0') ?? 0;
+    final String formattedDiscount = NumberFormat('#,###').format(discountAmount);
 
     showModalBottomSheet(
         context: context,
@@ -4178,7 +4164,36 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                     children: [
                       const Text("إثبات تسليم بخصم", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 10),
-                      const Text("يُرجى التقاط صورة واضحة لفاتورة المطعم التي توضح قيمة الخصم. النظام سيقوم بحساب تعويضك تلقائياً.", style: TextStyle(color: Colors.grey, height: 1.5)),
+
+                      // 🔥 صندوق يوضح مبلغ التعويض بوضوح للسائق
+                      if (discountAmount > 0)
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          margin: const EdgeInsets.only(bottom: 15),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade50,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.green.shade200),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.account_balance_wallet, color: Colors.green, size: 28),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text("مبلغ التعويض المضاف لمحفظتك", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                                    Text("$formattedDiscount د.ع", style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                      const Text("يُرجى التقاط صورة واضحة لفاتورة المطعم التي توضح قيمة الخصم. النظام سيقوم بحساب تعويضك وإضافته لرصيد 'المطلوب من المنصة' تلقائياً.", style: TextStyle(color: Colors.grey, height: 1.5)),
                       const SizedBox(height: 25),
 
                       InkWell(
@@ -4230,7 +4245,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                             final bytes = await imageFile!.readAsBytes();
                             final base64Image = base64Encode(bytes);
 
-                            // نرسل 0 في المبلغ لأن السيرفر سيتجاهله ويحسب من عنده
                             final res = await ApiService.uploadReceiptForCompensation(
                                 widget.authResult.token,
                                 _currentDelivery['id'].toString(),
@@ -4242,7 +4256,14 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                             Navigator.pop(ctx);
 
                             if (res['success'] == true) {
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("تم رفع الفاتورة بنجاح وسيتم التدقيق"), backgroundColor: Colors.green));
+                              // 🔥 رسالة نجاح توضح مبلغ التعويض
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text("✅ تم رفع الفاتورة! سيتم إضافة $formattedDiscount د.ع إلى محفظتك كتعويض."),
+                                    backgroundColor: Colors.green,
+                                    duration: const Duration(seconds: 4),
+                                  )
+                              );
                               widget.onDeliveryFinished();
                             } else {
                               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res['message'] ?? "فشل الرفع"), backgroundColor: Colors.red));
@@ -4267,6 +4288,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         }
     );
   }
+
   @override
   Widget build(BuildContext context) {
     final status = _currentDelivery['order_status'] ?? 'pending';
@@ -4290,8 +4312,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: Text(stateTitle,
-            style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(stateTitle, style: const TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
         backgroundColor: stateColor,
         foregroundColor: Colors.white,
@@ -4308,73 +4329,40 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         padding: const EdgeInsets.all(20.0),
         child: Column(
           children: [
-            // 📦 بطاقة الحالة والمسافة
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(30),
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 10,
-                      offset: const Offset(0, 5)
-                  )
-                ],
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, 5))],
               ),
               child: Column(
                 children: [
-                  CircleAvatar(
-                    radius: 40,
-                    backgroundColor: stateColor.withOpacity(0.1),
-                    child: Icon(stateIcon, size: 40, color: stateColor),
-                  ),
+                  CircleAvatar(radius: 40, backgroundColor: stateColor.withOpacity(0.1), child: Icon(stateIcon, size: 40, color: stateColor)),
                   const SizedBox(height: 15),
-                  Text(
-                    _distanceToTargetString,
-                    style: TextStyle(
-                        fontSize: 36,
-                        fontWeight: FontWeight.bold,
-                        color: stateColor
-                    ),
-                  ),
+                  Text(_distanceToTargetString, style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: stateColor)),
                   const SizedBox(height: 5),
-                  Text(
-                      "المسافة المتبقية",
-                      style: TextStyle(color: Colors.grey[600], fontSize: 14)
-                  ),
+                  Text("المسافة المتبقية", style: TextStyle(color: Colors.grey[600], fontSize: 14)),
                   const Divider(height: 30),
-                  Text(
-                    locationText,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600
-                    ),
-                  ),
+                  Text(locationText, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                 ],
               ),
             ),
             const SizedBox(height: 20),
 
-            // 📞 أزرار الاتصال
-            // 📞 و 💬 أزرار التواصل (دردشة + اتصال مجاني + اتصال عادي)
             Row(
               children: [
-                // 1. زر الدردشة الفورية (الجديد والمعدل) 🔥🔥🔥
                 Expanded(
                   flex: 2,
                   child: ElevatedButton.icon(
                     onPressed: () {
-                      // 🔥 الحل هنا: استخراج رقم طلب المطعم (source_order_id) ليتطابق مع ما يملكه الزبون
                       final String realOrderId = _currentDelivery['source_order_id']?.toString() ?? _currentDelivery['id'].toString();
-
                       Navigator.push(
                         context,
                         MaterialPageRoute(
                           builder: (_) => DriverChatPage(
-                            orderId: realOrderId, // 🔥 تمرير رقم الطلب الصحيح هنا
+                            orderId: realOrderId,
                             customerName: _currentDelivery['customer_name'] ?? 'الزبون',
                             driverId: widget.authResult.userId,
                             driverName: widget.authResult.displayName ?? 'سائق بيتي',
@@ -4395,8 +4383,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   ),
                 ),
                 const SizedBox(width: 8),
-
-                // 2. زر الاتصال المجاني الداخلي
                 Expanded(
                   flex: 2,
                   child: ElevatedButton.icon(
@@ -4413,8 +4399,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   ),
                 ),
                 const SizedBox(width: 8),
-
-                // 3. زر الاتصال العادي (مربع صغير كأيقونة لتوفير المساحة)
                 SizedBox(
                   width: 55,
                   height: 50,
@@ -4435,57 +4419,44 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
             ),
             const SizedBox(height: 20),
 
-            // 🗺️ أزرار الخرائط
             _buildMapButtons(),
             const SizedBox(height: 15),
 
-            // 📋 بطاقة تفاصيل الطلب (التصميم الحديث)
             Card(
               elevation: 2,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               child: ListTile(
                 onTap: _showOrderDetailsDialog,
-                leading: const CircleAvatar(
-                    backgroundColor: Colors.orange,
-                    child: Icon(Icons.shopping_basket, color: Colors.white)
-                ),
-                title: const Text("عرض محتويات الطلب",
-                    style: TextStyle(fontWeight: FontWeight.bold)),
+                leading: const CircleAvatar(backgroundColor: Colors.orange, child: Icon(Icons.shopping_basket, color: Colors.white)),
+                title: const Text("عرض محتويات الطلب", style: TextStyle(fontWeight: FontWeight.bold)),
                 trailing: const Icon(Icons.arrow_forward_ios, size: 16),
               ),
             ),
             const SizedBox(height: 40),
 
-            // 🗺️ زر الخريطة العامة
             SizedBox(
               width: double.infinity,
               height: 55,
               child: OutlinedButton.icon(
                 onPressed: _launchWaze,
                 icon: const Icon(Icons.map, size: 26),
-                label: const Text("فتح الخريطة العامة في Waze",
-                    style: TextStyle(fontSize: 18)),
+                label: const Text("فتح الخريطة العامة في Waze", style: TextStyle(fontSize: 18)),
                 style: OutlinedButton.styleFrom(
                   side: BorderSide(color: stateColor, width: 2),
                   foregroundColor: stateColor,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
               ),
             ),
             const SizedBox(height: 16),
 
-            // ✅ زر تغيير الحالة
             _buildActionButton(),
             const SizedBox(height: 20),
 
-            // ❌ زر الإلغاء
             if (status != 'delivered' && status != 'cancelled')
               TextButton(
                 onPressed: () => _updateStatus('cancelled'),
-                child: const Text("إلغاء الرحلة",
-                    style: TextStyle(color: Colors.red, fontSize: 16)),
+                child: const Text("إلغاء الرحلة", style: TextStyle(color: Colors.red, fontSize: 16)),
               ),
           ],
         ),
@@ -4493,6 +4464,10 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     );
   }
 }
+
+
+
+
 
 
 
@@ -4660,8 +4635,6 @@ class _PointsTabState extends State<PointsTab> {
     }
   }
 
-  // 🔥 دالة طلب تصفية الحساب (توليد الرمز وعرض الديون)
-// 🔥 دالة طلب تصفية الحساب (الديون والتعويضات)
   Future<void> _generateSettlement() async {
     setState(() => _isGeneratingBarcode = true);
     try {
@@ -4672,7 +4645,9 @@ class _PointsTabState extends State<PointsTab> {
         _showBarcodeDialog(
             res['barcode_token'],
             res['current_liability'],
-            res['current_cashback'] ?? 0
+            res['current_cashback'] ?? 0,
+            res['current_locked_cashback'] ?? 0,  // 🔥 إضافة جديد
+            res['total_compensation'] ?? 0         // 🔥 إضافة جديد
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -4686,14 +4661,21 @@ class _PointsTabState extends State<PointsTab> {
       );
     }
   }
-
   // 🔥 نافذة عرض الرمز (الباركود) الشامل للتيم ليدر
-  void _showBarcodeDialog(String tokenStr, dynamic liabilityRaw, dynamic cashbackRaw) {
-    final double liability = (liabilityRaw as num).toDouble();
-    final double cashback = (cashbackRaw as num).toDouble();
+  void _showBarcodeDialog(
+      String tokenStr,
+      dynamic liabilityRaw,
+      dynamic cashbackRaw,
+      dynamic lockedCashbackRaw,    // 🔥 جديد
+      dynamic totalCompensationRaw  // 🔥 جديد
+      ) {
+    final double liability = (liabilityRaw as num?)?.toDouble() ?? 0;
+    final double cashback = (cashbackRaw as num?)?.toDouble() ?? 0;
+    final double lockedCashback = (lockedCashbackRaw as num?)?.toDouble() ?? 0;  // 🔥 جديد
+    final double totalCompensation = (totalCompensationRaw as num?)?.toDouble() ?? 0;  // 🔥 جديد
 
-    // حساب الصافي (الفرق بين ما على السائق وما له)
-    final double netAmount = liability - cashback;
+    // حساب الصافي
+    final double netAmount = liability - totalCompensation;
 
     String netText = "";
     Color netColor = Colors.black;
@@ -4704,7 +4686,7 @@ class _PointsTabState extends State<PointsTab> {
       netText = "لك استلام: ${NumberFormat('#,###').format(netAmount.abs())} د.ع";
       netColor = Colors.green;
     } else {
-      netText = "الحساب متصفي (0 د.ع)";
+      netText = "الحساب متصافي (0 د.ع)";
       netColor = Colors.indigo;
     }
 
@@ -4714,59 +4696,92 @@ class _PointsTabState extends State<PointsTab> {
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('تصفية الحساب الشاملة', textAlign: TextAlign.center, style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // تفصيل الحساب
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('مطلوب للمنصة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
-                Text('${NumberFormat('#,###').format(liability)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('مطلوب من المنصة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
-                Text('${NumberFormat('#,###').format(cashback)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-              ],
-            ),
-            const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Divider(thickness: 1.5)),
-
-            // الصافي
-            const Text('الصافي النهائي:', style: TextStyle(color: Colors.black87, fontSize: 14, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 5),
-            Text(netText, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: netColor)),
-
-            const SizedBox(height: 25),
-            const Text('اعرض هذا الرمز على (التيم ليدر) لإتمام التصفية المالية:', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 10),
-
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
-              decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(15),
-                  border: Border.all(color: Colors.indigo, width: 2, style: BorderStyle.solid)
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // الديون
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('مطلوب للمنصة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                  Text('${NumberFormat('#,###').format(liability)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                ],
               ),
-              child: SelectableText(
-                  tokenStr,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.indigo),
-                  textAlign: TextAlign.center
+              const SizedBox(height: 8),
+
+              // 🔥 التعويضات المقفلة
+              if (lockedCashback > 0)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('تعويضات مقفلة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                    Text('${NumberFormat('#,###').format(lockedCashback)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                  ],
+                ),
+              if (lockedCashback > 0) const SizedBox(height: 8),
+
+              // التعويضات المفتوحة
+              if (cashback > 0)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('تعويضات جاهزة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                    Text('${NumberFormat('#,###').format(cashback)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                  ],
+                ),
+              if (cashback > 0) const SizedBox(height: 8),
+
+              const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Divider(thickness: 1.5)),
+
+              // الصافي
+              const Text('الصافي النهائي:', style: TextStyle(color: Colors.black87, fontSize: 14, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 5),
+              Text(netText, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: netColor)),
+
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.amber.shade200),
+                ),
+                child: const Text(
+                  '⚠️ عند مسح هذا الرمز، سيتم تصفير جميع التعويضات نهائياً!',
+                  style: TextStyle(fontSize: 12, color: Colors.orange, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
               ),
-            ),
-            const SizedBox(height: 15),
-            const Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.timer, size: 16, color: Colors.redAccent),
-                SizedBox(width: 5),
-                Text('الرمز صالح لمدة 10 دقائق فقط', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
-              ],
-            ),
-          ],
+
+              const SizedBox(height: 15),
+              const Text('اعرض هذا الرمز على (التيم ليدر) لإتمام التصفية:', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 10),
+
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(15),
+                    border: Border.all(color: Colors.indigo, width: 2, style: BorderStyle.solid)
+                ),
+                child: SelectableText(
+                    tokenStr,
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.indigo),
+                    textAlign: TextAlign.center
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.timer, size: 16, color: Colors.redAccent),
+                  SizedBox(width: 5),
+                  Text('الرمز صالح لمدة 10 دقائق فقط', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ],
+          ),
         ),
         actions: [
           SizedBox(
@@ -4774,7 +4789,7 @@ class _PointsTabState extends State<PointsTab> {
             child: ElevatedButton(
               onPressed: () {
                 Navigator.pop(ctx);
-                _fetchFinancialProfile(); // تحديث الأرقام بعد الإغلاق
+                _fetchFinancialProfile();
               },
               style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.grey.shade200,
@@ -4789,7 +4804,6 @@ class _PointsTabState extends State<PointsTab> {
       ),
     );
   }
-  // 🔥 نافذة عرض الرمز (الباركود) للتيم ليدر
 
   @override
   Widget build(BuildContext context) {
@@ -4886,7 +4900,8 @@ class _PointsTabState extends State<PointsTab> {
                           ),
                         ),
                         const SizedBox(width: 15),
-                        // تعويضات السائق
+
+                        // 🔥 تعويضات السائق (مع إضافة الدليل التوضيحي)
                         Expanded(
                           child: Container(
                             padding: const EdgeInsets.all(15),
@@ -4904,6 +4919,49 @@ class _PointsTabState extends State<PointsTab> {
                                 const SizedBox(height: 5),
                                 Text("${NumberFormat('#,###').format(_lockedComp + _unlockedComp)}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
                                 const Text("د.ع", style: TextStyle(fontSize: 10, color: Colors.green)),
+                                const SizedBox(height: 10),
+
+                                // 🔥 الدليل التوضيحي التفاعلي للسائق
+                                InkWell(
+                                  onTap: () {
+                                    showDialog(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                                        title: const Row(
+                                          children: [
+                                            Icon(Icons.info_outline, color: Colors.green),
+                                            SizedBox(width: 10),
+                                            Expanded(child: Text("كيف يتم تعويضك وتصفير الحساب؟", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+                                          ],
+                                        ),
+                                        content: const SingleChildScrollView(
+                                          child: Text(
+                                            "1️⃣ عند تسليم طلب بخصم، قم برفع صورة الفاتورة.\n"
+                                                "2️⃣ سيتم إضافة مبلغ الخصم فوراً إلى 'رصيدك المقفل' (قيد التدقيق).\n"
+                                                "3️⃣ عند تصفية الحساب، قم بتوليد 'كود التصفية' وإظهاره للتيم ليدر.\n"
+                                                "4️⃣ سيقوم التيم ليدر بمسح الكود، وسيتم خصم هذا المبلغ من ديونك للمنصة فوراً كدليل وإثبات واضح في النظام.",
+                                            style: TextStyle(height: 1.7, fontSize: 14),
+                                          ),
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(ctx),
+                                            child: const Text("فهمت", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                                          )
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: const [
+                                      Icon(Icons.help_outline, size: 14, color: Colors.green),
+                                      SizedBox(width: 4),
+                                      Text("كيف يتم التعويض؟", style: TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.bold, decoration: TextDecoration.underline)),
+                                    ],
+                                  ),
+                                )
                               ],
                             ),
                           ),
