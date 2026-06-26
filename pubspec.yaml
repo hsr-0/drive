@@ -3,7 +3,7 @@ description: OvoRide is a complete ride-sharing solution.
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.18+34
+version: 1.0.19+35
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -44,7 +44,7 @@ dependencies:
   audioplayers: any
   google_sign_in: ^7.2.0
   firebase_remote_config: ^6.0.0 # تحديث هذا الإصدار هو المفتاح كما اقترح لك الخطأ
-
+  audio_session: ^0.1.18
   package_info_plus: ^8.0.0
   version: ^3.0.2
   image_gallery_saver_plus: ^4.0.1
