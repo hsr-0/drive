@@ -227,33 +227,23 @@ class PromoterService {
 
   static Future<void> saveLoginData(
       String token, int promoterId, String name) async {
-    print('');
-    print('═══════════════════════════════════════════════════════');
     print('🔍 [PromoterService] saveLoginData() called');
-    print('═══════════════════════════════════════════════════════');
-    print('🔍 [PromoterService] Token to save: $token');
-    print('🔍 [PromoterService] ID to save: $promoterId');
-    print('🔍 [PromoterService] Name to save: $name');
 
     try {
       final prefs = await SharedPreferences.getInstance();
 
-      final tokenResult = await prefs.setString('promoter_token', token);
-      final idResult = await prefs.setInt('promoter_id', promoterId);
-      final nameResult = await prefs.setString('promoter_name', name);
+      await prefs.setString('promoter_token', token);
+      await prefs.setInt('promoter_id', promoterId);
+      await prefs.setString('promoter_name', name);
 
-      print('🔍 [PromoterService] Token saved: $tokenResult');
-      print('🔍 [PromoterService] ID saved: $idResult');
-      print('🔍 [PromoterService] Name saved: $nameResult');
+      // 🚨 إضافة هذا السطر لإجبار النظام على حفظ التغييرات فوراً
+      await prefs.reload();
+
       print('✅ [PromoterService] Data securely saved to disk');
-      print('═══════════════════════════════════════════════════════');
-      print('');
     } catch (e, stackTrace) {
       print('❌ [PromoterService] Exception in saveLoginData: $e');
-      print('❌ [PromoterService] Stack trace: $stackTrace');
     }
   }
-
   static Future<void> logout() async {
     print('');
     print('═══════════════════════════════════════════════════════');
@@ -583,33 +573,35 @@ class PromoterService {
 // =============================================================================
 // 🚀 نقطة البداية (Main) - الحماية الصارمة
 // =============================================================================
-void main() async {
-  // 1. تهيئة قنوات فلاتر الأساسية
+// =============================================================================
+// 🚀 نقطة البداية (Main) - النسخة المُصححة والمستقرة
+// =============================================================================
+void main() {
+  // تهيئة قنوات فلاتر الأساسية
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 2. قراءة الذاكرة بشكل مباشر هنا لتجنب أي تلاعب من الـ Isolates
-  final prefs = await SharedPreferences.getInstance();
-  final savedToken = prefs.getString('promoter_token');
-
-  // 3. تحديد حالة الدخول بشكل نهائي وقاطع
-  final bool isUserLoggedIn = savedToken != null && savedToken.isNotEmpty;
-
-  // 4. إذا كان مسجل دخول، نقوم بتعبئة المتغيرات في الخدمة
-  if (isUserLoggedIn) {
-    await PromoterService.loadSavedData();
-  }
-
-  // 5. تشغيل التطبيق وتمرير الحالة المباشرة له
-  runApp(PromoterApp(startLoggedIn: isUserLoggedIn));
+  // تشغيل التطبيق مباشرة وترك مسؤولية التوجيه للـ FutureBuilder
+  runApp(const PromoterApp());
 }
 
 class PromoterApp extends StatelessWidget {
-  final bool startLoggedIn; // المتغير الذي سيحسم الوجهة
+  const PromoterApp({Key? key}) : super(key: key);
 
-  const PromoterApp({
-    Key? key,
-    required this.startLoggedIn,
-  }) : super(key: key);
+  // دالة للتحقق من حالة الدخول بأمان
+  Future<bool> _checkLoginStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // 🚨 الحل السحري: إجبار التحديث من القرص لتجاوز الكاش (مهم جداً للآيفون)
+      await prefs.reload();
+      final savedToken = prefs.getString('promoter_token');
+
+      print('🔍 [AppStart] Token found: ${savedToken != null}');
+      return savedToken != null && savedToken.isNotEmpty;
+    } catch (e) {
+      print('❌ [AppStart] Error checking login status: $e');
+      return false;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -625,14 +617,33 @@ class PromoterApp extends StatelessWidget {
           brightness: Brightness.light,
         ),
       ),
-      // الوجهة تُحدد هنا بناءً على القيمة الثابتة، لا يمكن أن تخطئ
-      home: startLoggedIn
-          ? const PromoterDashboardScreen()
-          : const PromoterLoginScreen(),
+      // استخدام FutureBuilder للتعامل مع الذاكرة بشكل صحيح دون تجميد التطبيق
+      home: FutureBuilder<bool>(
+        future: _checkLoginStatus(),
+        builder: (context, snapshot) {
+          // 1. أثناء التحقق: نظهر شاشة تحميل بسيطة بانتظار قراءة الذاكرة
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(
+              backgroundColor: AppColors.primary,
+              body: Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              ),
+            );
+          }
+
+          // 2. إذا كان مسجل دخول: نقوم بتحميل البيانات ونوجهه للوحة التحكم
+          if (snapshot.data == true) {
+            PromoterService.loadSavedData(); // تحديث المتغيرات في الخدمة
+            return const PromoterDashboardScreen();
+          }
+
+          // 3. إذا لم يكن مسجل دخول: نوجهه لشاشة الدخول
+          return const PromoterLoginScreen();
+        },
+      ),
     );
   }
 }
-
 // =============================================================================
 // 🔐 شاشة تسجيل الدخول
 // =============================================================================
