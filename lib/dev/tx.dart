@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:audio_session/audio_session.dart'; // 🔴 مكتبة إجبارية للآيفون
 import 'package:intl/intl.dart';
 import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -3825,21 +3824,48 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   Future<void> _launchWazeWithCoords(double lat, double lng) async {
-    final wazeUri = Uri.parse("https://waze.com/ul?ll=$lat,$lng&navigate=yes");
+    // 🔥 تقصير الإحداثيات إلى 6 خانات عشرية (الصيغة المثالية لويز)
+    final cleanLat = lat.toStringAsFixed(6);
+    final cleanLng = lng.toStringAsFixed(6);
+
+    // 🔥 بناء الرابط بشكل آمن باستخدام Uri.builder
+    final wazeUri = Uri(
+      scheme: 'https',
+      host: 'waze.com',
+      path: '/ul',
+      queryParameters: {
+        'll': '$cleanLat,$cleanLng',
+        'navigate': 'yes',
+      },
+    );
+
+    // 🔥 طباعة تشخيصية (راجع Console لمعرفة الرابط الفعلي)
+    print("🗺️ [WAZE DEBUG] Opening URL: ${wazeUri.toString()}");
+    print("📍 [WAZE DEBUG] Coordinates: Lat=$cleanLat, Lng=$cleanLng");
+
     if (await canLaunchUrl(wazeUri)) {
       await launchUrl(wazeUri, mode: LaunchMode.externalApplication);
     } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("❌ يرجى تثبيت تطبيق Waze (ويز) على جهازك أولاً"),
-            backgroundColor: Colors.red,
-          ),
-        );
+      // 🔥 محاولة بديلة: فتح ويز بالتطبيق مباشرة (Android/iOS)
+      final androidUri = Uri.parse('waze://?ll=$cleanLat,$cleanLng&navigate=yes');
+      final iosUri = Uri.parse('waze://?ll=$cleanLat,$cleanLng&navigate=yes');
+
+      if (Platform.isAndroid && await canLaunchUrl(androidUri)) {
+        await launchUrl(androidUri, mode: LaunchMode.externalApplication);
+      } else if (Platform.isIOS && await canLaunchUrl(iosUri)) {
+        await launchUrl(iosUri, mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("❌ يرجى تثبيت تطبيق Waze (ويز) على جهازك أولاً"),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
     }
   }
-
   Future<void> _launchWazeWithAddress(String address) async {
     final encodedAddress = Uri.encodeComponent(address);
     final wazeUri = Uri.parse("https://waze.com/ul?q=$encodedAddress&navigate=yes");
@@ -3859,6 +3885,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
   Future<void> _launchRestaurantMap() async {
     final pickup = _getPickupPoint();
+
+    print("🏪 [MAP DEBUG] Pickup Point: ${pickup?.toString() ?? 'NULL'}");
+
     if (pickup != null) {
       await _launchWazeWithCoords(pickup.latitude, pickup.longitude);
     } else {
@@ -3870,14 +3899,20 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       }
     }
   }
-
   Future<void> _launchCustomerMap() async {
     final destination = _getDestinationPoint();
+
+    // 🔥 طباعة تشخيصية
+    print("🎯 [MAP DEBUG] Destination Point: ${destination?.toString() ?? 'NULL'}");
+    print("🎯 [MAP DEBUG] Raw Data - Lat: ${_currentDelivery['destination_lat']}, Lng: ${_currentDelivery['destination_lng']}");
+
     if (destination != null) {
       await _launchWazeWithCoords(destination.latitude, destination.longitude);
     } else {
+      // 🔥 محاولة استخدام العنوان النصي كاحتياط
       final destAddress = _currentDelivery['destination_address'] ?? '';
       if (destAddress.isNotEmpty && destAddress != 'غير معروف') {
+        print("⚠️ [MAP DEBUG] Using text address instead: $destAddress");
         await _launchWazeWithAddress(destAddress);
       } else {
         _showMapError("الزبون");
@@ -3887,20 +3922,23 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
   Future<void> _launchWaze() async {
     final target = _getTargetPoint();
+
+    print("🚗 [MAP DEBUG] Target Point: ${target?.toString() ?? 'NULL'}");
+    print("🚗 [MAP DEBUG] Current Status: ${_currentDelivery['order_status']}");
+
     if (target != null) {
       await _launchWazeWithCoords(target.latitude, target.longitude);
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("❌ الإحداثيات غير متوفرة"),
+          SnackBar(
+            content: Text("❌ الإحداثيات غير متوفرة - الحالة: ${_currentDelivery['order_status']}"),
             backgroundColor: Colors.orange,
           ),
         );
       }
     }
   }
-
   void _showMapError(String target) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -5220,15 +5258,15 @@ class _EarningsTabState extends State<EarningsTab> {
     );
   }
 }
-
-
+// 📞 شاشة المكالمة الخاصة بالسائق (محدثة مع مؤقت ذكي وإجبار الصوت)
+// =============================================================================
 class DriverCallPage extends StatefulWidget {
   final String channelName;
   final String customerName;
   final String customerPhone;
   final String agoraAppId;
-  final String orderId;
-  final String sourceType;
+  final String orderId;    // 👈 جديد: لمعرفة رقم الطلب المراد إلغاء مكالمته
+  final String sourceType; // 👈 جديد: لمعرفة السيرفر (مطعم أم مسواك)
 
   const DriverCallPage({
     super.key,
@@ -5236,8 +5274,8 @@ class DriverCallPage extends StatefulWidget {
     required this.customerName,
     required this.customerPhone,
     required this.agoraAppId,
-    required this.orderId,
-    required this.sourceType,
+    required this.orderId,    // 👈 جديد
+    required this.sourceType, // 👈 جديد
   });
 
   @override
@@ -5245,118 +5283,106 @@ class DriverCallPage extends StatefulWidget {
 }
 
 class _DriverCallPageState extends State<DriverCallPage> {
-  RtcEngine? _engine;
+  late RtcEngine _engine;
   bool _localUserJoined = false;
-  int? _remoteUid;
+  int? _remoteUid; // 🔴 لمعرفة هل الزبون دخل الغرفة أم لا
   bool _muted = false;
-  bool _speaker = true;
+  bool _speaker = true; // السبيكر مفتوح للسائق افتراضياً
 
   int _callDuration = 0;
-  Timer? _durationTimer;
-  Timer? _timeoutTimer;
+  Timer? _durationTimer; // عداد مدة المكالمة
+  Timer? _timeoutTimer;  // مؤقت 30 ثانية إذا لم يرد الزبون
 
   bool _hasError = false;
   String _errorMessage = "";
-  bool _isEnding = false; // 🔴 منع الضغط المتكرر على زر الإنهاء
 
   @override
   void initState() {
     super.initState();
     _initAgora();
 
-    // 🔴 زيادة الوقت إلى 60 ثانية (الآيفون بطيء في الاستيقاظ)
-    _timeoutTimer = Timer(const Duration(seconds: 60), () {
-      if (_remoteUid == null && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('الزبون لا يرد حالياً'),
-            backgroundColor: Colors.orange,
-          ),
-        );
+    // 🔴 إغلاق المكالمة تلقائياً بعد 30 ثانية إذا لم يرد الزبون
+    _timeoutTimer = Timer(const Duration(seconds: 30), () {
+      if (_remoteUid == null) {
+        print("⏳ انتهى الوقت ولم يرد الزبون، جاري إنهاء المكالمة.");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('الزبون لا يرد حالياً'), backgroundColor: Colors.orange),
+          );
+        }
         _endCall();
       }
     });
   }
 
   Future<void> _initAgora() async {
-    // اهتزاز تنبيهي
-    if (await Vibration.hasVibrator() ?? false) {
+    // اهتزاز عند بدء المكالمة
+    if (await Vibration.hasVibrator()) {
       Vibration.vibrate(duration: 500);
     }
 
     // طلب صلاحية المايكروفون
     final status = await Permission.microphone.request();
     if (status.isDenied || status.isPermanentlyDenied) {
-      if (mounted) {
-        setState(() {
-          _hasError = true;
-          _errorMessage = "يرجى منح صلاحية المايكروفون";
-        });
-      }
+      setState(() {
+        _hasError = true;
+        _errorMessage = "يرجى منح صلاحية المايكروفون في إعدادات الجهاز";
+      });
       return;
     }
 
     try {
-      // 🔴🔴🔴 الحل الجذري للآيفون: تفعيل جلسة الصوت قبل المحرك 🔴🔴🔴
-      final session = await AudioSession.instance;
-      await session.configure(AudioSessionConfiguration(
-        avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
-        avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.allowBluetooth |
-        AVAudioSessionCategoryOptions.defaultToSpeaker,
-        avAudioSessionMode: AVAudioSessionMode.voiceChat,
-        avAudioSessionRouteSharingPolicy: AVAudioSessionRouteSharingPolicy.defaultPolicy,
-      ));
-
-      // إنشاء وتجهيز المحرك
+      // إنشاء محرك Agora
       _engine = createAgoraRtcEngine();
-      await _engine!.initialize(RtcEngineContext(
+      await _engine.initialize(RtcEngineContext(
         appId: widget.agoraAppId,
         channelProfile: ChannelProfileType.channelProfileCommunication,
       ));
 
-      // تسجيل الأحداث
-      _engine!.registerEventHandler(RtcEngineEventHandler(
-        onJoinChannelSuccess: (connection, elapsed) {
+      // تسجيل معالجات الأحداث
+      _engine.registerEventHandler(RtcEngineEventHandler(
+        onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
           if (mounted) {
             setState(() => _localUserJoined = true);
-            _engine?.setEnableSpeakerphone(_speaker);
-            print("✅ السائق دخل القناة: ${connection.channelId}");
+            _engine.setEnableSpeakerphone(_speaker);
           }
         },
-        onUserJoined: (connection, remoteUid, elapsed) {
+        onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
           if (mounted) {
+            // 🟢 الزبون دخل الغرفة! نوقف المؤقت ونبدأ العداد
             _timeoutTimer?.cancel();
-            setState(() => _remoteUid = remoteUid);
+            setState(() {
+              _remoteUid = remoteUid;
+            });
             _startDurationTimer();
-            print("✅ الزبون دخل الغرفة: $remoteUid");
           }
         },
-        onUserOffline: (connection, remoteUid, reason) {
+        onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
           if (mounted && _localUserJoined) {
             _showCallEndedDialog("الزبون أنهى المكالمة");
           }
         },
-        onError: (err, msg) {
+        onError: (ErrorCodeType err, String msg) {
           if (mounted) {
             setState(() {
               _hasError = true;
-              _errorMessage = "خطأ: $msg";
+              _errorMessage = "خطأ في الاتصال: $msg";
             });
-            print("❌ Agora Error: $err - $msg");
           }
         },
       ));
 
-      await _engine!.enableAudio();
+      await _engine.enableAudio();
 
-      // 🔴 خيارات البث الإجبارية
-      const options = ChannelMediaOptions(
+      // 🔥 الخيارات الإجبارية لبث واستقبال الصوت (مهمة جداً)
+      const ChannelMediaOptions options = ChannelMediaOptions(
         clientRoleType: ClientRoleType.clientRoleBroadcaster,
         publishMicrophoneTrack: true,
         autoSubscribeAudio: true,
       );
 
-      await _engine!.joinChannel(
+      // الانضمام للقناة
+      await _engine.joinChannel(
         token: "",
         channelId: widget.channelName,
         uid: 0,
@@ -5367,7 +5393,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
       if (mounted) {
         setState(() {
           _hasError = true;
-          _errorMessage = "فشل بدء المكالمة: ${e.toString()}";
+          _errorMessage = "فشل في بدء المكالمة: ${e.toString()}";
         });
       }
     }
@@ -5376,24 +5402,27 @@ class _DriverCallPageState extends State<DriverCallPage> {
   void _startDurationTimer() {
     _durationTimer?.cancel();
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) setState(() => _callDuration++);
+      if (mounted) {
+        setState(() => _callDuration++);
+      }
     });
   }
 
   String _formatDuration(int seconds) {
-    final m = seconds ~/ 60;
-    final s = seconds % 60;
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+    final minutes = seconds ~/ 60;
+    final secs = seconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
   void _showCallEndedDialog(String message) {
     _durationTimer?.cancel();
     _timeoutTimer?.cancel();
+
     if (mounted) {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (_) => AlertDialog(
+        builder: (context) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: const Row(
             children: [
@@ -5414,8 +5443,8 @@ class _DriverCallPageState extends State<DriverCallPage> {
           actions: [
             TextButton(
               onPressed: () {
-                Navigator.pop(context);
-                _endCall();
+                Navigator.pop(context); // إغلاق النافذة
+                _endCall(); // إغلاق الشاشة
               },
               child: const Text("موافق", style: TextStyle(fontWeight: FontWeight.bold)),
             ),
@@ -5425,7 +5454,17 @@ class _DriverCallPageState extends State<DriverCallPage> {
     }
   }
 
-  // 🔥 إرسال إشارة إلغاء للسيرفر (في الخلفية بدون انتظار)
+  void _toggleMute() {
+    setState(() => _muted = !_muted);
+    _engine.muteLocalAudioStream(_muted);
+  }
+
+  void _toggleSpeaker() {
+    setState(() => _speaker = !_speaker);
+    _engine.setEnableSpeakerphone(_speaker);
+  }
+
+  // 🔥 الدالة الجديدة لإخبار السيرفر بإنهاء المكالمة وإسقاط الرنين
   Future<void> _sendCancelSignalToServer() async {
     try {
       String cancelUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/cancel';
@@ -5433,8 +5472,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
         cancelUrl = 'https://beytei.com/wp-json/beytei-calls/v1/cancel';
       }
 
-      // نستخدم fire-and-forget لعدم تعطيل واجهة المستخدم
-      http.post(
+      await http.post(
         Uri.parse(cancelUrl),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
@@ -5442,50 +5480,45 @@ class _DriverCallPageState extends State<DriverCallPage> {
           'order_id': widget.orderId,
           'channel_name': widget.channelName,
         }),
-      ).catchError((e) => print("⚠️ Cancel signal error: $e"));
+      );
     } catch (e) {
-      print("⚠️ Cancel signal exception: $e");
+      print("Error cancelling call: $e");
     }
   }
 
-  // 🔴🔴🔴 دالة الإنهاء الآمنة (لا تحرر المحرك هنا!) 🔴🔴🔴
   void _endCall() async {
-    if (_isEnding) return; // منع الضغط المكرر
-    _isEnding = true;
-
     _durationTimer?.cancel();
     _timeoutTimer?.cancel();
 
-    // فقط غادر القناة (لا تعمل release هنا لتجنب التعليق)
     try {
-      await _engine?.leaveChannel();
+      await _engine.leaveChannel();
+      await _engine.release();
     } catch (e) {
-      print("⚠️ Leave channel error: $e");
+      print("Error releasing Agora engine: $e");
     }
 
-    // أرسل إشارة الإلغاء في الخلفية
+    // 🔥 إرسال إشارة إلغاء المكالمة لهاتف الزبون
     _sendCancelSignalToServer();
 
-    // أغلق الشاشة فوراً
     if (mounted) {
       Navigator.pop(context);
     }
   }
 
-  // 🔴🔴🔴 التحرير الفعلي للمحرك يتم هنا فقط 🔴🔴🔴
   @override
   void dispose() {
     _durationTimer?.cancel();
     _timeoutTimer?.cancel();
     try {
-      _engine?.release();
+      _engine.leaveChannel();
+      _engine.release();
     } catch (e) {
-      print("⚠️ Engine release error: $e");
+      print("Error in dispose: $e");
     }
-    _engine = null;
     super.dispose();
   }
 
+  // 💡 دالة ذكية لتغيير حالة الاتصال
   String getCallStatusText() {
     if (_hasError) return _errorMessage;
     if (_remoteUid != null) return "متصل الآن";
@@ -5505,7 +5538,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
         body: SafeArea(
           child: Column(
             children: [
-              // الشريط العلوي
+              // شريط الحالة العلوي
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
                 child: Row(
@@ -5529,10 +5562,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
                         color: _speaker ? Colors.green : Colors.white70,
                         size: 28,
                       ),
-                      onPressed: () {
-                        setState(() => _speaker = !_speaker);
-                        _engine?.setEnableSpeakerphone(_speaker);
-                      },
+                      onPressed: _toggleSpeaker,
                     ),
                   ],
                 ),
@@ -5557,17 +5587,25 @@ class _DriverCallPageState extends State<DriverCallPage> {
                     ),
                   ),
                   const SizedBox(height: 25),
-                  Text(widget.customerName,
-                      style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
+
+                  Text(
+                    widget.customerName,
+                    style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
                   const SizedBox(height: 8),
-                  Text(widget.customerPhone,
-                      style: const TextStyle(fontSize: 18, color: Colors.white70)),
+
+                  Text(
+                    widget.customerPhone,
+                    style: const TextStyle(fontSize: 18, color: Colors.white70),
+                  ),
                   const SizedBox(height: 5),
-                  Text("غرفة: ${widget.channelName}",
-                      style: const TextStyle(fontSize: 10, color: Colors.white24)),
+
+                  // للتشخيص (يمكنك مسحها لاحقاً): رقم الغرفة بخط صغير
+                  Text("غرفة: ${widget.channelName}", style: const TextStyle(fontSize: 10, color: Colors.white24)),
+
                   const SizedBox(height: 20),
 
-                  // حالة الاتصال
+                  // 🔥 حالة الاتصال المحدثة
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
                     decoration: BoxDecoration(
@@ -5597,8 +5635,12 @@ class _DriverCallPageState extends State<DriverCallPage> {
                           size: 20,
                         ),
                         const SizedBox(width: 8),
-                        Text(getCallStatusText(),
-                            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500)),
+                        Text(
+                          getCallStatusText(),
+                          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
+                          maxLines: 2,
+                          textAlign: TextAlign.center,
+                        ),
                       ],
                     ),
                   ),
@@ -5620,15 +5662,12 @@ class _DriverCallPageState extends State<DriverCallPage> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    // زر الكتم
+                    // زر كتم المايكروفون
                     Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         GestureDetector(
-                          onTap: () {
-                            setState(() => _muted = !_muted);
-                            _engine?.muteLocalAudioStream(_muted);
-                          },
+                          onTap: _toggleMute,
                           child: Container(
                             padding: const EdgeInsets.all(22),
                             decoration: BoxDecoration(
@@ -5636,17 +5675,15 @@ class _DriverCallPageState extends State<DriverCallPage> {
                               shape: BoxShape.circle,
                               border: Border.all(color: _muted ? Colors.red : Colors.white70, width: 1.5),
                             ),
-                            child: Icon(_muted ? Icons.mic_off : Icons.mic,
-                                color: _muted ? Colors.red : Colors.white, size: 30),
+                            child: Icon(_muted ? Icons.mic_off : Icons.mic, color: _muted ? Colors.red : Colors.white, size: 30),
                           ),
                         ),
                         const SizedBox(height: 10),
-                        Text(_muted ? "إلغاء الكتم" : "كتم",
-                            style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                        Text(_muted ? "إلغاء الكتم" : "كتم", style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
                       ],
                     ),
 
-                    // زر الإنهاء
+                    // زر إنهاء المكالمة
                     GestureDetector(
                       onTap: _endCall,
                       child: Container(
@@ -5662,15 +5699,12 @@ class _DriverCallPageState extends State<DriverCallPage> {
                       ),
                     ),
 
-                    // زر السماعة
+                    // زر مكبر الصوت
                     Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         GestureDetector(
-                          onTap: () {
-                            setState(() => _speaker = !_speaker);
-                            _engine?.setEnableSpeakerphone(_speaker);
-                          },
+                          onTap: _toggleSpeaker,
                           child: Container(
                             padding: const EdgeInsets.all(22),
                             decoration: BoxDecoration(
@@ -5678,13 +5712,11 @@ class _DriverCallPageState extends State<DriverCallPage> {
                               shape: BoxShape.circle,
                               border: Border.all(color: _speaker ? Colors.green : Colors.white70, width: 1.5),
                             ),
-                            child: Icon(_speaker ? Icons.volume_up : Icons.volume_down,
-                                color: _speaker ? Colors.green : Colors.white, size: 30),
+                            child: Icon(_speaker ? Icons.volume_up : Icons.volume_down, color: _speaker ? Colors.green : Colors.white, size: 30),
                           ),
                         ),
                         const SizedBox(height: 10),
-                        Text(_speaker ? "إيقاف السماعة" : "تفعيل السماعة",
-                            style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                        Text(_speaker ? "إيقاف السماعة" : "تفعيل السماعة", style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
                       ],
                     ),
                   ],
@@ -5697,3 +5729,5 @@ class _DriverCallPageState extends State<DriverCallPage> {
     );
   }
 }
+
+

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:firebase_remote_config/firebase_remote_config.dart';
+import 'package:ovoride_driver/pro/promat.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:version/version.dart';
@@ -11,6 +12,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:ovoride_driver/core/route/route.dart';
 import 'dev/tx.dart';
+
+// ⚠️ ملاحظة: قم باستيراد شاشة المروجين الحقيقية هنا بعد نقلها لمشروعك
+// import 'path_to_your_promoter_file.dart';
 
 class ServicesSelectionScreen extends StatefulWidget {
   const ServicesSelectionScreen({super.key});
@@ -162,6 +166,7 @@ class _ServicesSelectionScreenState extends State<ServicesSelectionScreen> {
           padding: const EdgeInsets.all(16.0),
           child: Column(
             children: [
+              // 1. بطاقة التاكسي
               _buildServiceCard(
                 title: 'خدمات التاكسي',
                 subtitle: 'ابدأ استقبال طلبات الركاب الآن',
@@ -170,12 +175,28 @@ class _ServicesSelectionScreenState extends State<ServicesSelectionScreen> {
                 onTap: () => Get.toNamed(RouteHelper.splashScreen),
               ),
               const SizedBox(height: 20),
+
+              // 2. بطاقة التوصيل (مندوب)
               _buildServiceCard(
                 title: 'خدمات التوصيل (مندوب)',
                 subtitle: 'توصيل الطلبات والطرود',
                 imagePath: 'assets/images/ms.jpg',
                 color: Colors.orange.shade800,
                 onTap: () => Get.to(() => const DeliveryApp()),
+              ),
+              const SizedBox(height: 20),
+
+              // 3. بطاقة خدمات المروجين (الجديدة) ✨
+              _buildServiceCard(
+                title: 'خدمات',
+                subtitle: 'برنامج الخاص ',
+                imagePath: 'assets/images/promoter.jpg', // ⚠️ تأكد من إضافة صورة بهذا الاسم في assets
+                color: Colors.purple.shade700,
+                onTap: () {
+                  // 🔗 هنا سيتم توجيه المستخدم لشاشة المروجين
+                   Get.to(() => const PromoterLoginScreen());
+
+                },
               ),
             ],
           ),
