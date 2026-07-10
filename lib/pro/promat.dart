@@ -1,5 +1,5 @@
 // =============================================================================
-// 🤝 تطبيق المروجين المتكامل - Beytei Promoter App (النسخة المُصححة مع Debug)
+// 🤝 تطبيق المروجين المتكامل - Beytei Promoter App (النسخة النهائية المُصححة)
 // 🌐 السيرفر: re.beytei.com
 // =============================================================================
 
@@ -144,35 +144,25 @@ class PromoterOrder {
   }
 }
 
-
 // =============================================================================
-// 🌐 خدمة الـ API (النسخة الآمنة ضد انهيار عمليات الخلفية)
+// 🌐 خدمة الـ API
 // =============================================================================
 class PromoterService {
-
-  // ===========================================================================
-  // 🔐 دوال مساعدة لقراءة الذاكرة الحية (Live Reading)
-  // ===========================================================================
-
   static Future<String?> getToken() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.reload(); // إجبار التحديث لتجاوز مشاكل الكاش في الـ Isolates
     return prefs.getString('promoter_token');
   }
 
   static Future<int?> getPromoterId() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.reload();
     return prefs.getInt('promoter_id');
   }
 
   static Future<String?> getPromoterName() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.reload();
     return prefs.getString('promoter_name');
   }
 
-  // ✅ يتم حساب حالة الدخول ديناميكياً في كل مرة بدلاً من الاعتماد على متغير ثابت
   static Future<bool> isLoggedIn() async {
     final token = await getToken();
     final result = token != null && token.isNotEmpty;
@@ -180,7 +170,6 @@ class PromoterService {
     return result;
   }
 
-  // دالة لجلب الـ Headers ديناميكياً مع التوكن الحي
   static Future<Map<String, String>> _getHeaders() async {
     final token = await getToken();
     final headers = {
@@ -189,17 +178,12 @@ class PromoterService {
     };
 
     if (token != null && token.isNotEmpty) {
-      // ✅ تم تغيير اسم الترويسة لتجنب تدخل سيرفر الووردبريس (JWT)
       headers['Promoter-Token'] = token;
     }
 
     print('🔍 [PromoterService] Generated Headers: $headers');
     return headers;
   }
-
-  // ===========================================================================
-  // 💾 إدارة الجلسة والبيانات
-  // ===========================================================================
 
   static Future<void> loadSavedData() async {
     print('');
@@ -236,14 +220,12 @@ class PromoterService {
       await prefs.setInt('promoter_id', promoterId);
       await prefs.setString('promoter_name', name);
 
-      // 🚨 إضافة هذا السطر لإجبار النظام على حفظ التغييرات فوراً
-      await prefs.reload();
-
       print('✅ [PromoterService] Data securely saved to disk');
     } catch (e, stackTrace) {
       print('❌ [PromoterService] Exception in saveLoginData: $e');
     }
   }
+
   static Future<void> logout() async {
     print('');
     print('═══════════════════════════════════════════════════════');
@@ -253,7 +235,6 @@ class PromoterService {
     try {
       final prefs = await SharedPreferences.getInstance();
 
-      // مسح المفاتيح الخاصة بالمروج فقط بدلاً من مسح كل شيء (clear)
       await prefs.remove('promoter_token');
       await prefs.remove('promoter_id');
       await prefs.remove('promoter_name');
@@ -267,11 +248,6 @@ class PromoterService {
     }
   }
 
-  // ===========================================================================
-  // 🚀 الطلبات البرمجية (API Requests)
-  // ===========================================================================
-
-  // تسجيل الدخول
   static Future<Map<String, dynamic>> login(
       String phone, String password) async {
     print('');
@@ -357,7 +333,6 @@ class PromoterService {
     }
   }
 
-  // جلب بيانات لوحة التحكم
   static Future<PromoterDashboard?> getDashboard() async {
     print('');
     print('═══════════════════════════════════════════════════════');
@@ -432,7 +407,6 @@ class PromoterService {
     }
   }
 
-  // جلب قائمة الطلبات
   static Future<List<PromoterOrder>> getOrders() async {
     print('');
     print('═══════════════════════════════════════════════════════');
@@ -510,7 +484,6 @@ class PromoterService {
     }
   }
 
-  // طلب السحب
   static Future<Map<String, dynamic>> withdraw() async {
     print('');
     print('═══════════════════════════════════════════════════════');
@@ -561,89 +534,103 @@ class PromoterService {
     }
   }
 }
-// =============================================================================
-// 🚀 نقطة البداية (Main) - مع طباعة مفصلة
-// =============================================================================
-// =============================================================================
-// 🚀 نقطة البداية (Main) - النسخة المُصححة
-// =============================================================================
-// =============================================================================
-// 🚀 نقطة البداية (Main)
-// =============================================================================
-// =============================================================================
-// 🚀 نقطة البداية (Main) - الحماية الصارمة
-// =============================================================================
-// =============================================================================
-// 🚀 نقطة البداية (Main) - النسخة المُصححة والمستقرة
-// =============================================================================
-void main() {
-  // تهيئة قنوات فلاتر الأساسية
-  WidgetsFlutterBinding.ensureInitialized();
 
-  // تشغيل التطبيق مباشرة وترك مسؤولية التوجيه للـ FutureBuilder
-  runApp(const PromoterApp());
+// =============================================================================
+// 🚪 بوابة المروجين (Promoter Gate) - نقطة الدخول من تطبيق السائقين
+// =============================================================================
+// استدعي هذه الشاشة من تطبيق السائقين هكذا:
+// Navigator.push(context, MaterialPageRoute(builder: (_) => const PromoterGateScreen()));
+
+class PromoterGateScreen extends StatefulWidget {
+  const PromoterGateScreen({Key? key}) : super(key: key);
+
+  @override
+  State<PromoterGateScreen> createState() => _PromoterGateScreenState();
 }
 
-class PromoterApp extends StatelessWidget {
-  const PromoterApp({Key? key}) : super(key: key);
+class _PromoterGateScreenState extends State<PromoterGateScreen> {
+  bool _isLoading = true;
+  bool _isLoggedIn = false;
 
-  // دالة للتحقق من حالة الدخول بأمان
-  Future<bool> _checkLoginStatus() async {
+  @override
+  void initState() {
+    super.initState();
+    print('');
+    print('═══════════════════════════════════════════════════════');
+    print('🔍 [GateScreen] initState() called');
+    print('═══════════════════════════════════════════════════════');
+    _checkInitialLoginState();
+  }
+
+  Future<void> _checkInitialLoginState() async {
+    print('🔍 [GateScreen] Checking initial login state...');
+
     try {
       final prefs = await SharedPreferences.getInstance();
-      // 🚨 الحل السحري: إجبار التحديث من القرص لتجاوز الكاش (مهم جداً للآيفون)
-      await prefs.reload();
-      final savedToken = prefs.getString('promoter_token');
 
-      print('🔍 [AppStart] Token found: ${savedToken != null}');
-      return savedToken != null && savedToken.isNotEmpty;
+      // ✅ إجبار التحديث لضمان قراءة أحدث البيانات من القرص
+      await prefs.reload();
+
+      final savedToken = prefs.getString('promoter_token');
+      final savedId = prefs.getInt('promoter_id');
+      final savedName = prefs.getString('promoter_name');
+
+      print('🔍 [GateScreen] Token: ${savedToken != null ? '*** (Found)' : 'NULL (Not Found)'}');
+      print('🔍 [GateScreen] ID: ${savedId ?? 'NULL'}');
+      print('🔍 [GateScreen] Name: ${savedName ?? 'NULL'}');
+
+      if (savedToken != null && savedToken.isNotEmpty) {
+        print('✅ [GateScreen] Token found! Navigating to Dashboard.');
+        if (mounted) {
+          setState(() {
+            _isLoggedIn = true;
+            _isLoading = false;
+          });
+        }
+      } else {
+        print('❌ [GateScreen] Token NOT found! Navigating to Login.');
+        if (mounted) {
+          setState(() {
+            _isLoggedIn = false;
+            _isLoading = false;
+          });
+        }
+      }
     } catch (e) {
-      print('❌ [AppStart] Error checking login status: $e');
-      return false;
+      print('❌ [GateScreen] Error checking login state: $e');
+      if (mounted) {
+        setState(() {
+          _isLoggedIn = false;
+          _isLoading = false;
+        });
+      }
     }
+
+    print('═══════════════════════════════════════════════════════');
+    print('');
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'تطبيق السفير - بيتي',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        primaryColor: AppColors.primary,
-        scaffoldBackgroundColor: AppColors.background,
-        fontFamily: 'Cairo',
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: AppColors.primary,
-          brightness: Brightness.light,
+    print('🔍 [GateScreen] build() called');
+    print('🔍 [GateScreen] _isLoading: $_isLoading');
+    print('🔍 [GateScreen] _isLoggedIn: $_isLoggedIn');
+
+    if (_isLoading) {
+      return const Scaffold(
+        backgroundColor: AppColors.primary,
+        body: Center(
+          child: CircularProgressIndicator(color: Colors.white),
         ),
-      ),
-      // استخدام FutureBuilder للتعامل مع الذاكرة بشكل صحيح دون تجميد التطبيق
-      home: FutureBuilder<bool>(
-        future: _checkLoginStatus(),
-        builder: (context, snapshot) {
-          // 1. أثناء التحقق: نظهر شاشة تحميل بسيطة بانتظار قراءة الذاكرة
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(
-              backgroundColor: AppColors.primary,
-              body: Center(
-                child: CircularProgressIndicator(color: Colors.white),
-              ),
-            );
-          }
+      );
+    }
 
-          // 2. إذا كان مسجل دخول: نقوم بتحميل البيانات ونوجهه للوحة التحكم
-          if (snapshot.data == true) {
-            PromoterService.loadSavedData(); // تحديث المتغيرات في الخدمة
-            return const PromoterDashboardScreen();
-          }
-
-          // 3. إذا لم يكن مسجل دخول: نوجهه لشاشة الدخول
-          return const PromoterLoginScreen();
-        },
-      ),
-    );
+    return _isLoggedIn
+        ? const PromoterDashboardScreen()
+        : const PromoterLoginScreen();
   }
 }
+
 // =============================================================================
 // 🔐 شاشة تسجيل الدخول
 // =============================================================================
@@ -981,7 +968,6 @@ class _PromoterDashboardScreenState extends State<PromoterDashboardScreen> {
   bool _isLoading = true;
   String? _errorMessage;
 
-  // ✅ 1. إضافة متغير محلي لحفظ اسم المروج
   String _promoterName = 'مروج';
 
   @override
@@ -992,7 +978,6 @@ class _PromoterDashboardScreenState extends State<PromoterDashboardScreen> {
     print('🔍 [DashboardScreen] initState() called');
     print('═══════════════════════════════════════════════════════');
 
-    // ✅ 2. استدعاء دالة جلب الاسم عند فتح الشاشة
     _loadName();
 
     print('🔍 [DashboardScreen] Calling _loadDashboard()');
@@ -1001,7 +986,6 @@ class _PromoterDashboardScreenState extends State<PromoterDashboardScreen> {
     _loadDashboard();
   }
 
-  // ✅ 3. دالة جديدة لجلب اسم المروج من الذاكرة وتحديث الواجهة
   Future<void> _loadName() async {
     final name = await PromoterService.getPromoterName();
     if (mounted && name != null && name.isNotEmpty) {
@@ -1136,7 +1120,6 @@ class _PromoterDashboardScreenState extends State<PromoterDashboardScreen> {
         backgroundColor: AppColors.primary,
         elevation: 0,
         title: Text(
-          // ✅ 4. استخدام المتغير المحلي _promoterName هنا بشكل مباشر
           'مرحباً $_promoterName 👋',
           style: const TextStyle(
             fontSize: 18,
@@ -1936,6 +1919,7 @@ class _PromoterDashboardScreenState extends State<PromoterDashboardScreen> {
     }
   }
 }
+
 // =============================================================================
 // 📋 شاشة الطلبات
 // =============================================================================

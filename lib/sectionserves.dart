@@ -13,9 +13,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ovoride_driver/core/route/route.dart';
 import 'dev/tx.dart';
 
-// ⚠️ ملاحظة: قم باستيراد شاشة المروجين الحقيقية هنا بعد نقلها لمشروعك
-// import 'path_to_your_promoter_file.dart';
-
 class ServicesSelectionScreen extends StatefulWidget {
   const ServicesSelectionScreen({super.key});
 
@@ -28,7 +25,6 @@ class _ServicesSelectionScreenState extends State<ServicesSelectionScreen> {
   @override
   void initState() {
     super.initState();
-    // تشغيل الفحوصات عند فتح الشاشة
     _runAppChecks();
   }
 
@@ -38,21 +34,19 @@ class _ServicesSelectionScreenState extends State<ServicesSelectionScreen> {
   }
 
   // ---------------------------------------------------------
-  // 1. منطق التحديث الإجباري (باستخدام المفتاح الجديد)
+  // 1. منطق التحديث الإجباري
   // ---------------------------------------------------------
   Future<void> _checkForUpdate() async {
     try {
       final remoteConfig = FirebaseRemoteConfig.instance;
 
-      // إعدادات الجلب (Fetch)
       await remoteConfig.setConfigSettings(RemoteConfigSettings(
         fetchTimeout: const Duration(seconds: 10),
-        minimumFetchInterval: Duration.zero, // لجلب التحديث فوراً عند كل تشغيل
+        minimumFetchInterval: Duration.zero,
       ));
 
       await remoteConfig.fetchAndActivate();
 
-      // استخراج البيانات باستخدام المفتاح الفريد لتطبيق الخدمات
       final configString = remoteConfig.getString('services_update_config');
       if (configString.isEmpty) return;
 
@@ -67,7 +61,6 @@ class _ServicesSelectionScreenState extends State<ServicesSelectionScreen> {
         final currentVersion = Version.parse(packageInfo.version);
         final requiredVersion = Version.parse(minVer);
 
-        // إذا كان إصدار التطبيق الحالي أصغر من الإصدار المطلوب
         if (currentVersion < requiredVersion) {
           if (mounted) _showUpdateSheet(url);
         }
@@ -77,12 +70,11 @@ class _ServicesSelectionScreenState extends State<ServicesSelectionScreen> {
     }
   }
 
-  // واجهة التحديث (مودرن - Bottom Sheet)
   void _showUpdateSheet(String updateUrl) {
     showModalBottomSheet(
       context: context,
-      isDismissible: false, // يمنع إغلاق النافذة بالضغط خارجها
-      enableDrag: false,    // يمنع سحب النافذة لأسفل لإغلاقها
+      isDismissible: false,
+      enableDrag: false,
       backgroundColor: Colors.transparent,
       builder: (context) => Container(
         decoration: const BoxDecoration(
@@ -139,7 +131,6 @@ class _ServicesSelectionScreenState extends State<ServicesSelectionScreen> {
     int openCount = (prefs.getInt('services_open_count') ?? 0) + 1;
     await prefs.setInt('services_open_count', openCount);
 
-    // نطلب التقييم عند المرة الخامسة لفتح التطبيق
     if (openCount == 5) {
       if (await inAppReview.isAvailable()) {
         inAppReview.requestReview();
@@ -186,16 +177,18 @@ class _ServicesSelectionScreenState extends State<ServicesSelectionScreen> {
               ),
               const SizedBox(height: 20),
 
-              // 3. بطاقة خدمات المروجين (الجديدة) ✨
+              // 3. بطاقة خدمات المروجين ✨
               _buildServiceCard(
-                title: 'خدمات',
-                subtitle: 'برنامج الخاص ',
-                imagePath: 'assets/images/promoter.jpg', // ⚠️ تأكد من إضافة صورة بهذا الاسم في assets
+                title: 'برنامج سفير منصة بيتي ',
+                subtitle: 'تابع أرباحك وعمولاتك',
+                imagePath: 'assets/images/promoter.jpg',
                 color: Colors.purple.shade700,
                 onTap: () {
-                  // 🔗 هنا سيتم توجيه المستخدم لشاشة المروجين
-                   Get.to(() => const PromoterLoginScreen());
-
+                  // 🔥 الحل الجذري: استخدام PromoterGateScreen بدلاً من PromoterLoginScreen
+                  // PromoterGateScreen تفحص التوكن تلقائياً:
+                  // - إذا وجد التوكن → تفتح الداشبورد مباشرة
+                  // - إذا لم يوجد → تفتح شاشة تسجيل الدخول
+                  Get.to(() => const PromoterGateScreen());
                 },
               ),
             ],
