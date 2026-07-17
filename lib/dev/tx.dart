@@ -1,13 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:mobile_scanner/mobile_scanner.dart'; // 🆕 مكتبة مسح الباركود
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:livekit_client/livekit_client.dart' hide ConnectionState, Priority;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
-import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:latlong2/latlong.dart';
@@ -1071,6 +1073,11 @@ class Order {
   final int platformMarkup;
   final int totalToCollect;
 
+  // 🆕 الحقول الجديدة للمطعم (الباركود والهاتف)
+  final String? restaurantBarcode;
+  final String? restaurantPhone;
+  final bool requiresBarcode;
+
   Order({
     required this.id,
     this.orderStatus,
@@ -1091,6 +1098,9 @@ class Order {
     required this.orderTotal,
     required this.platformMarkup,
     required this.totalToCollect,
+    this.restaurantBarcode,
+    this.restaurantPhone,
+    this.requiresBarcode = false,
   });
 
   factory Order.fromJson(Map<String, dynamic> json) {
@@ -1116,6 +1126,11 @@ class Order {
       orderTotal: (json['order_total'] as num?)?.toInt() ?? 0,
       platformMarkup: (json['platform_markup'] as num?)?.toInt() ?? 0,
       totalToCollect: (json['total_to_collect'] as num?)?.toInt() ?? 0,
+
+      // 🆕 جلب بيانات المطعم الجديدة
+      restaurantBarcode: json['restaurant_barcode']?.toString(),
+      restaurantPhone: json['restaurant_phone']?.toString(),
+      requiresBarcode: json['requires_barcode'] == true || json['requires_barcode'] == '1',
     );
   }
 }
@@ -1137,6 +1152,130 @@ class ApiService {
     }
   }
 
+// =============================================================================
+// 🆕 نظام التعويضات المعلق - دوال API جديدة
+// =============================================================================
+
+  /// جلب التعويضات المعلقة للمندوب (بانتظار مراجعة التيم ليدر)
+  static Future<Map<String, dynamic>> getMyPendingCompensations(String token) async {
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final res = await http.get(
+        Uri.parse('$baseUrl/taxi/v3/driver/my-pending-compensations?_t=$timestamp'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+        },
+      );
+      if (res.statusCode == 200) {
+        return json.decode(res.body);
+      }
+      return {'success': false, 'message': 'فشل الاتصال (${res.statusCode})'};
+    } catch (e) {
+      print("❌ [API] getMyPendingCompensations Error: $e");
+      return {'success': false, 'message': 'خطأ في الاتصال: $e'};
+    }
+  }
+
+  /// جلب سجل التعويضات (المعتمدة + المرفوضة)
+  static Future<Map<String, dynamic>> getCompensationHistory(String token) async {
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final res = await http.get(
+        Uri.parse('$baseUrl/taxi/v3/driver/compensation-history?_t=$timestamp'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+        },
+      );
+      if (res.statusCode == 200) {
+        return json.decode(res.body);
+      }
+      return {'success': false, 'message': 'فشل الاتصال (${res.statusCode})'};
+    } catch (e) {
+      print("❌ [API] getCompensationHistory Error: $e");
+      return {'success': false, 'message': 'خطأ في الاتصال: $e'};
+    }
+
+  }
+
+
+// 🏪 جلب دليل المطاعم الكامل من السيرفر
+  static Future<Map<String, dynamic>> getRestaurantsDirectory(String token) async {
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final res = await http.get(
+        Uri.parse('$baseUrl/taxi/v3/restaurants/directory?_t=$timestamp'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+        },
+      ).timeout(const Duration(seconds: 15));
+
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['success'] == true) {
+          return data;
+        }
+      }
+      return {'success': false, 'message': 'فشل الاتصال (${res.statusCode})'};
+    } catch (e) {
+      print("❌ [API] getRestaurantsDirectory Error: $e");
+      return {'success': false, 'message': 'خطأ في الاتصال: $e'};
+    }
+  }
+
+// 🔄 تحويل الطلب لمطعم آخر
+  static Future<Map<String, dynamic>> transferOrderToNewRestaurant(
+      String token,
+      String orderId,
+      String newRestaurantName
+      ) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/taxi/v3/delivery/transfer-store'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: json.encode({
+          'order_id': orderId,
+          'new_store_name': newRestaurantName,
+        }),
+      );
+      return json.decode(res.body);
+    } catch (e) {
+      return {'success': false, 'message': 'فشل الاتصال: $e'};
+    }
+  }
+
+// ❌ إلغاء الطلب مع السبب
+  static Future<Map<String, dynamic>> cancelOrderWithReason(
+      String token,
+      String orderId,
+      String reason
+      ) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/taxi/v3/delivery/update-status'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: json.encode({
+          'order_id': orderId,
+          'status': 'cancelled',
+          'cancellation_reason': reason,
+        }),
+      );
+      return json.decode(res.body);
+    } catch (e) {
+      return {'success': false, 'message': 'فشل الاتصال: $e'};
+    }
+  }
   static Future<void> storeAuthData(AuthResult auth) async {
     await _storage.write(key: 'token', value: auth.token);
     await _storage.write(key: 'uid', value: auth.userId);
@@ -1225,6 +1364,7 @@ class ApiService {
   }
 
   // مسار توليد الباركود لتصفية الذمة من قبل التيم ليدر
+// 🔥 تحديث دالة توليد الباركود لتشمل الرصيد المعلق
   static Future<Map<String, dynamic>> generateSettlementBarcode(String t) async {
     try {
       final res = await http.post(
@@ -1237,7 +1377,7 @@ class ApiService {
       return {'success': false, 'message': 'فشل في توليد الباركود.'};
     }
   }
-  // استخدام الإصدار 3 لجلب الطلبات المتاحة
+
   static Future<List<Order>> getAvailableOrdersV3(String token) async {
     final response = await http.get(
       Uri.parse('$baseUrl/taxi/v3/delivery/available'),
@@ -3497,6 +3637,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     }
   }
 }
+
 class DriverCurrentDeliveryScreen extends StatefulWidget {
   final Map<String, dynamic> initialDelivery;
   final AuthResult authResult;
@@ -3514,7 +3655,6 @@ class DriverCurrentDeliveryScreen extends StatefulWidget {
   @override
   State<DriverCurrentDeliveryScreen> createState() => _DriverCurrentDeliveryScreenState();
 }
-
 class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScreen> {
   late Map<String, dynamic> _currentDelivery;
   bool _isLoading = false;
@@ -3522,6 +3662,16 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   String _distanceToTargetString = "جاري الحساب...";
   int _callAttempts = 0;
   bool _canShowNumber = false;
+
+  // 🆕 متغيرات نظام دليل المطاعم
+  List<Map<String, dynamic>> _restaurantsDirectory = [];
+  bool _isLoadingDirectory = false;
+  String? _lastDirectoryUpdate;
+
+  // 🆕 مؤقت التحويل (4 دقائق)
+  Timer? _transferTimer;
+  int _secondsUntilTransfer = 0;
+  bool _canTransfer = false;
 
   @override
   void initState() {
@@ -3531,19 +3681,151 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       _startLiveTracking();
       _debugCoordinates();
     });
-    Future.delayed(const Duration(minutes: 3), () {
+    Future.delayed(const Duration(minutes: 2), () {
       if (mounted) setState(() => _canShowNumber = true);
     });
+
+    // 🆕 تحميل دليل المطاعم وبدء مؤقت التحويل
+    _loadRestaurantsDirectory();
+    _startTransferTimer();
+  }
+
+  // 🆕 دالة تحميل دليل المطاعم من السيرفر
+  Future<void> _loadRestaurantsDirectory({bool showLoading = false}) async {
+    if (showLoading) setState(() => _isLoadingDirectory = true);
+
+    try {
+      final result = await ApiService.getRestaurantsDirectory(widget.authResult.token);
+
+      if (result['success'] == true && result['directory'] != null) {
+        if (mounted) {
+          setState(() {
+            _restaurantsDirectory = List<Map<String, dynamic>>.from(result['directory']);
+            _lastDirectoryUpdate = result['server_time']?.toString() ??
+                DateTime.now().toIso8601String();
+            _isLoadingDirectory = false;
+          });
+
+          // طباعة تشخيصية
+          final stats = result['stats'] ?? {};
+          print("✅ [Directory] تم تحميل ${stats['total_restaurants'] ?? _restaurantsDirectory.length} مطعم");
+          print("   📊 باركود: ${stats['with_barcode'] ?? 0} | هاتف: ${stats['with_phone'] ?? 0}");
+
+          if (showLoading) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('✅ تم تحديث الدليل: ${_restaurantsDirectory.length} مطعم'),
+                backgroundColor: Colors.green,
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        }
+      } else {
+        if (mounted) {
+          setState(() => _isLoadingDirectory = false);
+          if (showLoading) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('❌ ${result['message'] ?? 'فشل تحديث الدليل'}'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingDirectory = false);
+        if (showLoading) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    }
+  }
+
+  // 🆕 دالة المطابقة المحلية - تبحث عن المطعم في الدليل
+  Map<String, dynamic>? _findRestaurantInDirectory(String restaurantName) {
+    if (_restaurantsDirectory.isEmpty || restaurantName.isEmpty) return null;
+
+    final normalizedName = restaurantName.trim().toLowerCase();
+
+    // البحث عن تطابق تام أولاً
+    for (var rest in _restaurantsDirectory) {
+      final restName = (rest['name']?.toString() ?? '').trim().toLowerCase();
+      if (restName == normalizedName) {
+        return rest;
+      }
+    }
+
+    // البحث عن تطابق جزئي (contains)
+    for (var rest in _restaurantsDirectory) {
+      final restName = (rest['name']?.toString() ?? '').trim().toLowerCase();
+      if (restName.contains(normalizedName) || normalizedName.contains(restName)) {
+        return rest;
+      }
+    }
+
+    return null;
+  }
+
+  // 🆕 دالة بدء مؤقت التحويل الذكي (مربوط بـ SharedPreferences)
+  Future<void> _startTransferTimer() async {
+    final String orderId = _currentDelivery['id'].toString();
+    final prefs = await SharedPreferences.getInstance();
+    final String key = 'transfer_timer_end_$orderId';
+
+    int? endTimeMs = prefs.getInt(key);
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+
+    // إذا كانت هذه أول مرة يُفتح فيها الطلب، نبدأ مؤقت جديد لـ 4 دقائق
+    if (endTimeMs == null) {
+      endTimeMs = nowMs + (240 * 1000); // 4 دقائق = 240 ثانية
+      await prefs.setInt(key, endTimeMs);
+    }
+
+    void updateState() {
+      final int currentNow = DateTime.now().millisecondsSinceEpoch;
+      final int diffSeconds = (endTimeMs! - currentNow) ~/ 1000;
+
+      if (mounted) {
+        setState(() {
+          if (diffSeconds <= 0) {
+            _secondsUntilTransfer = 0;
+            _canTransfer = true;
+          } else {
+            _secondsUntilTransfer = diffSeconds;
+            _canTransfer = false;
+          }
+        });
+      }
+    }
+
+    // تحديث فوري للحالة قبل بدء المؤقت
+    updateState();
+
+    _transferTimer?.cancel();
+    if (!_canTransfer) {
+      _transferTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        updateState();
+        if (_secondsUntilTransfer <= 0) {
+          timer.cancel();
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     _positionStream?.cancel();
+    _transferTimer?.cancel();
     super.dispose();
   }
 
   // ========================================================================
-  // 🔥 عرض تفاصيل الطلب (التصميم الجديد المعتمد على السيرفر الناقل الأمين)
+  // 🔥 عرض تفاصيل الطلب
   // ========================================================================
   void _showOrderDetailsDialog() {
     final String orderId = _currentDelivery['id']?.toString() ?? '...';
@@ -3556,14 +3838,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       items = _currentDelivery['items'];
     }
 
-    // =========================================================
-    // 🧮 التطبيق لم يعد يحسب! نحن نقرأ المبالغ المجهزة من السيرفر
-    // =========================================================
     final double orderTotal = double.tryParse(_currentDelivery['order_total']?.toString() ?? '0') ?? 0;
     final double deliveryFee = double.tryParse(_currentDelivery['delivery_fee']?.toString() ?? '0') ?? 0;
     final double totalToCollect = double.tryParse(_currentDelivery['total_to_collect']?.toString() ?? '0') ?? 0;
-
-    // 🔥 قراءة بيانات الخصم والسعر النهائي
     final double discountAmount = double.tryParse(_currentDelivery['discount_amount']?.toString() ?? '0') ?? 0;
     final double finalOrderTotal = double.tryParse(_currentDelivery['final_order_total']?.toString() ?? '0') ?? 0;
 
@@ -3635,10 +3912,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
                 const Divider(height: 30),
 
-                // 💰 الملخص المالي (المحدث ليدعم الخصم)
                 _buildSummaryRow("سعر الطلبات الأصلي (يُدفع للمطعم):", orderTotal),
 
-                // 🔥 عرض الخصم إذا وجد
                 if (discountAmount > 0) ...[
                   const SizedBox(height: 8),
                   _buildSummaryRow("قيمة الخصم (ستُضاف لمحفظتك):", discountAmount, color: Colors.red.shade700),
@@ -3653,7 +3928,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   child: Divider(),
                 ),
 
-                // 🔥 المبلغ الكلي المطلوب من الزبون
                 _buildSummaryRow("المطلوب من الزبون الكلي:", totalToCollect, isBold: true, color: Colors.green.shade700, size: 18),
                 const SizedBox(height: 10),
                 Text("هذا هو المبلغ الذي يجب أن تستلمه من الزبون بالكامل.", style: TextStyle(fontSize: 12, color: Colors.grey.shade600), textAlign: TextAlign.center),
@@ -3681,7 +3955,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     );
   }
 
-  // دالة مساعدة لبناء صفوف الأسعار
   Widget _buildSummaryRow(String label, double amount, {bool isBold = false, Color? color, double size = 16}) {
     return Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -3792,7 +4065,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     });
   }
 
-  Future<void> _updateStatus(String newStatus) async {
+  Future<void> _updateStatus(String newStatus, {String? reason}) async {
     setState(() => _isLoading = true);
     try {
       final response = await ApiService.updateDeliveryStatus(
@@ -3824,11 +4097,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   Future<void> _launchWazeWithCoords(double lat, double lng) async {
-    // 🔥 تقصير الإحداثيات إلى 6 خانات عشرية (الصيغة المثالية لويز)
     final cleanLat = lat.toStringAsFixed(6);
     final cleanLng = lng.toStringAsFixed(6);
 
-    // 🔥 بناء الرابط بشكل آمن باستخدام Uri.builder
     final wazeUri = Uri(
       scheme: 'https',
       host: 'waze.com',
@@ -3839,14 +4110,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       },
     );
 
-    // 🔥 طباعة تشخيصية (راجع Console لمعرفة الرابط الفعلي)
     print("🗺️ [WAZE DEBUG] Opening URL: ${wazeUri.toString()}");
     print("📍 [WAZE DEBUG] Coordinates: Lat=$cleanLat, Lng=$cleanLng");
 
     if (await canLaunchUrl(wazeUri)) {
       await launchUrl(wazeUri, mode: LaunchMode.externalApplication);
     } else {
-      // 🔥 محاولة بديلة: فتح ويز بالتطبيق مباشرة (Android/iOS)
       final androidUri = Uri.parse('waze://?ll=$cleanLat,$cleanLng&navigate=yes');
       final iosUri = Uri.parse('waze://?ll=$cleanLat,$cleanLng&navigate=yes');
 
@@ -3866,6 +4135,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       }
     }
   }
+
   Future<void> _launchWazeWithAddress(String address) async {
     final encodedAddress = Uri.encodeComponent(address);
     final wazeUri = Uri.parse("https://waze.com/ul?q=$encodedAddress&navigate=yes");
@@ -3885,7 +4155,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
   Future<void> _launchRestaurantMap() async {
     final pickup = _getPickupPoint();
-
     print("🏪 [MAP DEBUG] Pickup Point: ${pickup?.toString() ?? 'NULL'}");
 
     if (pickup != null) {
@@ -3899,17 +4168,15 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       }
     }
   }
+
   Future<void> _launchCustomerMap() async {
     final destination = _getDestinationPoint();
-
-    // 🔥 طباعة تشخيصية
     print("🎯 [MAP DEBUG] Destination Point: ${destination?.toString() ?? 'NULL'}");
     print("🎯 [MAP DEBUG] Raw Data - Lat: ${_currentDelivery['destination_lat']}, Lng: ${_currentDelivery['destination_lng']}");
 
     if (destination != null) {
       await _launchWazeWithCoords(destination.latitude, destination.longitude);
     } else {
-      // 🔥 محاولة استخدام العنوان النصي كاحتياط
       final destAddress = _currentDelivery['destination_address'] ?? '';
       if (destAddress.isNotEmpty && destAddress != 'غير معروف') {
         print("⚠️ [MAP DEBUG] Using text address instead: $destAddress");
@@ -3922,7 +4189,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
   Future<void> _launchWaze() async {
     final target = _getTargetPoint();
-
     print("🚗 [MAP DEBUG] Target Point: ${target?.toString() ?? 'NULL'}");
     print("🚗 [MAP DEBUG] Current Status: ${_currentDelivery['order_status']}");
 
@@ -3939,6 +4205,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       }
     }
   }
+
   void _showMapError(String target) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3969,6 +4236,36 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
+  // 🆕 دالة الاتصال بالمطعم (من الدليل المحلي)
+  Future<void> _callRestaurant() async {
+    final restaurantName = _currentDelivery['pickup_location_name']?.toString() ?? '';
+
+    // البحث في الدليل المحلي
+    final restaurantData = _findRestaurantInDirectory(restaurantName);
+    final phone = restaurantData?['phone']?.toString() ?? '';
+
+    if (phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("❌ رقم هاتف المطعم غير متوفر في الدليل"),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    final Uri launchUri = Uri(scheme: 'tel', path: phone);
+    if (await canLaunchUrl(launchUri)) {
+      await launchUrl(launchUri);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("❌ لا يمكن الاتصال بهذا الرقم"), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   Future<void> _makePhoneCall(String phoneNumber) async {
     if (phoneNumber.isEmpty) return;
     final Uri launchUri = Uri(scheme: 'tel', path: phoneNumber);
@@ -3978,19 +4275,17 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   Future<void> _startInternalCall() async {
-    print("📞 [CALL] ========== بدء المكالمة الداخلية ==========");
+    print("📞 [CALL] ========== بدء المكالمة الداخلية (LiveKit) ==========");
     setState(() => _isLoading = true);
-
     try {
       final String orderId = _currentDelivery['source_order_id']?.toString() ?? _currentDelivery['id'].toString();
       final String driverName = widget.authResult.displayName ?? 'سائق بيتي';
       final String driverPhone = widget.authResult.userId?.toString() ?? '';
       final String sourceType = _currentDelivery['source_type']?.toString() ?? 'restaurant';
 
+      // رابط السيرفر الجديد
       String callUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/start';
-      if (sourceType == 'market' || sourceType == 'store' || sourceType == 'pharmacy') {
-        callUrl = 'https://beytei.com/wp-json/beytei-calls/v1/start';
-      }
+
 
       final response = await http.post(
         Uri.parse(callUrl),
@@ -4001,8 +4296,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         body: json.encode({
           'secret_key': 'BEYTEI_SECURE_2025',
           'order_id': orderId,
-          'driver_name': driverName,
-          'driver_phone': driverPhone,
+          'caller_type': 'driver', // 🔥 هذا السطر يخبر السيرفر أن السائق هو من يبدأ الاتصال
+          'caller_name': driverName,
+          'caller_phone': driverPhone,
         }),
       );
 
@@ -4014,10 +4310,11 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
               context,
               MaterialPageRoute(
                 builder: (_) => DriverCallPage(
-                  channelName: data['channel_name'],
+                  roomName: data['room_name'],       // 🔥 جديد
+                  livekitUrl: data['livekit_url'],   // 🔥 جديد
+                  token: data['token'],              // 🔥 جديد (مفتاح الدخول)
                   customerName: 'الزبون',
                   customerPhone: _currentDelivery['end_customer_phone']?.toString() ?? '',
-                  agoraAppId: data['agora_app_id'] ?? '3924f8eebe7048f8a65cb3bd4a4adcec',
                   orderId: orderId,
                   sourceType: sourceType,
                 ),
@@ -4031,7 +4328,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         _showError('خطأ في السيرفر: ${response.statusCode}');
       }
     } catch (e) {
-      _showError('تأكد من اتصالك بالإنترنت');
+      _showError('تأكد من اتصالك بالإنترنت: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -4101,6 +4398,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     return const SizedBox.shrink();
   }
 
+  // ========================================================================
+  // 🔥 دالة الأزرار الرئيسية - مع نظام الباركود والتحويل
+  // ========================================================================
   Widget _buildActionButton() {
     final status = _currentDelivery['order_status'];
     final buttonStyle = ElevatedButton.styleFrom(
@@ -4110,20 +4410,65 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       elevation: 5,
     );
 
+    // 🆕 البحث في الدليل المحلي عن بيانات المطعم
+    final restaurantName = _currentDelivery['pickup_location_name']?.toString() ?? '';
+    final restaurantData = _findRestaurantInDirectory(restaurantName);
+
+    // 🆕 فحص ما إذا كان المطعم يتطلب باركود (من الدليل المحلي)
+    final bool requiresBarcode = restaurantData?['requires_scan'] == true ||
+        (restaurantData?['barcode']?.toString().isNotEmpty ?? false);
+
     switch (status) {
       case 'accepted':
-        return SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            icon: const Icon(Icons.store, size: 28),
-            label: const Text('وصلت للمتجر'),
-            onPressed: _isLoading ? null : () => _updateStatus('at_store'),
-            style: buttonStyle.copyWith(
-              backgroundColor: const WidgetStatePropertyAll(Colors.blue),
-              foregroundColor: const WidgetStatePropertyAll(Colors.white),
+        return Column(
+          children: [
+            // 🔵 زر الوصول للمطعم (مع مسح الباركود إذا لزم)
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: Icon(requiresBarcode ? Icons.qr_code_scanner : Icons.store, size: 28),
+                label: Text(requiresBarcode ? 'مسح باركود المطعم' : 'وصلت للمتجر'),
+                onPressed: _isLoading ? null : () {
+                  if (requiresBarcode) {
+                    _showBarcodeScannerDialog(restaurantData?['barcode']?.toString() ?? '');
+                  } else {
+                    _updateStatus('at_store');
+                  }
+                },
+                style: buttonStyle.copyWith(
+                  backgroundColor: WidgetStatePropertyAll(requiresBarcode ? Colors.deepPurple : Colors.blue),
+                  foregroundColor: const WidgetStatePropertyAll(Colors.white),
+                ),
+              ),
             ),
-          ),
+            const SizedBox(height: 12),
+
+            // 🟠 زر التحويل لمطعم آخر (يظهر بعد 4 دقائق)
+            if (_canTransfer)
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.swap_horiz, size: 20),
+                  label: const Text('تحويل لمطعم آخر'),
+                  onPressed: _isLoading ? null : _showTransferStoreDialog,
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    foregroundColor: Colors.orange,
+                    side: const BorderSide(color: Colors.orange, width: 2),
+                  ),
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  '⏱️ يمكن التحويل بعد ${(_secondsUntilTransfer ~/ 60)}:${(_secondsUntilTransfer % 60).toString().padLeft(2, '0')}',
+                  style: const TextStyle(color: Colors.grey, fontSize: 14),
+                ),
+              ),
+          ],
         );
+
       case 'at_store':
         return SizedBox(
           width: double.infinity,
@@ -4174,12 +4519,493 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  // 🔥 نافذة رفع الفاتورة (المحدثة لعرض مبلغ التعويض بوضوح)
+  // ========================================================================
+  // 🆕 نافذة مسح الباركود بالكاميرا مباشرة (تم إخفاء الباركود المتوقع)
+  // ========================================================================
+  void _showBarcodeScannerDialog(String expectedBarcode) {
+    final String restaurantName = _currentDelivery['pickup_location_name']?.toString() ?? 'المطعم';
+    MobileScannerController? cameraController;
+    bool isProcessing = false;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          if (cameraController == null) {
+            cameraController = MobileScannerController(
+              detectionSpeed: DetectionSpeed.normal,
+              facing: CameraFacing.back,
+              torchEnabled: false,
+            );
+          }
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: Row(
+              children: [
+                const Icon(Icons.qr_code_scanner, color: Colors.deepPurple),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'مسح باركود $restaurantName',
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                ),
+              ],
+            ),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 300,
+              child: Column(
+                children: [
+                  const Text(
+                    'وجّه الكاميرا نحو الباركود الملصق في المطعم',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 14, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 15),
+
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(15),
+                      child: Stack(
+                        children: [
+                          MobileScanner(
+                            controller: cameraController!,
+                            onDetect: (capture) {
+                              if (isProcessing) return;
+
+                              final List<Barcode> barcodes = capture.barcodes;
+                              if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
+                                final scannedCode = barcodes.first.rawValue!;
+
+                                setDialogState(() {
+                                  isProcessing = true;
+                                });
+
+                                _verifyBarcode(scannedCode, expectedBarcode, ctx, () {
+                                  setDialogState(() {
+                                    isProcessing = false;
+                                  });
+                                });
+                              }
+                            },
+                          ),
+
+                          Center(
+                            child: Container(
+                              width: 200,
+                              height: 200,
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: isProcessing ? Colors.orange : Colors.green,
+                                  width: 4,
+                                ),
+                                borderRadius: BorderRadius.circular(15),
+                              ),
+                            ),
+                          ),
+
+                          Positioned(
+                            bottom: 10,
+                            left: 0,
+                            right: 0,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              color: Colors.black54,
+                              child: Text(
+                                isProcessing ? '⏳ جاري التحقق...' : '🔍 جاري المسح...',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  cameraController?.dispose();
+                  Navigator.pop(ctx);
+                },
+                child: const Text('إلغاء'),
+              ),
+            ],
+          );
+        },
+      ),
+    ).then((_) {
+      cameraController?.dispose();
+    });
+  }
+
+  void _verifyBarcode(String scanned, String expected, BuildContext ctx, VoidCallback onRetry) {
+    if (scanned.trim() == expected.trim()) {
+      Navigator.pop(ctx);
+      _updateStatus('at_store');
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: const [
+              Icon(Icons.check_circle, color: Colors.white),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '✅ تم التحقق بنجاح! تم تسجيل وصولك للمطعم.',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: Colors.green.shade700,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.error_outline, color: Colors.white),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      '❌ باركود خاطئ!',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'الباركود الذي قمت بمسحه غير مطابق لهذا الطلب.',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: Colors.red.shade800,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+
+      Future.delayed(const Duration(seconds: 1), onRetry);
+    }
+  }
+
+  // ========================================================================
+  // 🆕 نافذة التحويل لمطعم آخر (نظام اقتراحات إجباري)
+  // ========================================================================
+  void _showTransferStoreDialog() {
+    String? selectedStoreName;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: Row(
+              children: [
+                const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
+                const SizedBox(width: 10),
+                const Expanded(child: Text('تحويل لمطعم آخر', style: TextStyle(fontSize: 16))),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.red.shade300, width: 2),
+                  ),
+                  child: const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '⚠️ تحذير هام!',
+                        style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                      SizedBox(height: 5),
+                      Text(
+                        '• يجب الحصول على موافقة الزبون قبل تحويل الطلب.\n'
+                            '• بدون موافقة الزبون، سيتم إيقاف حسابك.\n'
+                            '• اختر المطعم الجديد من القائمة المنسدلة فقط.',
+                        style: TextStyle(fontSize: 12, color: Colors.black87, height: 1.5),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 15),
+
+                // 🆕 نظام الاقتراحات الذكي للمطاعم
+                Autocomplete<Map<String, dynamic>>(
+                  optionsBuilder: (TextEditingValue textEditingValue) {
+                    if (textEditingValue.text.isEmpty) {
+                      return const Iterable<Map<String, dynamic>>.empty();
+                    }
+                    final query = textEditingValue.text.toLowerCase();
+                    return _restaurantsDirectory.where((rest) {
+                      final name = (rest['name']?.toString() ?? '').toLowerCase();
+                      return name.contains(query);
+                    });
+                  },
+                  displayStringForOption: (option) => option['name']?.toString() ?? '',
+                  onSelected: (option) {
+                    setDialogState(() {
+                      selectedStoreName = option['name']?.toString();
+                    });
+                  },
+                  fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
+                    return TextField(
+                      controller: textEditingController,
+                      focusNode: focusNode,
+                      onChanged: (val) {
+                        if (selectedStoreName != null && val != selectedStoreName) {
+                          setDialogState(() {
+                            selectedStoreName = null;
+                          });
+                        }
+                      },
+                      decoration: InputDecoration(
+                        labelText: 'اسم المطعم الجديد',
+                        hintText: 'ابحث عن اسم المطعم...',
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        prefixIcon: const Icon(Icons.search),
+                      ),
+                    );
+                  },
+                  optionsViewBuilder: (context, onSelected, options) {
+                    return Align(
+                      alignment: Alignment.topLeft,
+                      child: Material(
+                        elevation: 4,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 200, maxWidth: 250),
+                          child: ListView.builder(
+                            padding: EdgeInsets.zero,
+                            shrinkWrap: true,
+                            itemCount: options.length,
+                            itemBuilder: (BuildContext context, int index) {
+                              final option = options.elementAt(index);
+                              return ListTile(
+                                leading: const Icon(Icons.store, color: Colors.indigo),
+                                title: Text(option['name']?.toString() ?? ''),
+                                onTap: () => onSelected(option),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+              ElevatedButton(
+                onPressed: selectedStoreName == null ? null : () async {
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx2) => AlertDialog(
+                      title: const Text('تأكيد نهائي'),
+                      content: Text('هل أنت متأكد من تحويل الطلب إلى:\n"$selectedStoreName"؟'),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx2, false), child: const Text('لا')),
+                        ElevatedButton(
+                          onPressed: () => Navigator.pop(ctx2, true),
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+                          child: const Text('نعم، تحويل'),
+                        ),
+                      ],
+                    ),
+                  );
+
+                  if (confirmed != true) return;
+
+                  Navigator.pop(ctx);
+                  setState(() => _isLoading = true);
+
+                  try {
+                    // مسح المؤقت القديم
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.remove('transfer_timer_end_${_currentDelivery['id']}');
+
+                    final res = await ApiService.transferOrderToNewRestaurant(
+                      widget.authResult.token,
+                      _currentDelivery['id'].toString(),
+                      selectedStoreName!,
+                    );
+
+                    if (res['success'] == true) {
+                      setState(() {
+                        _currentDelivery = res['delivery_order'];
+                        _isLoading = false;
+                      });
+                      widget.onDataChanged();
+
+                      // بدء مؤقت جديد للطلب بعد التحويل
+                      _startTransferTimer();
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('✅ تم التحويل إلى $selectedStoreName. امسح الباركود الجديد.'),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    } else {
+                      setState(() => _isLoading = false);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(res['message'] ?? 'فشل التحويل'), backgroundColor: Colors.red),
+                      );
+                    }
+                  } catch (e) {
+                    setState(() => _isLoading = false);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+                    );
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: selectedStoreName == null ? Colors.grey : Colors.orange,
+                ),
+                child: const Text('تحويل'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // ========================================================================
+  // 🆕 نافذة إلغاء الطلب مع السبب
+  // ========================================================================
+// ========================================================================
+  // 🆕 نافذة إلغاء الطلب مع السبب (محدثة مع مؤشر تحميل تفاعلي)
+  // ========================================================================
+  void _showCancellationReasonDialog() {
+    final TextEditingController reasonController = TextEditingController();
+    bool isCancelling = false; // متغير لتتبع حالة التحميل
+
+    showDialog(
+      context: context,
+      barrierDismissible: false, // منع السائق من إغلاق النافذة بالنقر خارجها أثناء التحميل
+      builder: (ctx) => StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Text('سبب الإلغاء', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+              content: TextField(
+                controller: reasonController,
+                maxLines: 3,
+                enabled: !isCancelling, // تعطيل حقل الكتابة أثناء الإرسال للسيرفر
+                decoration: InputDecoration(
+                  hintText: 'اكتب سبب إلغاء الطلب هنا...',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  // تعطيل زر التراجع أثناء التحميل
+                    onPressed: isCancelling ? null : () => Navigator.pop(ctx),
+                    child: const Text('تراجع')
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                  onPressed: isCancelling ? null : () async {
+                    if (reasonController.text.trim().isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('يجب كتابة سبب الإلغاء'), backgroundColor: Colors.orange),
+                      );
+                      return;
+                    }
+
+                    // 1. تشغيل مؤشر التحميل داخل الزر
+                    setDialogState(() => isCancelling = true);
+
+                    // 2. إرسال الطلب للسيرفر وانتظار النتيجة
+                    bool success = await _cancelOrderWithReason(reasonController.text.trim());
+
+                    // 3. اتخاذ القرار بناءً على رد السيرفر
+                    if (success) {
+                      if (ctx.mounted) Navigator.pop(ctx); // إغلاق النافذة فقط عند النجاح
+                    } else {
+                      // إذا فشل الإلغاء (مشكلة بالنت مثلاً)، نعيد تفعيل الزر ليتمكن من المحاولة مجدداً
+                      setDialogState(() => isCancelling = false);
+                    }
+                  },
+                  // التبديل بين النص ومؤشر التحميل بناءً على الحالة
+                  child: isCancelling
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Text('تأكيد الإلغاء'),
+                ),
+              ],
+            );
+          }
+      ),
+    );
+  }
+
+  // 🆕 تم تعديل الدالة لترجع (bool) لكي تخبر النافذة بنجاح أو فشل العملية
+  Future<bool> _cancelOrderWithReason(String reason) async {
+    try {
+      final res = await ApiService.cancelOrderWithReason(
+        widget.authResult.token,
+        _currentDelivery['id'].toString(),
+        reason,
+      );
+
+      if (res['success'] == true) {
+        widget.onDeliveryFinished();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✅ تم إلغاء الطلب'), backgroundColor: Colors.green),
+        );
+        return true; // نجاح
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(res['message'] ?? 'فشل الإلغاء'), backgroundColor: Colors.red),
+        );
+        return false; // فشل
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطأ: $e'), backgroundColor: Colors.red),
+      );
+      return false; // فشل
+    }
+  }
+  // ========================================================================
+  // 🔥 نافذة رفع الفاتورة
+  // ========================================================================
+// ========================================================================
+// 🔥 نافذة رفع الفاتورة (محدثة - توضيح أن التعويض معلق)
+// ========================================================================
   void _showReceiptUploadDialog() {
     File? imageFile;
     bool isUploading = false;
-
-    // 🔥 جلب قيمة الخصم لتعويض السائق وعرضها له
     final double discountAmount = double.tryParse(_currentDelivery['discount_amount']?.toString() ?? '0') ?? 0;
     final String formattedDiscount = NumberFormat('#,###').format(discountAmount);
 
@@ -4200,10 +5026,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text("إثبات تسليم بخصم", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const Text(
+                          "إثبات تسليم بخصم",
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)
+                      ),
                       const SizedBox(height: 10),
 
-                      // 🔥 صندوق يوضح مبلغ التعويض بوضوح للسائق
                       if (discountAmount > 0)
                         Container(
                           width: double.infinity,
@@ -4222,8 +5050,14 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Text("مبلغ التعويض المضاف لمحفظتك", style: TextStyle(fontSize: 12, color: Colors.grey)),
-                                    Text("$formattedDiscount د.ع", style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green)),
+                                    const Text(
+                                        "مبلغ التعويض",
+                                        style: TextStyle(fontSize: 12, color: Colors.grey)
+                                    ),
+                                    Text(
+                                        "$formattedDiscount د.ع",
+                                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green)
+                                    ),
                                   ],
                                 ),
                               ),
@@ -4231,7 +5065,40 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                           ),
                         ),
 
-                      const Text("يُرجى التقاط صورة واضحة لفاتورة المطعم التي توضح قيمة الخصم. النظام سيقوم بحساب تعويضك وإضافته لرصيد 'المطلوب من المنصة' تلقائياً.", style: TextStyle(color: Colors.grey, height: 1.5)),
+                      // 🔥 رسالة توضيحية جديدة
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        margin: const EdgeInsets.only(bottom: 15),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.orange.shade200),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(Icons.info_outline, color: Colors.orange.shade700, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                "⏳ سيتم إضافة المبلغ إلى رصيدك 'المعلق' بانتظار مراجعة التيم ليدر. "
+                                    "بعد الموافقة، سينتقل إلى رصيدك 'المعتمد' ويُخصم من ذمتك للمنصة عند التصفير.",
+                                style: TextStyle(
+                                  color: Colors.orange.shade900,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  height: 1.4,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const Text(
+                          "يُرجى التقاط صورة واضحة لفاتورة المطعم التي توضح قيمة الخصم.",
+                          style: TextStyle(color: Colors.grey, height: 1.5)
+                      ),
                       const SizedBox(height: 25),
 
                       InkWell(
@@ -4274,12 +5141,13 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                         child: ElevatedButton(
                           onPressed: isUploading ? null : () async {
                             if (imageFile == null) {
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("يرجى التقاط صورة الفاتورة أولاً")));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text("يرجى التقاط صورة الفاتورة أولاً"))
+                              );
                               return;
                             }
 
                             setModalState(() => isUploading = true);
-
                             final bytes = await imageFile!.readAsBytes();
                             final base64Image = base64Encode(bytes);
 
@@ -4294,17 +5162,25 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                             Navigator.pop(ctx);
 
                             if (res['success'] == true) {
-                              // 🔥 رسالة نجاح توضح مبلغ التعويض
                               ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
-                                    content: Text("✅ تم رفع الفاتورة! سيتم إضافة $formattedDiscount د.ع إلى محفظتك كتعويض."),
+                                    content: Text(
+                                      "✅ تم رفع الفاتورة!\n"
+                                          "سيتم إضافة $formattedDiscount د.ع إلى رصيدك المعلق بانتظار مراجعة التيم ليدر.",
+                                      style: const TextStyle(fontSize: 13),
+                                    ),
                                     backgroundColor: Colors.green,
-                                    duration: const Duration(seconds: 4),
+                                    duration: const Duration(seconds: 5),
                                   )
                               );
                               widget.onDeliveryFinished();
                             } else {
-                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res['message'] ?? "فشل الرفع"), backgroundColor: Colors.red));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                      content: Text(res['message'] ?? "فشل الرفع"),
+                                      backgroundColor: Colors.red
+                                  )
+                              );
                             }
                           },
                           style: ElevatedButton.styleFrom(
@@ -4314,7 +5190,10 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                           ),
                           child: isUploading
                               ? const CircularProgressIndicator(color: Colors.white)
-                              : const Text("تأكيد التسليم ورفع الفاتورة", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                              : const Text(
+                              "تأكيد التسليم ورفع الفاتورة",
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)
+                          ),
                         ),
                       ),
                       const SizedBox(height: 20),
@@ -4326,7 +5205,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         }
     );
   }
-
+  // ========================================================================
+  // 🏗️ بناء الواجهة الرئيسية - مع زر الاتصال بالمطعم وزر تحديث الدليل
+  // ========================================================================
   @override
   Widget build(BuildContext context) {
     final status = _currentDelivery['order_status'] ?? 'pending';
@@ -4347,6 +5228,11 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       locationText = "الزبون: ${_currentDelivery['destination_address']}";
     }
 
+    // 🆕 فحص وجود رقم هاتف المطعم من الدليل المحلي
+    final restaurantName = _currentDelivery['pickup_location_name']?.toString() ?? '';
+    final restaurantData = _findRestaurantInDirectory(restaurantName);
+    final bool hasRestaurantPhone = restaurantData?['phone']?.toString().isNotEmpty ?? false;
+
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
@@ -4356,6 +5242,14 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
+          // 🆕 زر تحديث دليل المطاعم
+          IconButton(
+            icon: _isLoadingDirectory
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                : const Icon(Icons.refresh),
+            tooltip: "تحديث دليل المطاعم",
+            onPressed: _isLoadingDirectory ? null : () => _loadRestaurantsDirectory(showLoading: true),
+          ),
           IconButton(
             icon: const Icon(Icons.call),
             tooltip: "اتصل بالزبون",
@@ -4384,11 +5278,69 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   Text("المسافة المتبقية", style: TextStyle(color: Colors.grey[600], fontSize: 14)),
                   const Divider(height: 30),
                   Text(locationText, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+
+                  // 🆕 عرض معلومات المطعم من الدليل
+                  if (restaurantData != null) ...[
+                    const SizedBox(height: 15),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                restaurantData['requires_scan'] == true ? Icons.qr_code : Icons.store,
+                                color: Colors.blue,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                restaurantData['requires_scan'] == true
+                                    ? '🔐 يتطلب مسح باركود'
+                                    : '✅ لا يتطلب باركود',
+                                style: TextStyle(
+                                  color: Colors.blue.shade800,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (hasRestaurantPhone) ...[
+                            const SizedBox(height: 5),
+                            Text(
+                              '📞 ${restaurantData['phone']}',
+                              style: TextStyle(
+                                color: Colors.blue.shade700,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  // 🆕 عرض وقت آخر تحديث للدليل
+                  if (_lastDirectoryUpdate != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '🕐 آخر تحديث: $_lastDirectoryUpdate',
+                      style: TextStyle(color: Colors.grey.shade500, fontSize: 11),
+                    ),
+                  ],
                 ],
               ),
             ),
             const SizedBox(height: 20),
 
+            // 🔥 صف الأزرار: محادثة + مجاني + اتصال زبون + 🆕 اتصال مطعم
             Row(
               children: [
                 Expanded(
@@ -4453,6 +5405,26 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                     child: const Icon(Icons.phone),
                   ),
                 ),
+                // 🆕 زر الاتصال بالمطعم
+                if (hasRestaurantPhone) ...[
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 55,
+                    height: 50,
+                    child: ElevatedButton(
+                      onPressed: _callRestaurant,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.orange,
+                        padding: EdgeInsets.zero,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        side: const BorderSide(color: Colors.orange, width: 2),
+                        elevation: 0,
+                      ),
+                      child: const Icon(Icons.store_mall_directory),
+                    ),
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 20),
@@ -4491,10 +5463,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
             _buildActionButton(),
             const SizedBox(height: 20),
 
+            // 🆕 زر إلغاء الرحلة مع السبب
             if (status != 'delivered' && status != 'cancelled')
-              TextButton(
-                onPressed: () => _updateStatus('cancelled'),
-                child: const Text("إلغاء الرحلة", style: TextStyle(color: Colors.red, fontSize: 16)),
+              TextButton.icon(
+                onPressed: _showCancellationReasonDialog,
+                icon: const Icon(Icons.cancel, color: Colors.red, size: 18),
+                label: const Text("إلغاء الرحلة (مع سبب)", style: TextStyle(color: Colors.red, fontSize: 16, fontWeight: FontWeight.bold)),
               ),
           ],
         ),
@@ -4502,11 +5476,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     );
   }
 }
-
-
-
-
-
 
 
 
@@ -4648,9 +5617,11 @@ class _PointsTabState extends State<PointsTab> {
   bool _isGeneratingBarcode = false;
   bool _isLoadingFinances = true;
 
-  double _liability = 0; // مطلوب للمنصة
-  double _lockedComp = 0; // مطلوب للسائق (فواتير قيد التدقيق)
-  double _unlockedComp = 0; // تعويضات جاهزة للسحب
+  // 🔥 المحافظ الأربع الجديدة
+  double _liability = 0;           // 🔴 مطلوب للمنصة (ديون)
+  double _pendingComp = 0;         // ⏳ تعويضات معلقة (بانتظار المراجعة)
+  double _lockedComp = 0;          // 🔒 تعويضات مقفلة (قيد التدقيق)
+  double _unlockedComp = 0;        // ✅ تعويضات مفتوحة (جاهزة)
 
   @override
   void initState() {
@@ -4666,6 +5637,7 @@ class _PointsTabState extends State<PointsTab> {
         _isLoadingFinances = false;
         if (res['success'] == true) {
           _liability = (res['liability'] ?? 0).toDouble();
+          _pendingComp = (res['pending_compensation'] ?? 0).toDouble();
           _lockedComp = (res['locked_compensation'] ?? 0).toDouble();
           _unlockedComp = (res['unlocked_compensation'] ?? 0).toDouble();
         }
@@ -4680,52 +5652,54 @@ class _PointsTabState extends State<PointsTab> {
       setState(() => _isGeneratingBarcode = false);
 
       if (res['success'] == true) {
-        _showBarcodeDialog(
-            res['barcode_token'],
-            res['current_liability'],
-            res['current_cashback'] ?? 0,
-            res['current_locked_cashback'] ?? 0,  // 🔥 إضافة جديد
-            res['total_compensation'] ?? 0         // 🔥 إضافة جديد
-        );
+        _showBarcodeDialog(res);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(res['message'] ?? 'لا توجد مبالغ لتصفيتها'), backgroundColor: Colors.orange),
+          SnackBar(
+            content: Text(res['message'] ?? 'لا توجد مبالغ لتصفيتها'),
+            backgroundColor: Colors.orange,
+          ),
         );
       }
     } catch (e) {
       setState(() => _isGeneratingBarcode = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('حدث خطأ في الاتصال بالسيرفر'), backgroundColor: Colors.red),
+        const SnackBar(
+          content: Text('حدث خطأ في الاتصال بالسيرفر'),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
-  // 🔥 نافذة عرض الرمز (الباركود) الشامل للتيم ليدر
-  void _showBarcodeDialog(
-      String tokenStr,
-      dynamic liabilityRaw,
-      dynamic cashbackRaw,
-      dynamic lockedCashbackRaw,    // 🔥 جديد
-      dynamic totalCompensationRaw  // 🔥 جديد
-      ) {
-    final double liability = (liabilityRaw as num?)?.toDouble() ?? 0;
-    final double cashback = (cashbackRaw as num?)?.toDouble() ?? 0;
-    final double lockedCashback = (lockedCashbackRaw as num?)?.toDouble() ?? 0;  // 🔥 جديد
-    final double totalCompensation = (totalCompensationRaw as num?)?.toDouble() ?? 0;  // 🔥 جديد
 
-    // حساب الصافي
-    final double netAmount = liability - totalCompensation;
+  // 🔥 نافذة عرض الباركود الشاملة (باركود فقط بدون نص)
+  void _showBarcodeDialog(Map<String, dynamic> res) {
+    final String tokenStr = res['barcode_token'] ?? '';
+    final double liability = (res['current_liability'] ?? 0).toDouble();
+    final double pendingComp = (res['pending_compensation'] ?? 0).toDouble();
+    final double lockedCashback = (res['current_locked_cashback'] ?? res['locked_cashback'] ?? 0).toDouble();
+    final double unlockedCashback = (res['current_cashback'] ?? res['unlocked_cashback'] ?? 0).toDouble();
+    final double totalApproved = lockedCashback + unlockedCashback;
+
+    // حساب الصافي الحقيقي
+    final double netAmount = totalApproved - liability;
 
     String netText = "";
     Color netColor = Colors.black;
+    IconData netIcon = Icons.balance;
+
     if (netAmount > 0) {
-      netText = "عليك دفع: ${NumberFormat('#,###').format(netAmount)} د.ع";
-      netColor = Colors.red;
-    } else if (netAmount < 0) {
-      netText = "لك استلام: ${NumberFormat('#,###').format(netAmount.abs())} د.ع";
+      netText = "المنصة تدفع لك: ${NumberFormat('#,###').format(netAmount)} د.ع";
       netColor = Colors.green;
+      netIcon = Icons.arrow_downward;
+    } else if (netAmount < 0) {
+      netText = "أنت تدفع للمنصة: ${NumberFormat('#,###').format(netAmount.abs())} د.ع";
+      netColor = Colors.red;
+      netIcon = Icons.arrow_upward;
     } else {
       netText = "الحساب متصافي (0 د.ع)";
       netColor = Colors.indigo;
+      netIcon = Icons.check_circle;
     }
 
     showDialog(
@@ -4733,51 +5707,115 @@ class _PointsTabState extends State<PointsTab> {
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('تصفية الحساب الشاملة', textAlign: TextAlign.center, style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold)),
+        title: const Text(
+          'تصفية الحساب الشاملة',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold, fontSize: 18),
+        ),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // الديون
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('مطلوب للمنصة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
-                  Text('${NumberFormat('#,###').format(liability)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
-                ],
+              // 🔴 الديون للمنصة
+              _buildFinancialRow(
+                icon: Icons.arrow_downward,
+                iconColor: Colors.red,
+                label: 'مطلوب منك للمنصة (الذمة):',
+                value: liability,
+                valueColor: Colors.red,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
 
-              // 🔥 التعويضات المقفلة
-              if (lockedCashback > 0)
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('تعويضات مقفلة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
-                    Text('${NumberFormat('#,###').format(lockedCashback)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
-                  ],
+              // ⏳ التعويضات المعلقة
+              if (pendingComp > 0)
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.orange.shade200),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.hourglass_empty, color: Colors.orange.shade700, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '⏳ لديك ${NumberFormat('#,###').format(pendingComp)} د.ع تعويضات معلقة بانتظار مراجعة التيم ليدر',
+                          style: TextStyle(color: Colors.orange.shade900, fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
+
+              // 🔒 التعويضات المقفلة
+              if (lockedCashback > 0)
+                _buildFinancialRow(
+                  icon: Icons.lock,
+                  iconColor: Colors.orange,
+                  label: 'تعويضات مقفلة (قيد التدقيق):',
+                  value: lockedCashback,
+                  valueColor: Colors.orange,
+                ),
+
               if (lockedCashback > 0) const SizedBox(height: 8),
 
-              // التعويضات المفتوحة
-              if (cashback > 0)
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              // ✅ التعويضات المفتوحة
+              if (unlockedCashback > 0)
+                _buildFinancialRow(
+                  icon: Icons.check_circle,
+                  iconColor: Colors.green,
+                  label: 'تعويضات جاهزة:',
+                  value: unlockedCashback,
+                  valueColor: Colors.green,
+                ),
+
+              const Padding(padding: EdgeInsets.symmetric(vertical: 15), child: Divider(thickness: 2)),
+
+              // 🔥 الصافي النهائي
+              Container(
+                padding: const EdgeInsets.all(15),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [netColor.withOpacity(0.1), netColor.withOpacity(0.05)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(color: netColor.withOpacity(0.3), width: 2),
+                ),
+                child: Column(
                   children: [
-                    const Text('تعويضات جاهزة:', style: TextStyle(color: Colors.grey, fontSize: 13)),
-                    Text('${NumberFormat('#,###').format(cashback)} د.ع', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(netIcon, color: netColor, size: 24),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'الصافي النهائي:',
+                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black87),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      netText,
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: netColor),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      '(التعويضات المعتمدة - الذمم)',
+                      style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                    ),
                   ],
                 ),
-              if (cashback > 0) const SizedBox(height: 8),
-
-              const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Divider(thickness: 1.5)),
-
-              // الصافي
-              const Text('الصافي النهائي:', style: TextStyle(color: Colors.black87, fontSize: 14, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 5),
-              Text(netText, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: netColor)),
+              ),
 
               const SizedBox(height: 20),
+
+              // ⚠️ تحذير
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
@@ -4786,36 +5824,65 @@ class _PointsTabState extends State<PointsTab> {
                   border: Border.all(color: Colors.amber.shade200),
                 ),
                 child: const Text(
-                  '⚠️ عند مسح هذا الرمز، سيتم تصفير جميع التعويضات نهائياً!',
-                  style: TextStyle(fontSize: 12, color: Colors.orange, fontWeight: FontWeight.bold),
+                  '⚠️ عند مسح هذا الرمز، سيتم تصفير جميع التعويضات نهائياً وتسوية الحساب!',
+                  style: TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.bold),
                   textAlign: TextAlign.center,
                 ),
               ),
 
-              const SizedBox(height: 15),
-              const Text('اعرض هذا الرمز على (التيم ليدر) لإتمام التصفية:', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 10),
+              const SizedBox(height: 20),
 
+              // 🎯 QR Code الحقيقي فقط (بدون أي نص تحته)
+              const Text(
+                '📱 امسح هذا الرمز من تطبيق التيم ليدر:',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black87),
+              ),
+              const SizedBox(height: 15),
+
+              // ✅ الباركود الفعلي فقط (مُكبر لسهولة المسح وبدون أخطاء)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                padding: const EdgeInsets.all(15),
                 decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(15),
-                    border: Border.all(color: Colors.indigo, width: 2, style: BorderStyle.solid)
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(color: Colors.indigo, width: 3),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.indigo.withOpacity(0.2),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
                 ),
-                child: SelectableText(
-                    tokenStr,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.indigo),
-                    textAlign: TextAlign.center
+                child: QrImageView(
+                  data: tokenStr,
+                  version: QrVersions.auto,
+                  size: 250, // حجم مثالي للمسح
+                  backgroundColor: Colors.white,
+                  // ✅ استخدام الأشكال المدعومة لتجنب أخطاء الكومبايلر
+                  eyeStyle: const QrEyeStyle(
+                    eyeShape: QrEyeShape.square,
+                    color: Color(0xFF1E3C72),
+                  ),
+                  dataModuleStyle: const QrDataModuleStyle(
+                    dataModuleShape: QrDataModuleShape.square,
+                    color: Color(0xFF2A5298),
+                  ),
                 ),
               ),
-              const SizedBox(height: 10),
+
+              const SizedBox(height: 15),
+
               const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.timer, size: 16, color: Colors.redAccent),
                   SizedBox(width: 5),
-                  Text('الرمز صالح لمدة 10 دقائق فقط', style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+                  Text(
+                    'الرمز صالح لمدة 10 دقائق فقط',
+                    style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
                 ],
               ),
             ],
@@ -4830,16 +5897,42 @@ class _PointsTabState extends State<PointsTab> {
                 _fetchFinancialProfile();
               },
               style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.grey.shade200,
-                  foregroundColor: Colors.black87,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
+                backgroundColor: Colors.grey.shade200,
+                foregroundColor: Colors.black87,
+                elevation: 0,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               child: const Text('إغلاق', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ),
-          )
+          ),
         ],
       ),
+    );
+  }
+
+  // ✅ دالة مساعدة لبناء صف مالي (تعريف واحد فقط لتجنب أخطاء التكرار)
+  Widget _buildFinancialRow({
+    required IconData icon,
+    required Color iconColor,
+    required String label,
+    required double value,
+    required Color valueColor,
+  }) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Row(
+          children: [
+            Icon(icon, color: iconColor, size: 18),
+            const SizedBox(width: 8),
+            Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
+          ],
+        ),
+        Text(
+          '${NumberFormat('#,###').format(value)} د.ع',
+          style: TextStyle(fontWeight: FontWeight.bold, color: valueColor, fontSize: 14),
+        ),
+      ],
     );
   }
 
@@ -4860,208 +5953,30 @@ class _PointsTabState extends State<PointsTab> {
               child: Column(
                 children: [
                   // 1️⃣ المحفظة التشغيلية (النقاط)
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(25),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: balance <= 3
-                            ? [Colors.red.shade400, Colors.red.shade700]
-                            : [Colors.amber.shade400, Colors.orange.shade600],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, offset: const Offset(0, 5))],
-                    ),
-                    child: Column(
-                      children: [
-                        const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.stars, color: Colors.white, size: 24),
-                            SizedBox(width: 8),
-                            Text("رصيد العمل (النقاط)", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          "$balance",
-                          style: const TextStyle(fontSize: 45, fontWeight: FontWeight.bold, color: Colors.white),
-                        ),
-                        const SizedBox(height: 15),
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.add_circle_outline, color: Colors.white, size: 20),
-                          label: const Text("شحن النقاط", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                          onPressed: () => launchUrl(Uri.parse("https://wa.me/+9647854076931"), mode: LaunchMode.externalApplication),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.white.withOpacity(0.3),
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
+                  _buildPointsCard(balance),
                   const SizedBox(height: 25),
 
-                  // 2️⃣ المحافظ المالية (الذمم والتعويضات)
+                  // 2️⃣ المحافظ المالية الأربع
                   if (_isLoadingFinances)
-                    const Padding(
-                      padding: EdgeInsets.all(20.0),
-                      child: CircularProgressIndicator(),
-                    )
+                    const Padding(padding: EdgeInsets.all(20.0), child: CircularProgressIndicator())
                   else
-                    Row(
-                      children: [
-                        // ديون المنصة
-                        Expanded(
-                          child: Container(
-                            padding: const EdgeInsets.all(15),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(15),
-                              border: Border.all(color: Colors.red.shade200),
-                              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 5)],
-                            ),
-                            child: Column(
-                              children: [
-                                const Icon(Icons.arrow_downward, color: Colors.red, size: 28),
-                                const SizedBox(height: 5),
-                                const Text("مطلوب للمنصة", style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 5),
-                                Text("${NumberFormat('#,###').format(_liability)}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red)),
-                                const Text("د.ع", style: TextStyle(fontSize: 10, color: Colors.red)),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 15),
-
-                        // 🔥 تعويضات السائق (مع إضافة الدليل التوضيحي)
-                        Expanded(
-                          child: Container(
-                            padding: const EdgeInsets.all(15),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(15),
-                              border: Border.all(color: Colors.green.shade200),
-                              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 5)],
-                            ),
-                            child: Column(
-                              children: [
-                                const Icon(Icons.arrow_upward, color: Colors.green, size: 28),
-                                const SizedBox(height: 5),
-                                const Text("مطلوب من المنصة", style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 5),
-                                Text("${NumberFormat('#,###').format(_lockedComp + _unlockedComp)}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
-                                const Text("د.ع", style: TextStyle(fontSize: 10, color: Colors.green)),
-                                const SizedBox(height: 10),
-
-                                // 🔥 الدليل التوضيحي التفاعلي للسائق
-                                InkWell(
-                                  onTap: () {
-                                    showDialog(
-                                      context: context,
-                                      builder: (ctx) => AlertDialog(
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                                        title: const Row(
-                                          children: [
-                                            Icon(Icons.info_outline, color: Colors.green),
-                                            SizedBox(width: 10),
-                                            Expanded(child: Text("كيف يتم تعويضك وتصفير الحساب؟", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-                                          ],
-                                        ),
-                                        content: const SingleChildScrollView(
-                                          child: Text(
-                                            "1️⃣ عند تسليم طلب بخصم، قم برفع صورة الفاتورة.\n"
-                                                "2️⃣ سيتم إضافة مبلغ الخصم فوراً إلى 'رصيدك المقفل' (قيد التدقيق).\n"
-                                                "3️⃣ عند تصفية الحساب، قم بتوليد 'كود التصفية' وإظهاره للتيم ليدر.\n"
-                                                "4️⃣ سيقوم التيم ليدر بمسح الكود، وسيتم خصم هذا المبلغ من ديونك للمنصة فوراً كدليل وإثبات واضح في النظام.",
-                                            style: TextStyle(height: 1.7, fontSize: 14),
-                                          ),
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () => Navigator.pop(ctx),
-                                            child: const Text("فهمت", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-                                          )
-                                        ],
-                                      ),
-                                    );
-                                  },
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: const [
-                                      Icon(Icons.help_outline, size: 14, color: Colors.green),
-                                      SizedBox(width: 4),
-                                      Text("كيف يتم التعويض؟", style: TextStyle(fontSize: 11, color: Colors.green, fontWeight: FontWeight.bold, decoration: TextDecoration.underline)),
-                                    ],
-                                  ),
-                                )
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+                    _buildFinancialCards(),
 
                   const SizedBox(height: 25),
 
-                  // 3️⃣ زر تصفية الذمة
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(15),
-                      border: Border.all(color: Colors.indigo.shade100, width: 1),
-                    ),
-                    child: Column(
-                      children: [
-                        const Icon(Icons.handshake, size: 40, color: Colors.indigo),
-                        const SizedBox(height: 10),
-                        const Text("تصفية الذمة المالية", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.indigo)),
-                        const SizedBox(height: 5),
-                        const Text("لتسديد ما عليك من ديون للمنصة (واستلام تعويضاتك)، قم بتوليد كود التصفية وأعطه للتيم ليدر.", textAlign: TextAlign.center, style: TextStyle(color: Colors.grey, fontSize: 12)),
-                        const SizedBox(height: 15),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            icon: _isGeneratingBarcode
-                                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white))
-                                : const Icon(Icons.qr_code_scanner, color: Colors.white),
-                            label: const Text("توليد كود التصفية", style: TextStyle(fontSize: 16, color: Colors.white)),
-                            onPressed: _isGeneratingBarcode ? null : _generateSettlement,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.indigo,
-                              padding: const EdgeInsets.symmetric(vertical: 15),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            ),
-                          ),
-                        )
-                      ],
-                    ),
-                  ),
+                  // 3️⃣ زر عرض تعويضاتي
+                  _buildMyCompensationsButton(),
+
+                  const SizedBox(height: 20),
+
+                  // 4️⃣ زر تصفية الذمة
+                  _buildSettlementButton(),
 
                   const SizedBox(height: 30),
 
-                  // زر الخروج
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.logout),
-                      label: const Text("تسجيل الخروج"),
-                      onPressed: widget.onLogout,
-                      style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.red,
-                          side: const BorderSide(color: Colors.red),
-                          padding: const EdgeInsets.symmetric(vertical: 15),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))
-                      ),
-                    ),
-                  ),
+                  // 5️⃣ زر الخروج
+                  _buildLogoutButton(),
+
                   const SizedBox(height: 20),
                 ],
               ),
@@ -5071,8 +5986,984 @@ class _PointsTabState extends State<PointsTab> {
       },
     );
   }
+
+  // 🔥 بطاقة النقاط
+  Widget _buildPointsCard(int balance) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(25),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: balance <= 3
+              ? [Colors.red.shade400, Colors.red.shade700]
+              : [Colors.amber.shade400, Colors.orange.shade600],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, offset: const Offset(0, 5))],
+      ),
+      child: Column(
+        children: [
+          const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.stars, color: Colors.white, size: 24),
+              SizedBox(width: 8),
+              Text("رصيد العمل (النقاط)", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            "$balance",
+            style: const TextStyle(fontSize: 45, fontWeight: FontWeight.bold, color: Colors.white),
+          ),
+          const SizedBox(height: 15),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.add_circle_outline, color: Colors.white, size: 20),
+            label: const Text("شحن النقاط", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            onPressed: () => launchUrl(Uri.parse("https://wa.me/+9647854076931"), mode: LaunchMode.externalApplication),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.white.withOpacity(0.3),
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 🔥 بطاقات المحافظ المالية الأربع
+  Widget _buildFinancialCards() {
+    return Column(
+      children: [
+        // الصف الأول: ديون المنصة + التعويضات المعلقة
+        Row(
+          children: [
+            Expanded(
+              child: _buildMiniCard(
+                icon: Icons.arrow_downward,
+                iconColor: Colors.red,
+                bgColor: Colors.red.shade50,
+                borderColor: Colors.red.shade200,
+                title: "مطلوب منك للمنصة",
+                value: _liability,
+                valueColor: Colors.red,
+                subtitle: "ديون (أرباح المنصة)",
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildMiniCard(
+                icon: Icons.hourglass_empty,
+                iconColor: Colors.orange,
+                bgColor: Colors.orange.shade50,
+                borderColor: Colors.orange.shade200,
+                title: "تعويضات معلقة",
+                value: _pendingComp,
+                valueColor: Colors.orange,
+                subtitle: "بانتظار المراجعة",
+                showBadge: _pendingComp > 0,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        // الصف الثاني: المقفلة + المفتوحة
+        Row(
+          children: [
+            Expanded(
+              child: _buildMiniCard(
+                icon: Icons.lock,
+                iconColor: Colors.amber.shade800,
+                bgColor: Colors.amber.shade50,
+                borderColor: Colors.amber.shade200,
+                title: "تعويضات مقفلة",
+                value: _lockedComp,
+                valueColor: Colors.amber.shade800,
+                subtitle: "قيد التدقيق",
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildMiniCard(
+                icon: Icons.check_circle,
+                iconColor: Colors.green,
+                bgColor: Colors.green.shade50,
+                borderColor: Colors.green.shade200,
+                title: "تعويضات جاهزة",
+                value: _unlockedComp,
+                valueColor: Colors.green,
+                subtitle: "معتمدة",
+              ),
+            ),
+          ],
+        ),
+
+        // 🔥 الصافي الكلي
+        const SizedBox(height: 15),
+        _buildNetAmountCard(),
+      ],
+    );
+  }
+
+  // 🔥 بطاقة الصافي الكلي
+  Widget _buildNetAmountCard() {
+    final double totalApproved = _lockedComp + _unlockedComp;
+    final double netAmount = totalApproved - _liability;
+
+    Color cardColor;
+    String title;
+    IconData icon;
+
+    if (netAmount > 0) {
+      cardColor = Colors.green;
+      title = "المنصة تدفع لك";
+      icon = Icons.arrow_downward;
+    } else if (netAmount < 0) {
+      cardColor = Colors.red;
+      title = "أنت تدفع للمنصة";
+      icon = Icons.arrow_upward;
+    } else {
+      cardColor = Colors.indigo;
+      title = "الحساب متصافي";
+      icon = Icons.check_circle;
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [cardColor.withOpacity(0.1), cardColor.withOpacity(0.05)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: cardColor.withOpacity(0.3), width: 2),
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: cardColor, size: 24),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: cardColor),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            "${NumberFormat('#,###').format(netAmount.abs())} د.ع",
+            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: cardColor),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            '(التعويضات المعتمدة - الذمم)',
+            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 🔥 بطاقة صغيرة
+  Widget _buildMiniCard({
+    required IconData icon,
+    required Color iconColor,
+    required Color bgColor,
+    required Color borderColor,
+    required String title,
+    required double value,
+    required Color valueColor,
+    required String subtitle,
+    bool showBadge = false,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: borderColor),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 5)],
+      ),
+      child: Column(
+        children: [
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Icon(icon, color: iconColor, size: 28),
+              if (showBadge)
+                Positioned(
+                  right: -8,
+                  top: -8,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.notifications_active, color: Colors.white, size: 10),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Text(title, style: const TextStyle(fontSize: 11, color: Colors.grey, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 5),
+          Text(
+            "${NumberFormat('#,###').format(value)}",
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: valueColor),
+          ),
+          Text(subtitle, style: TextStyle(fontSize: 9, color: valueColor.withOpacity(0.8))),
+        ],
+      ),
+    );
+  }
+
+  // 🔥 زر عرض تعويضاتي
+  Widget _buildMyCompensationsButton() {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        icon: const Icon(Icons.receipt_long, size: 22),
+        label: const Text("عرض تعويضاتي وصور الفواتير", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => MyCompensationsScreen(token: widget.token),
+            ),
+          );
+        },
+        style: OutlinedButton.styleFrom(
+          foregroundColor: Colors.indigo,
+          side: const BorderSide(color: Colors.indigo, width: 2),
+          padding: const EdgeInsets.symmetric(vertical: 15),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
+    );
+  }
+
+  // 🔥 زر تصفية الذمة
+  Widget _buildSettlementButton() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.indigo.shade100, width: 1),
+      ),
+      child: Column(
+        children: [
+          const Icon(Icons.handshake, size: 40, color: Colors.indigo),
+          const SizedBox(height: 10),
+          const Text("تصفية الذمة المالية", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.indigo)),
+          const SizedBox(height: 5),
+          const Text(
+            "لتسديد ما عليك من ديون للمنصة (واستلام تعويضاتك)، قم بتوليد كود التصفية وأعطه للتيم ليدر.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+          const SizedBox(height: 15),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              icon: _isGeneratingBarcode
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white))
+                  : const Icon(Icons.qr_code_scanner, color: Colors.white),
+              label: const Text("توليد كود التصفية", style: TextStyle(fontSize: 16, color: Colors.white)),
+              onPressed: _isGeneratingBarcode ? null : _generateSettlement,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.indigo,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          )
+        ],
+      ),
+    );
+  }
+
+  // 🔥 زر الخروج
+  Widget _buildLogoutButton() {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        icon: const Icon(Icons.logout),
+        label: const Text("تسجيل الخروج"),
+        onPressed: widget.onLogout,
+        style: OutlinedButton.styleFrom(
+          foregroundColor: Colors.red,
+          side: const BorderSide(color: Colors.red),
+          padding: const EdgeInsets.symmetric(vertical: 15),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
+    );
+  }
+}
+// =============================================================================
+// 🆕 شاشة تعويضاتي - عرض صور الفواتير وحالة كل تعويض
+// =============================================================================
+class MyCompensationsScreen extends StatefulWidget {
+  final String token;
+  const MyCompensationsScreen({super.key, required this.token});
+  @override
+  State<MyCompensationsScreen> createState() => _MyCompensationsScreenState();
 }
 
+class _MyCompensationsScreenState extends State<MyCompensationsScreen> with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  bool _isLoadingPending = true;
+  bool _isLoadingHistory = true;
+  List<dynamic> _pendingOrders = [];
+  List<dynamic> _historyOrders = [];
+  double _totalPending = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _loadData();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadData() async {
+    await Future.wait([
+      _loadPending(),
+      _loadHistory(),
+    ]);
+  }
+
+  Future<void> _loadPending() async {
+    setState(() => _isLoadingPending = true);
+    final res = await ApiService.getMyPendingCompensations(widget.token);
+    if (mounted) {
+      setState(() {
+        _isLoadingPending = false;
+        if (res['success'] == true) {
+          _pendingOrders = res['orders'] ?? [];
+          _totalPending = (res['total_pending'] ?? 0).toDouble();
+        }
+      });
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    setState(() => _isLoadingHistory = true);
+    final res = await ApiService.getCompensationHistory(widget.token);
+    if (mounted) {
+      setState(() {
+        _isLoadingHistory = false;
+        if (res['success'] == true) {
+          _historyOrders = res['history'] ?? [];
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('تعويضاتي', style: TextStyle(fontWeight: FontWeight.bold)),
+        centerTitle: true,
+        backgroundColor: Colors.indigo,
+        foregroundColor: Colors.white,
+        bottom: TabBar(
+          controller: _tabController,
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.white70,
+          indicatorColor: Colors.white,
+          tabs: [
+            Tab(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.hourglass_empty, size: 18),
+                  const SizedBox(width: 5),
+                  const Text('معلقة'),
+                  if (_pendingOrders.isNotEmpty)
+                    Container(
+                      margin: const EdgeInsets.only(left: 5),
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        '${_pendingOrders.length}',
+                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const Tab(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.history, size: 18),
+                  SizedBox(width: 5),
+                  Text('السجل'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildPendingTab(),
+          _buildHistoryTab(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPendingTab() {
+    if (_isLoadingPending) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_pendingOrders.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.check_circle_outline, size: 80, color: Colors.green.shade300),
+            const SizedBox(height: 20),
+            const Text(
+              'لا توجد تعويضات معلقة',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'جميع تعويضاتك تمت مراجعتها',
+              style: TextStyle(color: Colors.grey),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadPending,
+      child: Column(
+        children: [
+          // بطاقة الإجمالي
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.all(15),
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.orange.shade400, Colors.deepOrange.shade600],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(15),
+              boxShadow: [
+                BoxShadow(color: Colors.orange.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))
+              ],
+            ),
+            child: Column(
+              children: [
+                const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.hourglass_empty, color: Colors.white, size: 24),
+                    SizedBox(width: 8),
+                    Text('إجمالي التعويضات المعلقة', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '${NumberFormat('#,###').format(_totalPending)} د.ع',
+                  style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.white),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  '${_pendingOrders.length} طلب بانتظار مراجعة التيم ليدر',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+
+          // القائمة
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 15),
+              itemCount: _pendingOrders.length,
+              itemBuilder: (context, index) {
+                return _buildPendingOrderCard(_pendingOrders[index]);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPendingOrderCard(Map<String, dynamic> order) {
+    final String orderId = order['order_id']?.toString() ?? '';
+    final String sourceOrderId = order['source_order_id']?.toString() ?? '';
+    final double discount = (order['discount_amount'] ?? 0).toDouble();
+    final String receiptUrl = order['receipt_url']?.toString() ?? '';
+    final String orderDate = order['order_date']?.toString() ?? '';
+    final String pendingSince = order['pending_since']?.toString() ?? '';
+    final String pickup = order['pickup_location']?.toString() ?? '';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 3,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      child: Padding(
+        padding: const EdgeInsets.all(15),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // الرأس
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.shade200),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.hourglass_empty, color: Colors.orange.shade700, size: 16),
+                      const SizedBox(width: 5),
+                      Text(
+                        'معلق',
+                        style: TextStyle(color: Colors.orange.shade900, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  '#$sourceOrderId',
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // المبلغ
+            Row(
+              children: [
+                Icon(Icons.account_balance_wallet, color: Colors.green, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  'قيمة الخصم:',
+                  style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                ),
+                const Spacer(),
+                Text(
+                  '${NumberFormat('#,###').format(discount)} د.ع',
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+
+            // المطعم
+            if (pickup.isNotEmpty)
+              Row(
+                children: [
+                  Icon(Icons.store, color: Colors.indigo, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      pickup,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ],
+              ),
+
+            const SizedBox(height: 8),
+
+            // التاريخ
+            if (pendingSince.isNotEmpty)
+              Row(
+                children: [
+                  Icon(Icons.access_time, color: Colors.grey, size: 16),
+                  const SizedBox(width: 8),
+                  Text(
+                    'معلق منذ: $pendingSince',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
+                ],
+              ),
+
+            const Divider(height: 20),
+
+            // صورة الفاتورة
+            if (receiptUrl.isNotEmpty)
+              InkWell(
+                onTap: () => _showFullImage(receiptUrl),
+                child: Container(
+                  width: double.infinity,
+                  height: 150,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.network(
+                      receiptUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Container(
+                          color: Colors.grey.shade200,
+                          child: const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.broken_image, size: 40, color: Colors.grey),
+                                SizedBox(height: 8),
+                                Text('فشل تحميل الصورة', style: TextStyle(color: Colors.grey)),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                      loadingBuilder: (context, child, loadingProgress) {
+                        if (loadingProgress == null) return child;
+                        return const Center(child: CircularProgressIndicator());
+                      },
+                    ),
+                  ),
+                ),
+              )
+            else
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(15),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.image_not_supported, color: Colors.grey),
+                    SizedBox(width: 8),
+                    Text('لا توجد صورة للفاتورة', style: TextStyle(color: Colors.grey)),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHistoryTab() {
+    if (_isLoadingHistory) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_historyOrders.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.history, size: 80, color: Colors.grey.shade300),
+            const SizedBox(height: 20),
+            const Text(
+              'لا يوجد سجل تعويضات',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.grey),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadHistory,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(15),
+        itemCount: _historyOrders.length,
+        itemBuilder: (context, index) {
+          return _buildHistoryOrderCard(_historyOrders[index]);
+        },
+      ),
+    );
+  }
+
+  Widget _buildHistoryOrderCard(Map<String, dynamic> order) {
+    final String orderId = order['order_id']?.toString() ?? '';
+    final String sourceOrderId = order['source_order_id']?.toString() ?? '';
+    final double discount = (order['discount_amount'] ?? 0).toDouble();
+    final String receiptUrl = order['receipt_url']?.toString() ?? '';
+    final String status = order['status']?.toString() ?? '';
+    final String processedAt = order['processed_at']?.toString() ?? '';
+    final String? reason = order['reason']?.toString();
+
+    // 🔥🔥🔥 التعديل الجذري: دعم الحالات الثلاث (معتمد، مرفوض، مُصفّى) 🔥🔥🔥
+    final bool isApproved = status == 'approved';
+    final bool isSettled = status == 'settled';
+    final bool isRejected = status == 'rejected';
+
+    Color statusColor;
+    IconData statusIcon;
+    String statusText;
+
+    if (isApproved) {
+      statusColor = Colors.green;
+      statusIcon = Icons.check_circle;
+      statusText = 'معتمد ✅';
+    } else if (isSettled) {
+      statusColor = Colors.blue.shade700;
+      statusIcon = Icons.handshake;
+      statusText = 'مُصفّى (تسوية شاملة) 🤝';
+    } else {
+      statusColor = Colors.red;
+      statusIcon = Icons.cancel;
+      statusText = 'مرفوض ❌';
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(15),
+        side: BorderSide(color: statusColor.withOpacity(0.3), width: 1),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(15),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // الرأس (حالة الطلب)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: statusColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: statusColor.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(statusIcon, color: statusColor, size: 16),
+                      const SizedBox(width: 5),
+                      Text(
+                        statusText,
+                        style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  '#$sourceOrderId',
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // المبلغ
+            Row(
+              children: [
+                Icon(Icons.account_balance_wallet, color: statusColor, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  'قيمة الخصم:',
+                  style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+                ),
+                const Spacer(),
+                Text(
+                  '${NumberFormat('#,###').format(discount)} د.ع',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: statusColor),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+
+            // تاريخ المعالجة
+            if (processedAt.isNotEmpty)
+              Row(
+                children: [
+                  Icon(Icons.event, color: Colors.grey, size: 16),
+                  const SizedBox(width: 8),
+                  Text(
+                    'تمت المعالجة: $processedAt',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
+                ],
+              ),
+
+            // 🔥 سبب الرفض (يظهر فقط إذا كان مرفوضاً)
+            if (isRejected && reason != null && reason.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.shade200),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.red.shade700, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'سبب الرفض:',
+                            style: TextStyle(color: Colors.red.shade900, fontWeight: FontWeight.bold, fontSize: 12),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            reason,
+                            style: TextStyle(color: Colors.red.shade800, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // 🔥 رسالة التصفية (تظهر فقط إذا كان مُصفّى بالتسوية)
+            if (isSettled) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.shade200),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.handshake, color: Colors.blue.shade700, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'تمت التصفية الشاملة للحساب بواسطة التيم ليدر.',
+                        style: TextStyle(color: Colors.blue.shade900, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // صورة الفاتورة (صغيرة)
+            if (receiptUrl.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              InkWell(
+                onTap: () => _showFullImage(receiptUrl),
+                child: Container(
+                  width: double.infinity,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      receiptUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Container(
+                          color: Colors.grey.shade200,
+                          child: const Icon(Icons.broken_image, color: Colors.grey),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+  void _showFullImage(String url) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: Stack(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(15),
+              child: InteractiveViewer(
+                child: Image.network(
+                  url,
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) {
+                    return Container(
+                      color: Colors.grey.shade200,
+                      child: const Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.broken_image, size: 60, color: Colors.grey),
+                            SizedBox(height: 10),
+                            Text('فشل تحميل الصورة', style: TextStyle(color: Colors.grey)),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            Positioned(
+              top: 10,
+              right: 10,
+              child: CircleAvatar(
+                backgroundColor: Colors.black54,
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => Navigator.pop(ctx),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 // =============================================================================
 // 💰 EARNINGS TAB (شاشة أرباحي العصرية)
 // =============================================================================
@@ -5258,136 +7149,111 @@ class _EarningsTabState extends State<EarningsTab> {
     );
   }
 }
-// 📞 شاشة المكالمة الخاصة بالسائق (محدثة مع مؤقت ذكي وإجبار الصوت)
-// =============================================================================
+
 class DriverCallPage extends StatefulWidget {
-  final String channelName;
+  final String roomName;
+  final String livekitUrl;
+  final String token;
   final String customerName;
   final String customerPhone;
-  final String agoraAppId;
-  final String orderId;    // 👈 جديد: لمعرفة رقم الطلب المراد إلغاء مكالمته
-  final String sourceType; // 👈 جديد: لمعرفة السيرفر (مطعم أم مسواك)
+  final String orderId;
+  final String sourceType;
 
   const DriverCallPage({
     super.key,
-    required this.channelName,
+    required this.roomName,
+    required this.livekitUrl,
+    required this.token,
     required this.customerName,
     required this.customerPhone,
-    required this.agoraAppId,
-    required this.orderId,    // 👈 جديد
-    required this.sourceType, // 👈 جديد
+    required this.orderId,
+    required this.sourceType,
   });
 
   @override
   State<DriverCallPage> createState() => _DriverCallPageState();
 }
-
 class _DriverCallPageState extends State<DriverCallPage> {
-  late RtcEngine _engine;
-  bool _localUserJoined = false;
-  int? _remoteUid; // 🔴 لمعرفة هل الزبون دخل الغرفة أم لا
+  Room? _room;
+  EventsListener<RoomEvent>? _listener; // 🆕 المستمع الجديد لنسخة LiveKit الحديثة
+  bool _isConnected = false;
+  bool _isCustomerConnected = false;
   bool _muted = false;
-  bool _speaker = true; // السبيكر مفتوح للسائق افتراضياً
-
+  bool _speaker = true;
   int _callDuration = 0;
-  Timer? _durationTimer; // عداد مدة المكالمة
-  Timer? _timeoutTimer;  // مؤقت 30 ثانية إذا لم يرد الزبون
-
+  Timer? _durationTimer;
+  Timer? _timeoutTimer;
   bool _hasError = false;
   String _errorMessage = "";
 
   @override
   void initState() {
     super.initState();
-    _initAgora();
+    _initLiveKit();
 
-    // 🔴 إغلاق المكالمة تلقائياً بعد 30 ثانية إذا لم يرد الزبون
-    _timeoutTimer = Timer(const Duration(seconds: 30), () {
-      if (_remoteUid == null) {
-        print("⏳ انتهى الوقت ولم يرد الزبون، جاري إنهاء المكالمة.");
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('الزبون لا يرد حالياً'), backgroundColor: Colors.orange),
-          );
-        }
+    // إغلاق المكالمة تلقائياً بعد 45 ثانية إذا لم يرد الزبون
+    _timeoutTimer = Timer(const Duration(seconds: 45), () {
+      if (!_isCustomerConnected && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('الزبون لا يرد حالياً، جاري إنهاء المكالمة'), backgroundColor: Colors.orange),
+        );
         _endCall();
       }
     });
   }
 
-  Future<void> _initAgora() async {
-    // اهتزاز عند بدء المكالمة
-    if (await Vibration.hasVibrator()) {
-      Vibration.vibrate(duration: 500);
-    }
+  Future<void> _initLiveKit() async {
+    if (await Vibration.hasVibrator()) Vibration.vibrate(duration: 500);
 
-    // طلب صلاحية المايكروفون
     final status = await Permission.microphone.request();
     if (status.isDenied || status.isPermanentlyDenied) {
       setState(() {
         _hasError = true;
-        _errorMessage = "يرجى منح صلاحية المايكروفون في إعدادات الجهاز";
+        _errorMessage = "يرجى منح صلاحية المايكروفون من إعدادات الجهاز";
       });
       return;
     }
 
     try {
-      // إنشاء محرك Agora
-      _engine = createAgoraRtcEngine();
-      await _engine.initialize(RtcEngineContext(
-        appId: widget.agoraAppId,
-        channelProfile: ChannelProfileType.channelProfileCommunication,
-      ));
+      _room = Room();
+      _listener = _room!.createListener(); // 🆕 إنشاء المستمع
 
-      // تسجيل معالجات الأحداث
-      _engine.registerEventHandler(RtcEngineEventHandler(
-        onJoinChannelSuccess: (RtcConnection connection, int elapsed) {
-          if (mounted) {
-            setState(() => _localUserJoined = true);
-            _engine.setEnableSpeakerphone(_speaker);
-          }
-        },
-        onUserJoined: (RtcConnection connection, int remoteUid, int elapsed) {
-          if (mounted) {
-            // 🟢 الزبون دخل الغرفة! نوقف المؤقت ونبدأ العداد
-            _timeoutTimer?.cancel();
-            setState(() {
-              _remoteUid = remoteUid;
-            });
-            _startDurationTimer();
-          }
-        },
-        onUserOffline: (RtcConnection connection, int remoteUid, UserOfflineReasonType reason) {
-          if (mounted && _localUserJoined) {
-            _showCallEndedDialog("الزبون أنهى المكالمة");
-          }
-        },
-        onError: (ErrorCodeType err, String msg) {
-          if (mounted) {
-            setState(() {
-              _hasError = true;
-              _errorMessage = "خطأ في الاتصال: $msg";
-            });
-          }
-        },
-      ));
+      // 🆕 الاستماع للأحداث بالطريقة الحديثة
+      _listener!.on<ParticipantConnectedEvent>((event) {
+        if (!mounted) return;
+        _timeoutTimer?.cancel();
+        setState(() => _isCustomerConnected = true);
+        _startDurationTimer();
+      });
 
-      await _engine.enableAudio();
+      _listener!.on<ParticipantDisconnectedEvent>((event) {
+        if (!mounted) return;
+        if (_isConnected) {
+          _showCallEndedDialog("الزبون أنهى المكالمة");
+        }
+      });
 
-      // 🔥 الخيارات الإجبارية لبث واستقبال الصوت (مهمة جداً)
-      const ChannelMediaOptions options = ChannelMediaOptions(
-        clientRoleType: ClientRoleType.clientRoleBroadcaster,
-        publishMicrophoneTrack: true,
-        autoSubscribeAudio: true,
+      _listener!.on<RoomDisconnectedEvent>((event) {
+        if (!mounted) return;
+        _showCallEndedDialog("انقطع الاتصال");
+      });
+
+      // الاتصال بالغرفة
+      await _room!.connect(
+        widget.livekitUrl,
+        widget.token,
+        roomOptions: const RoomOptions(
+          adaptiveStream: true,
+          dynacast: true,
+          defaultAudioPublishOptions: AudioPublishOptions(), // 🆕 إزالة audioBitrate التي تسبب الخطأ
+        ),
       );
 
-      // الانضمام للقناة
-      await _engine.joinChannel(
-        token: "",
-        channelId: widget.channelName,
-        uid: 0,
-        options: options,
-      );
+      setState(() => _isConnected = true);
+
+      // تفعيل المايكروفون والسماعة افتراضياً
+      await _room!.localParticipant?.setMicrophoneEnabled(true);
+      await Hardware.instance.setSpeakerphoneOn(_speaker); // 🆕 الطريقة الحديثة لتشغيل السبيكر
 
     } catch (e) {
       if (mounted) {
@@ -5402,9 +7268,7 @@ class _DriverCallPageState extends State<DriverCallPage> {
   void _startDurationTimer() {
     _durationTimer?.cancel();
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) {
-        setState(() => _callDuration++);
-      }
+      if (mounted) setState(() => _callDuration++);
     });
   }
 
@@ -5417,34 +7281,26 @@ class _DriverCallPageState extends State<DriverCallPage> {
   void _showCallEndedDialog(String message) {
     _durationTimer?.cancel();
     _timeoutTimer?.cancel();
-
     if (mounted) {
       showDialog(
         context: context,
         barrierDismissible: false,
         builder: (context) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Row(
-            children: [
-              Icon(Icons.call_end, color: Colors.red),
-              SizedBox(width: 10),
-              Text("انتهت المكالمة"),
-            ],
-          ),
+          title: const Row(children: [Icon(Icons.call_end, color: Colors.red), SizedBox(width: 10), Text("انتهت المكالمة")]),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(message),
               const SizedBox(height: 10),
-              Text("المدة: ${_formatDuration(_callDuration)}",
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              Text("المدة: ${_formatDuration(_callDuration)}", style: const TextStyle(fontWeight: FontWeight.bold)),
             ],
           ),
           actions: [
             TextButton(
               onPressed: () {
-                Navigator.pop(context); // إغلاق النافذة
-                _endCall(); // إغلاق الشاشة
+                Navigator.pop(context);
+                _endCall();
               },
               child: const Text("موافق", style: TextStyle(fontWeight: FontWeight.bold)),
             ),
@@ -5454,31 +7310,29 @@ class _DriverCallPageState extends State<DriverCallPage> {
     }
   }
 
-  void _toggleMute() {
+  Future<void> _toggleMute() async {
     setState(() => _muted = !_muted);
-    _engine.muteLocalAudioStream(_muted);
+    await _room?.localParticipant?.setMicrophoneEnabled(!_muted);
   }
 
-  void _toggleSpeaker() {
+  Future<void> _toggleSpeaker() async {
     setState(() => _speaker = !_speaker);
-    _engine.setEnableSpeakerphone(_speaker);
+    await Hardware.instance.setSpeakerphoneOn(_speaker); // 🆕 الطريقة الحديثة
   }
 
-  // 🔥 الدالة الجديدة لإخبار السيرفر بإنهاء المكالمة وإسقاط الرنين
   Future<void> _sendCancelSignalToServer() async {
     try {
       String cancelUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/cancel';
       if (widget.sourceType == 'market' || widget.sourceType == 'store' || widget.sourceType == 'pharmacy') {
         cancelUrl = 'https://beytei.com/wp-json/beytei-calls/v1/cancel';
       }
-
       await http.post(
         Uri.parse(cancelUrl),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'secret_key': 'BEYTEI_SECURE_2025',
           'order_id': widget.orderId,
-          'channel_name': widget.channelName,
+          'channel_name': widget.roomName,
         }),
       );
     } catch (e) {
@@ -5486,19 +7340,19 @@ class _DriverCallPageState extends State<DriverCallPage> {
     }
   }
 
-  void _endCall() async {
+  Future<void> _endCall() async {
     _durationTimer?.cancel();
     _timeoutTimer?.cancel();
 
     try {
-      await _engine.leaveChannel();
-      await _engine.release();
+      await _listener?.dispose(); // 🆕 تنظيف المستمع بالطريقة الجديدة
+      await _room?.disconnect();
+      _room = null;
     } catch (e) {
-      print("Error releasing Agora engine: $e");
+      print("Error releasing LiveKit room: $e");
     }
 
-    // 🔥 إرسال إشارة إلغاء المكالمة لهاتف الزبون
-    _sendCancelSignalToServer();
+    await _sendCancelSignalToServer();
 
     if (mounted) {
       Navigator.pop(context);
@@ -5507,23 +7361,15 @@ class _DriverCallPageState extends State<DriverCallPage> {
 
   @override
   void dispose() {
-    _durationTimer?.cancel();
-    _timeoutTimer?.cancel();
-    try {
-      _engine.leaveChannel();
-      _engine.release();
-    } catch (e) {
-      print("Error in dispose: $e");
-    }
+    _endCall();
     super.dispose();
   }
 
-  // 💡 دالة ذكية لتغيير حالة الاتصال
   String getCallStatusText() {
     if (_hasError) return _errorMessage;
-    if (_remoteUid != null) return "متصل الآن";
-    if (_localUserJoined) return "يرن عند الزبون...";
-    return "جاري الاتصال بالسيرفر...";
+    if (_isCustomerConnected) return "متصل الآن 🟢";
+    if (_isConnected) return "يرن عند الزبون... 🔵";
+    return "جاري الاتصال بالسيرفر... ⏳";
   }
 
   @override
@@ -5538,39 +7384,21 @@ class _DriverCallPageState extends State<DriverCallPage> {
         body: SafeArea(
           child: Column(
             children: [
-              // شريط الحالة العلوي
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
+                    IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: _endCall),
+                    Text(_formatDuration(_callDuration), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
                     IconButton(
-                      icon: const Icon(Icons.arrow_back, color: Colors.white),
-                      onPressed: _endCall,
-                    ),
-                    Text(
-                      _formatDuration(_callDuration),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    IconButton(
-                      icon: Icon(
-                        _speaker ? Icons.volume_up : Icons.volume_off,
-                        color: _speaker ? Colors.green : Colors.white70,
-                        size: 28,
-                      ),
+                      icon: Icon(_speaker ? Icons.volume_up : Icons.volume_off, color: _speaker ? Colors.green : Colors.white70, size: 28),
                       onPressed: _toggleSpeaker,
                     ),
                   ],
                 ),
               ),
-
               const Spacer(flex: 2),
-
-              // معلومات المتصل
               Column(
                 children: [
                   Container(
@@ -5587,38 +7415,17 @@ class _DriverCallPageState extends State<DriverCallPage> {
                     ),
                   ),
                   const SizedBox(height: 25),
-
-                  Text(
-                    widget.customerName,
-                    style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white),
-                  ),
+                  Text(widget.customerName, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
                   const SizedBox(height: 8),
-
-                  Text(
-                    widget.customerPhone,
-                    style: const TextStyle(fontSize: 18, color: Colors.white70),
-                  ),
-                  const SizedBox(height: 5),
-
-                  // للتشخيص (يمكنك مسحها لاحقاً): رقم الغرفة بخط صغير
-                  Text("غرفة: ${widget.channelName}", style: const TextStyle(fontSize: 10, color: Colors.white24)),
-
+                  Text(widget.customerPhone, style: const TextStyle(fontSize: 18, color: Colors.white70)),
                   const SizedBox(height: 20),
-
-                  // 🔥 حالة الاتصال المحدثة
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
                     decoration: BoxDecoration(
-                      color: _hasError
-                          ? Colors.red.withOpacity(0.2)
-                          : (_remoteUid != null
-                          ? Colors.green.withOpacity(0.2)
-                          : Colors.blue.withOpacity(0.2)),
+                      color: _hasError ? Colors.red.withOpacity(0.2) : (_isCustomerConnected ? Colors.green.withOpacity(0.2) : Colors.blue.withOpacity(0.2)),
                       borderRadius: BorderRadius.circular(25),
                       border: Border.all(
-                        color: _hasError
-                            ? Colors.red
-                            : (_remoteUid != null ? Colors.green : Colors.blue),
+                        color: _hasError ? Colors.red : (_isCustomerConnected ? Colors.green : Colors.blue),
                         width: 1.5,
                       ),
                     ),
@@ -5626,12 +7433,8 @@ class _DriverCallPageState extends State<DriverCallPage> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          _hasError
-                              ? Icons.error
-                              : (_remoteUid != null ? Icons.check_circle : Icons.access_time),
-                          color: _hasError
-                              ? Colors.red
-                              : (_remoteUid != null ? Colors.green : Colors.blue),
+                          _hasError ? Icons.error : (_isCustomerConnected ? Icons.check_circle : Icons.access_time),
+                          color: _hasError ? Colors.red : (_isCustomerConnected ? Colors.green : Colors.blue),
                           size: 20,
                         ),
                         const SizedBox(width: 8),
@@ -5646,23 +7449,17 @@ class _DriverCallPageState extends State<DriverCallPage> {
                   ),
                 ],
               ),
-
               const Spacer(flex: 3),
-
-              // لوحة التحكم السفلية
               Container(
                 padding: const EdgeInsets.only(bottom: 40, top: 25),
                 decoration: BoxDecoration(
                   color: Colors.black.withOpacity(0.35),
                   borderRadius: const BorderRadius.vertical(top: Radius.circular(35)),
-                  boxShadow: [
-                    BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 15, spreadRadius: 5),
-                  ],
+                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 15, spreadRadius: 5)],
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    // زر كتم المايكروفون
                     Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -5682,8 +7479,6 @@ class _DriverCallPageState extends State<DriverCallPage> {
                         Text(_muted ? "إلغاء الكتم" : "كتم", style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
                       ],
                     ),
-
-                    // زر إنهاء المكالمة
                     GestureDetector(
                       onTap: _endCall,
                       child: Container(
@@ -5691,15 +7486,11 @@ class _DriverCallPageState extends State<DriverCallPage> {
                         decoration: BoxDecoration(
                           color: Colors.redAccent.shade400,
                           shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(color: Colors.red.withOpacity(0.4), blurRadius: 20, spreadRadius: 5),
-                          ],
+                          boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.4), blurRadius: 20, spreadRadius: 5)],
                         ),
                         child: const Icon(Icons.call_end, color: Colors.white, size: 38),
                       ),
                     ),
-
-                    // زر مكبر الصوت
                     Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -5729,5 +7520,3 @@ class _DriverCallPageState extends State<DriverCallPage> {
     );
   }
 }
-
-
