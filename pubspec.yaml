@@ -3,7 +3,7 @@ description: OvoRide is a complete ride-sharing solution.
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 1.0.24+41
+version: 1.0.25+42
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
@@ -53,6 +53,8 @@ dependencies:
   intl: ^0.20.2
   just_audio: ^0.10.5
   logger: ^2.6.2
+
+  fluttertoast: ^9.1.0  # <-- أضف هذا السطر لحل خطأ fluttertoast
   lottie: ^3.3.2
   open_file: ^3.5.10
   path_provider: ^2.1.5

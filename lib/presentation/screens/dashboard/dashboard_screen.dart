@@ -146,37 +146,7 @@ class _DashBoardScreenState extends State<DashBoardScreen> {
             body: Stack(
               children: [
                 IndexedStack(index: selectedIndex, children: _widgets),
-                if (Platform.isIOS && selectedIndex == 0)
-                  Positioned(
-                    top: 60,
-                    left: 20,
-                    child: GestureDetector(
-                      onTap: () {
-                        Get.offAllNamed(RouteHelper.sectionsScreen);
-                      },
-                      child: Container(
-                        width: 45,
-                        height: 45,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.08),
-                              blurRadius: 10,
-                              spreadRadius: 1,
-                              offset: const Offset(0, 2),
-                            )
-                          ],
-                        ),
-                        child: const Icon(
-                          Icons.arrow_back_ios,
-                          color: Colors.black87,
-                          size: 24,
-                        ),
-                      ),
-                    ),
-                  ),
+                // تم إزالة كود الـ Positioned الخاص بالآيفون من هنا
               ],
             ),
             bottomNavigationBar: FloatingNavbar(

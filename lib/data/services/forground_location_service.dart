@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
@@ -15,12 +14,13 @@ class ForgroundLocationService extends TaskHandler {
 
   StreamSubscription<Position>? _positionStream;
   late DashBoardRepo dashBoardRepo;
+  late SharedPreferences _sharedPreferences;
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     try {
-      SharedPreferences sharedPreferences = await SharedPreferences.getInstance();
-      ApiClient apiClient = ApiClient(sharedPreferences: sharedPreferences);
+      _sharedPreferences = await SharedPreferences.getInstance();
+      ApiClient apiClient = ApiClient(sharedPreferences: _sharedPreferences);
       dashBoardRepo = DashBoardRepo(apiClient: apiClient);
 
       _positionStream = Geolocator.getPositionStream(
@@ -41,14 +41,14 @@ class ForgroundLocationService extends TaskHandler {
               notificationText: "نظام التتبع المزدوج نشط 🟢",
             );
 
-            // إرسال للنظام القديم
-            await sendLocationToOldServer(lat: lat, long: lon);
+            // جلب معرف الرحلة الحالية من الذاكرة المحلية (مهم جداً)
+            final String currentRideId = _sharedPreferences.getString('current_ride_id') ?? '';
 
-            // إرسال للنظام الصاروخي الجديد
-            await sendLocationToRedisServer(lat: lat, long: lon);
+            // استدعاء الدالة الموحدة التي تقوم بـ (حفظ MySQL + بث Reverb) معاً
+            await sendLocationToUnifiedSystem(lat: lat, long: lon, rideId: currentRideId);
 
           } else {
-            printE("🛑 [SERVICE] توقف التتبع: السيرفر يقرأ الحالة Offline");
+            printE("🛑 [SERVICE] توقف التتبع: الحالة Offline");
             FlutterForegroundTask.stopService();
             _positionStream?.cancel();
             _positionStream = null;
@@ -56,52 +56,31 @@ class ForgroundLocationService extends TaskHandler {
         }
       });
     } catch (e) {
-      printE("❌ [SERVICE] خطأ فادح: $e");
+      printE("❌ [SERVICE] خطأ فادح في بدء الخدمة: $e");
     }
   }
 
-  // 1. إرسال للنظام القديم (MySQL)
-  Future<void> sendLocationToOldServer({required double lat, required double long}) async {
+  // دالة موحدة ونظيفة ترسل الموقع للنظام القديم والجديد في آن واحد
+  Future<void> sendLocationToUnifiedSystem({
+    required double lat,
+    required double long,
+    required String rideId
+  }) async {
     try {
-      var response = await dashBoardRepo.updateLiveLocation(lat: "$lat", long: "$long");
-      if (response.statusCode == 200) {
-        printX("✅ [OLD SYSTEM] تم التحديث في MySQL بنجاح");
-      } else {
-        printE("⚠️ [OLD SYSTEM] فشل التحديث. كود الرد: ${response.statusCode}");
-      }
-    } catch (e) {
-      printE("❌ [OLD SYSTEM] خطأ اتصال: $e");
-    }
-  }
-
-  // 2. إرسال للنظام الصاروخي (Redis) مع طباعة تفصيلية للسبب في حال الفشل
-  Future<void> sendLocationToRedisServer({required double lat, required double long}) async {
-    try {
-      final String token = dashBoardRepo.apiClient.sharedPreferences.getString(SharedPreferenceHelper.accessTokenKey) ?? '';
-      final String url = 'https://taxi.beytei.com/api/driver/redis/update-location';
-
-      final response = await http.post(
-        Uri.parse(url),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-        body: {
-          'lat': lat.toString(),
-          'lng': long.toString(),
-        },
+      var response = await dashBoardRepo.updateLiveLocation(
+        lat: "$lat",
+        long: "$long",
+        rideId: rideId, // ✅ هذا هو المعامل الذي كان يسبب الخطأ
       );
 
       if (response.statusCode == 200) {
-        printX("🚀 [REDIS] تم الإرسال للصاروخ بنجاح! الإحداثيات: ($lat, $long)");
+        printX("✅ [SYSTEM] تم حفظ الموقع وبثه بنجاح (MySQL + Reverb)");
       } else {
-        // طباعة سبب الفشل من السيرفر (مثلاً: Unauthenticated أو Validation Error)
-        printE("❌ [REDIS FAILED] فشل الإرسال!");
-        printE("   - كود الحالة: ${response.statusCode}");
-        printE("   - السبب من السيرفر: ${response.body}");
+        printE("⚠️ [SYSTEM] فشل التحديث. كود الرد: ${response.statusCode}");
+        printE("تفاصيل الخطأ: ${response.responseJson}");
       }
     } catch (e) {
-      printE("❌ [REDIS ERROR] فشل في تنفيذ الطلب (مشكلة إنترنت أو سيرفر): $e");
+      printE("❌ [SYSTEM] خطأ اتصال: $e");
     }
   }
 

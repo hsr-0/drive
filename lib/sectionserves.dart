@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:ovoride_driver/core/route/route.dart';
 import 'dev/tx.dart';
+import 'food.dart';
 
 class ServicesSelectionScreen extends StatefulWidget {
   const ServicesSelectionScreen({super.key});
@@ -175,6 +176,23 @@ class _ServicesSelectionScreenState extends State<ServicesSelectionScreen> {
                 color: Colors.orange.shade800,
                 onTap: () => Get.to(() => const DeliveryApp()),
               ),
+
+
+              const SizedBox(height: 20), // 🔥 مسافة فاصلة
+
+              // 4. 🔥 بطاقة مدير المطعم (الجديدة)
+              _buildServiceCard(
+                title: 'مدير المطعم',
+                subtitle: 'إدارة الطلبات، المنتجات، والإعدادات',
+                // 🔥 تأكد من إضافة هذه الصورة في مجلد assets وفي ملف pubspec.yaml
+                imagePath: 'assets/images/restaurant.png',
+                color: Colors.teal.shade700, // لون أخضر مزرق يناسب المطاعم
+                onTap: () {
+                  Get.to(() => const RestaurantManagerApp());
+                },
+              ),
+
+
               const SizedBox(height: 20),
 
               // 3. بطاقة خدمات المروجين ✨

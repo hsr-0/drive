@@ -80,10 +80,77 @@ class _HomeScreenState extends State<HomeScreen> {
                   SliverToBoxAdapter(
                     child: Column(
                       children: [
-                        SizedBox(height: 10),
-                        DriverKYCWarningSection(),
-                        SizedBox(height: 2),
-                        VehicleKYCWarningSection(),
+                        const SizedBox(height: 10),
+                        const DriverKYCWarningSection(),
+                        const SizedBox(height: 2),
+                        const VehicleKYCWarningSection(),
+
+                        // 🔥 بداية بطاقة التحديات والمكافآت 🔥
+                        const SizedBox(height: 10),
+                        GestureDetector(
+                          onTap: () {
+                            // التوجيه لشاشة تفاصيل المسابقة
+                            // Get.to(() => const ContestDetailsScreen());
+                            print("تم الضغط للذهاب لشاشة المسابقات");
+                          },
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(horizontal: Dimensions.space16),
+                            padding: const EdgeInsets.all(15),
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(
+                                colors: [Color(0xFF00B4D8), Color(0xFF0077B6)], // لون بيتي السمائي
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                              borderRadius: BorderRadius.circular(15),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: const Color(0xFF00B4D8).withOpacity(0.3),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ],
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.2),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(Icons.emoji_events, color: Colors.white, size: 28),
+                                ),
+                                const SizedBox(width: 15),
+                                const Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'التحديات والمكافآت 🏆',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      SizedBox(height: 4),
+                                      Text(
+                                        'اضغط للدخول ومتابعة تقدمك',
+                                        style: TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const Icon(Icons.arrow_forward_ios, color: Colors.white, size: 16),
+                              ],
+                            ),
+                          ),
+                        ),
+                        // 🔥 نهاية بطاقة التحديات والمكافآت 🔥
                       ],
                     ),
                   ),
@@ -99,7 +166,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              SizedBox(height: 10),
+                              const SizedBox(height: 10),
                               Text(
                                 MyStrings.runningRide.tr,
                                 style: semiBoldLarge.copyWith(
@@ -107,7 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   fontSize: 16,
                                 ),
                               ),
-                              SizedBox(height: 10),
+                              const SizedBox(height: 10),
                               NewRideCardWidget(
                                 isActive: true,
                                 ride: controller.runningRide!,
@@ -122,14 +189,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                 },
                               )
                                   .animate(
-                                    onPlay: (controller) => controller.repeat(),
-                                  )
+                                onPlay: (controller) => controller.repeat(),
+                              )
                                   .shakeX(
-                                    duration: 1000.ms,
-                                    delay: 4000.ms,
-                                    curve: Curves.easeInOut,
-                                    hz: 4,
-                                  ),
+                                duration: 1000.ms,
+                                delay: 4000.ms,
+                                curve: Curves.easeInOut,
+                                hz: 4,
+                              ),
                               spaceDown(Dimensions.space10),
                               if (controller.rideList.isNotEmpty) ...[
                                 Text(
@@ -158,8 +225,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: Column(
                           children: List.generate(
                             10,
-                            (index) => Padding(
-                              padding: EdgeInsets.only(
+                                (index) => Padding(
+                              padding: const EdgeInsets.only(
                                 bottom: Dimensions.space10,
                               ),
                               child: const RideShimmer(),
@@ -183,14 +250,14 @@ class _HomeScreenState extends State<HomeScreen> {
                         if (controller.rideList.length == index) {
                           return controller.hasNext()
                               ? SizedBox(
-                                  width: MediaQuery.of(context).size.width,
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: Dimensions.space16,
-                                    ),
-                                    child: const RideShimmer(),
-                                  ),
-                                )
+                            width: MediaQuery.of(context).size.width,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: Dimensions.space16,
+                              ),
+                              child: const RideShimmer(),
+                            ),
+                          )
                               : const SizedBox.shrink();
                         }
                         return Padding(

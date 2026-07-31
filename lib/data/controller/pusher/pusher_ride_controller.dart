@@ -1,6 +1,6 @@
 import 'dart:convert';
-
 import 'package:get/get.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // 🔥 إضافة ضرورية
 import 'package:ovoride_driver/core/helper/shared_preference_helper.dart';
 import 'package:ovoride_driver/core/helper/string_format_helper.dart';
 import 'package:ovoride_driver/core/route/route.dart';
@@ -20,6 +20,7 @@ class PusherRideController extends GetxController {
   RideMessageController rideMessageController;
   RideDetailsController rideDetailsController;
   String rideID;
+
   PusherRideController({
     required this.apiClient,
     required this.rideMessageController,
@@ -37,7 +38,6 @@ class PusherRideController extends GetxController {
     final eventName = event.eventName.toLowerCase().trim();
     printX('Received Event: $eventName ${event.data}');
 
-    // Decode safely
     Map<String, dynamic> data = {};
     try {
       data = jsonDecode(event.data);
@@ -74,9 +74,7 @@ class PusherRideController extends GetxController {
   void _handleMessageEvent(PusherResponseModel eventResponse) {
     if (eventResponse.data?.message != null) {
       if (eventResponse.data!.ride != null && eventResponse.data!.ride!.id != rideID) {
-        printX(
-          'Message for different ride: ${eventResponse.data!.ride!.id}, current ride: $rideID',
-        );
+        printX('Message for different ride: ${eventResponse.data!.ride!.id}, current ride: $rideID');
         return;
       }
       if (isRideDetailsPage()) {
@@ -84,7 +82,6 @@ class PusherRideController extends GetxController {
           MyUtils.vibrate();
         }
       }
-
       rideMessageController.addEventMessage(eventResponse.data!.message!);
     }
   }
@@ -100,9 +97,7 @@ class PusherRideController extends GetxController {
     MyUtils.vibrate();
     if (isRideDetailsPage()) {
       if (eventResponse.data!.ride != null && eventResponse.data!.ride!.id != rideID) {
-        printX(
-          'Message for different ride: ${eventResponse.data!.ride!.id}, current ride: $rideID',
-        );
+        printX('Message for different ride: ${eventResponse.data!.ride!.id}, current ride: $rideID');
         return;
       }
       rideDetailsController.updateRide(eventResponse.data!.ride!);
@@ -112,17 +107,59 @@ class PusherRideController extends GetxController {
 
   void updateEvent(PusherResponseModel eventResponse) {
     printX('event.eventName ${eventResponse.eventName}');
-    if (eventResponse.eventName == "pick_up" || eventResponse.eventName == "ride_end" || eventResponse.eventName == "online-payment-received" || eventResponse.eventName == "bid_accept" || eventResponse.eventName == "cancel_ride") {
+
+    // 🔥 المنطق الجديد: حفظ أو مسح معرف الرحلة بناءً على الحالة
+    if (eventResponse.data?.ride != null && eventResponse.data!.ride!.id != null) {
+      final String currentRideId = eventResponse.data!.ride!.id.toString();
+
+      // 1. إذا تم قبول العرض أو بدء الالتقاط: احفظ المعرف لتشغيل التتبع
+      if (eventResponse.eventName == "bid_accept" || eventResponse.eventName == "pick_up") {
+        _saveActiveRideId(currentRideId);
+      }
+
+      // 2. إذا انتهت الرحلة أو تم إلغاؤها: امسح المعرف لإيقاف التتبع
+      if (eventResponse.eventName == "ride_end" || eventResponse.eventName == "cancel_ride") {
+        _clearActiveRideId();
+      }
+    }
+
+    // الكود الأصلي الخاص بتحديث الواجهة
+    if (eventResponse.eventName == "pick_up" ||
+        eventResponse.eventName == "ride_end" ||
+        eventResponse.eventName == "online-payment-received" ||
+        eventResponse.eventName == "bid_accept" ||
+        eventResponse.eventName == "cancel_ride") {
+
       if (eventResponse.eventName == "online-payment-received") {
         CustomSnackBar.success(successList: ["Payment Received"]);
       }
       if (eventResponse.data!.ride != null && eventResponse.data!.ride!.id != rideID) {
-        printX(
-          'Message for different ride: ${eventResponse.data!.ride!.id}, current ride: $rideID',
-        );
+        printX('Message for different ride: ${eventResponse.data!.ride!.id}, current ride: $rideID');
         return;
       }
       rideDetailsController.updateRide(eventResponse.data!.ride!);
+    }
+  }
+
+  // 🔥 دالة جديدة: حفظ معرف الرحلة النشطة
+  Future<void> _saveActiveRideId(String rideId) async {
+    try {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.setString('current_ride_id', rideId);
+      printX("✅ [RIDE TRACKING] تم حفظ معرف الرحلة النشطة: $rideId");
+    } catch (e) {
+      printX("❌ [RIDE TRACKING] خطأ في حفظ المعرف: $e");
+    }
+  }
+
+  // 🔥 دالة جديدة: مسح معرف الرحلة عند الانتهاء
+  Future<void> _clearActiveRideId() async {
+    try {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.remove('current_ride_id');
+      printX("🗑️ [RIDE TRACKING] تم مسح معرف الرحلة لانتهائها أو إلغائها");
+    } catch (e) {
+      printX("❌ [RIDE TRACKING] خطأ في مسح المعرف: $e");
     }
   }
 
@@ -139,9 +176,8 @@ class PusherRideController extends GetxController {
   Future<void> ensureConnection({String? channelName}) async {
     try {
       var userId = apiClient.sharedPreferences.getString(
-            SharedPreferenceHelper.userIdKey,
-          ) ??
-          '';
+        SharedPreferenceHelper.userIdKey,
+      ) ?? '';
       await PusherManager().checkAndInitIfNeeded(
         channelName ?? "private-rider-driver-$userId",
       );

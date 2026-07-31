@@ -19,10 +19,18 @@ import 'package:ovoride_driver/presentation/screens/dashboard/forground_task_wid
 
 import '../../../core/utils/url_container.dart';
 
+// 🔥 1. تأكد من استيراد مسار المودل الخاص بالمسابقة (عدل المسار إذا اختلف لديك)
+
+import '../../../driver_contest_screen.dart';
+
 class DashBoardController extends GetxController {
   DashBoardRepo repo;
   DashBoardController({required this.repo});
   TextEditingController bidAmountController = TextEditingController();
+
+  // 🔥 2. متغيرات المسابقة
+  ContestModel? contestModel;
+  bool isLoadingContest = true;
 
   String? profileImageUrl;
   bool isLoading = true;
@@ -49,9 +57,37 @@ class DashBoardController extends GetxController {
     currency = repo.apiClient.getCurrency();
     currencySym = repo.apiClient.getCurrency(isSymbol: true);
     update();
-    await Future.wait([fetchLocation(), loadData(shouldLoad: shouldLoad)]);
+
+    // 🔥 3. دمجنا استدعاء loadCurrentContest ليعمل بالتوازي مع باقي الطلبات
+    await Future.wait([
+      fetchLocation(),
+      loadData(shouldLoad: shouldLoad),
+      loadCurrentContest(),
+    ]);
+
     isLoading = false;
     update();
+  }
+
+  // 🔥 4. الدالة الخاصة بجلب تفاصيل المسابقة
+  Future<void> loadCurrentContest() async {
+    isLoadingContest = true;
+    update();
+
+    try {
+      ResponseModel response = await repo.getCurrentContest();
+      if (response.statusCode == 200) {
+        contestModel = ContestModel.fromJson(response.responseJson);
+      } else {
+        contestModel = ContestModel(hasActiveContest: false);
+      }
+    } catch (e) {
+      printX("❌ خطأ في جلب المسابقة: $e");
+      contestModel = ContestModel(hasActiveContest: false);
+    } finally {
+      isLoadingContest = false;
+      update();
+    }
   }
 
   GlobalDriverInfoModel driver = GlobalDriverInfoModel(id: '-1');
@@ -186,7 +222,6 @@ class DashBoardController extends GetxController {
     return nextPageUrl != null && nextPageUrl!.isNotEmpty && nextPageUrl != 'null' ? true : false;
   }
 
-  // 🔥🔥🔥 تم تحديث دالة sendBid لتنقلك مباشرة لإدخال OTP 🔥🔥🔥
   bool isSendBidLoading = false;
   Future<void> sendBid(
       String rideId, {
@@ -207,16 +242,12 @@ class DashBoardController extends GetxController {
         );
 
         if (model.status == "success") {
-          // 1. إغلاق النافذة المنبثقة لتقديم العرض إذا كانت مفتوحة
           if (onActon != null) {
             onActon();
           }
 
-          // 2. الانتقال المباشر والفوري لصفحة تفاصيل الرحلة
-          // (حيث سيتمكن السائق من رؤية الخريطة وإدخال OTP)
           Get.toNamed(RouteHelper.rideDetailsScreen, arguments: rideId);
 
-          // 3. تحديث البيانات في الخلفية لتكون جاهزة عند العودة
           initialData(shouldLoad: false);
 
         } else {

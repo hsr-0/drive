@@ -1,4 +1,4 @@
-import 'package:http/http.dart' as http; // 🔥 إضافة مكتبة الاتصال المباشر
+import 'package:http/http.dart' as http;
 import 'package:ovoride_driver/core/helper/shared_preference_helper.dart';
 import 'package:ovoride_driver/core/utils/method.dart';
 import 'package:ovoride_driver/core/utils/url_container.dart';
@@ -39,15 +39,23 @@ class DashBoardRepo {
   }
 
   // ===========================================================================
-  // 🚀 التعديل الجوهري: تحديث الموقع المزدوج (MySQL + Redis)
+  // 🚀 النظام المزدوج النظيف: حفظ MySQL (قديم) + بث Reverb (جديد ومنعزل)
   // ===========================================================================
   Future<ResponseModel> updateLiveLocation({
     required String lat,
     required String long,
+    required String rideId, // ⚠️ إضافة ضرورية: معرف الرحلة الحالية للبث
   }) async {
-    // 1. الإرسال لنظام MySQL الأصلي (لضمان استقرار التقارير واللوحة)
+
+    // ---------------------------------------------------------
+    // 1️⃣ النظام القديم (محافظة عليه 100%): الحفظ في MySQL
+    // ---------------------------------------------------------
+    // نحتفظ بنفس أسماء المتغيرات (current_lat, current_lot) لضمان عمل لوحة التحكم ومكافحة الاحتيال كما هي
     String url = "${UrlContainer.baseUrl}${UrlContainer.driverLocationUpdate}";
-    Map<String, String> params = {'current_lat': lat, 'current_lot': long};
+    Map<String, String> params = {
+      'current_lat': lat,
+      'current_lot': long
+    };
 
     ResponseModel responseModel = await apiClient.request(
       url,
@@ -56,35 +64,38 @@ class DashBoardRepo {
       passHeader: true,
     );
 
-    // 2. 🔥 إرسال نبضة Redis اللحظية للخرائط السريعة
+    // ---------------------------------------------------------
+    // 2️⃣ النظام الجديد (منعزل): البث اللحظي للزبون عبر Reverb
+    // ---------------------------------------------------------
+    // نستخدم http.post عادي بدون await (Fire and Forget) حتى لا يبطئ التطبيق
     try {
-      final String redisUrl = 'https://taxi.beytei.com/api/driver/redis/update-location';
+      final String broadcastUrl = "${UrlContainer.baseUrl}/api/driver/broadcast-location";
       final String token = apiClient.sharedPreferences.getString(SharedPreferenceHelper.accessTokenKey) ?? '';
 
-      if (token.isNotEmpty) {
-        // نستخدم http.post مباشرة لضمان أقصى سرعة (Async)
+      // نتأكد من وجود التوكن ومعرف الرحلة قبل الإرسال
+      if (token.isNotEmpty && rideId.isNotEmpty) {
         http.post(
-          Uri.parse(redisUrl),
+          Uri.parse(broadcastUrl),
           headers: {
             'Authorization': 'Bearer $token',
             'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
           },
           body: {
-            'lat': lat,
-            'lng': long // السيرفر يتوقع lng كاسم للحقل
+            'ride_id': rideId,       // معرف الرحلة (مطلوب للسيرفر الجديد)
+            'latitude': lat,         // أسماء نظيفة وصحيحة للسيرفر الجديد
+            'longitude': long,
           },
-        ).then((res) {
-          if (res.statusCode == 200) {
-            print("🚀 [REDIS] الموقع طار للصاروخ بنجاح! ($lat, $long)");
-          } else {
-            print("⚠️ [REDIS] السيرفر استلم الطلب لكنه أعطى خطأ: ${res.statusCode}");
-          }
+        ).catchError((e) {
+          // في حال فشل البث، لا نوقف التطبيق، فقط نسجل الخطأ في الـ Console
+          print("⚠️ [BROADCAST WARNING] فشل في البث اللحظي (لن يؤثر على حفظ MySQL): $e");
         });
       }
     } catch (e) {
-      print("❌ [REDIS ERROR] فشل في حقن الموقع اللحظي: $e");
+      print("❌ [BROADCAST ERROR] استثناء في كود البث: $e");
     }
 
+    // نرجع نتيجة طلب MySQL الأصلي كما كان يتوقع التطبيق
     return responseModel;
   }
   // ===========================================================================
@@ -129,5 +140,20 @@ class DashBoardRepo {
     }
 
     return null;
+  }
+  // ===========================================================================
+  // 🏆 جلب بيانات المسابقة الحالية للسائق
+  // ===========================================================================
+  Future<ResponseModel> getCurrentContest() async {
+    // استخدمنا الرابط الذي جهزناه في لارافيل
+    String url = "${UrlContainer.baseUrl}/api/driver/current-contest";
+
+    ResponseModel responseModel = await apiClient.request(
+      url,
+      Method.getMethod,
+      null,
+      passHeader: true,
+    );
+    return responseModel;
   }
 }
