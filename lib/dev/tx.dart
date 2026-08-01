@@ -1041,14 +1041,20 @@ class AuthResult {
     this.points = 0,
   });
 
-  factory AuthResult.fromJson(Map<String, dynamic> json) => AuthResult(
-    token: json['token'],
-    userId: json['user_id'].toString(),
-    displayName: json['display_name'],
-    isDriver: json['is_driver'] ?? false,
-    driverStatus: json['driver_status'],
-    points: json['points'] ?? 0,
-  );
+  factory AuthResult.fromJson(Map<String, dynamic> json) {
+    // سيرفر لارافل يضع البيانات داخل 'data' أو 'driver'
+    final data = json['data'] ?? json;
+    final driver = json['driver'] ?? data;
+
+    return AuthResult(
+      token: json['token'] ?? data['api_token'] ?? '',
+      userId: driver['id']?.toString() ?? data['driver_id']?.toString() ?? json['user_id']?.toString() ?? '',
+      displayName: driver['name'] ?? data['name'] ?? json['display_name'] ?? 'كابتن',
+      isDriver: json['is_driver'] ?? data['is_driver'] ?? true, // في لارافل نعتبره دائماً سائق
+      driverStatus: data['is_active'] == true ? 'approved' : (json['driver_status'] ?? 'approved'),
+      points: driver['wallet_balance'] ?? data['wallet_balance'] ?? json['points'] ?? 0,
+    );
+  }
 }
 class Order {
   final String id;
@@ -2393,7 +2399,7 @@ class _DriverLoginState extends State<DriverLogin> {
       if (res['success'] == true) {
         final a = AuthResult.fromJson(res);
 
-        if (res['is_driver'] == true) {
+        if (true) { // تم الإلغاء لأن لارافل يتعامل مع السائقين حصراً {
           // 1. حفظ بيانات المصادقة محلياً
           await ApiService.storeAuthData(a);
 
