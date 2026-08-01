@@ -1432,15 +1432,29 @@ class ApiService {
   static Future<Map<String, dynamic>> registerDriverV3(Map<String, String> fields, Map<String, XFile> files) async {
     try {
       var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/taxi-auth/v3/register/driver'));
+
+      // 🔥 إجبار لارافل على إرجاع الأخطاء بصيغة JSON بدلاً من HTML
+      request.headers.addAll({
+        'Accept': 'application/json',
+      });
+
       request.fields.addAll(fields);
       for (var entry in files.entries) {
         request.files.add(await http.MultipartFile.fromPath(entry.key, entry.value.path));
       }
+
       final streamedRes = await request.send();
       final res = await http.Response.fromStream(streamedRes);
+
+      // 🔥 فحص الاستجابة قبل فك التشفير لمنع الشاشة الحمراء
+      if (res.body.trim().startsWith('<!DOCTYPE') || res.body.trim().startsWith('<html')) {
+        print('❌ [API ERROR] Server returned HTML: ${res.statusCode}');
+        return {'success': false, 'message': 'خطأ في السيرفر الداخلي (${res.statusCode}). يرجى مراجعة لوحة التحكم.'};
+      }
+
       return json.decode(res.body);
     } catch (e) {
-      return {'success': false, 'message': '$e'};
+      return {'success': false, 'message': 'فشل الاتصال: $e'};
     }
   }
 
