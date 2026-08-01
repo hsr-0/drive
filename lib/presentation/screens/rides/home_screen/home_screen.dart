@@ -335,17 +335,24 @@ class _ContestDetailsScreenState extends State<ContestDetailsScreen> {
       DashBoardRepo repo = Get.find<DashBoardRepo>();
       ResponseModel response = await repo.getCurrentContest();
 
+      // 🔥 طباعة الاستجابة لمعرفة ماذا يعيد السيرفر بالضبط
+      print("🟢 كود حالة السيرفر: ${response.statusCode}");
+      print("🟢 استجابة السيرفر: ${response.responseJson}");
+
       if (response.statusCode == 200) {
         contestModel = ContestModel.fromJson(response.responseJson);
+        print("🟢 حالة المسابقة بعد التحويل: ${contestModel?.hasActiveContest}");
       } else {
+        print("🔴 السيرفر أرجع خطأ أو البيانات غير موجودة");
         contestModel = ContestModel(hasActiveContest: false);
       }
     } catch (e) {
+      // 🔥 طباعة الخطأ البرمجي في حال فشل التحويل أو الاتصال
+      print("🔴 خطأ برمجي (Exception): $e");
       contestModel = ContestModel(hasActiveContest: false);
     }
     setState(() => isLoading = false);
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(

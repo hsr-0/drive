@@ -1136,7 +1136,7 @@ class Order {
 }
 class ApiService {
 
-  static const String baseUrl = 'https://banner.beytei.com/wp-json';
+  static const String baseUrl = 'https://de.beytei.com/api';
   static const _storage = FlutterSecureStorage();
 
 // جلب الملف المالي الكامل للسائق
