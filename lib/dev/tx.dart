@@ -1320,7 +1320,10 @@ class ApiService {
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/taxi-auth/v1/login'),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json', // 👈 أضف هذا السطر هنا أيضاً
+        },
         body: json.encode({'phone_number': phone, 'password': password}),
       );
       return json.decode(res.body);
@@ -1403,30 +1406,35 @@ class ApiService {
         .map((item) => Order.fromJson(item))
         .toList();
   }
+// في ملف ApiService (داخل كلاس ApiService)
   static Future<void> updateFcmToken(String token, String fcmToken) async {
-    try {
-      print("📡 [FCM Update] Sending to server: ${fcmToken.substring(0, 20)}...");
+    print("🚀 [FCM DEBUG] ================================");
+    print("🚀 [FCM DEBUG] بدء تحديث توكن FCM...");
+    print("🚀 [FCM DEBUG] طول توكن المصادقة (Auth): ${token.length}");
+    print("🚀 [FCM DEBUG] توكن FCM المستلم: ${fcmToken.isEmpty ? 'فارغ!' : fcmToken.substring(0, 20) + '...'}");
+    print("🚀 [FCM DEBUG] الرابط المستهدف: $baseUrl/taxi-auth/v1/update-fcm-token");
+    print("🚀 [FCM DEBUG] ================================");
 
-      // ✅ تصحيح الرابط ليطابق السيرفر (taxi-auth/v1/update-fcm-token)
+    try {
       final response = await http.post(
         Uri.parse('$baseUrl/taxi-auth/v1/update-fcm-token'),
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token' // ضروري لأن السيرفر يطلب taxi_api_permission_check
+          'Authorization': 'Bearer $token',
         },
-        body: json.encode({
-          'fcm_token': fcmToken,
-        }),
+        body: json.encode({'fcm_token': fcmToken}),
       ).timeout(const Duration(seconds: 10));
 
-      // طباعة النتيجة للمراقبة
+      print("📡 [FCM DEBUG] حالة الاستجابة (Status Code): ${response.statusCode}");
+      print("📡 [FCM DEBUG] جسم الاستجابة (Body): ${response.body}");
+
       if (response.statusCode == 200) {
-        print("✅ [FCM Update] Success: Token updated on server.");
+        print("✅ [FCM DEBUG] تم تحديث التوكن بنجاح في السيرفر!");
       } else {
-        print("❌ [FCM Update] Server Error: ${response.statusCode} - ${response.body}");
+        print("❌ [FCM DEBUG] السيرفر رفض الطلب. تحقق من الـ Auth Token أو مسار الـ API.");
       }
     } catch (e) {
-      print("❌ [FCM Update] Exception: $e");
+      print("💥 [FCM DEBUG] حدث استثناء (Exception) أثناء الإرسال: $e");
     }
   }
   static Future<Map<String, dynamic>> registerDriverV3(Map<String, String> fields, Map<String, XFile> files) async {
@@ -1524,22 +1532,34 @@ class ApiService {
     }
   }
 // --- 1. تحديث دالة القبول لإخبار السيرفر أن التطبيق يدعم الدمج ---
+  // --- 1. تحديث دالة القبول لإرجاع رسالة الخطأ الدقيقة من السيرفر ---
   static Future<Map<String, dynamic>> acceptDeliveryV3(String t, String id, {int fee = 1}) async {
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/taxi/v3/delivery/accept'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $t'},
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $t',
+          'Accept': 'application/json', // 🔥 إضافة ضرورية لضمان استلام JSON
+        },
         body: json.encode({
           'order_id': id,
           'fee': fee,
           'driver_post_id': id,
-          'supports_batch': true, // 🔥 المفتاح السري لتفعيل الطلبات المتعددة
+          'supports_batch': true,
         }),
       );
-      return json.decode(res.body);
+
+      // 🔥 التعديل الجذري: فك تشفير الرد سواء كان نجاحاً (200) أو خطأ (422/500)
+      final decodedBody = json.decode(res.body);
+
+      // طباعة الرد في الكونسول لتتمكن من رؤية سبب الفشل بالضبط
+      print("🔥 [API DEBUG] رد السيرفر على قبول الطلب: $decodedBody");
+
+      return decodedBody;
     } catch (e) {
-      print("Error accepting delivery: $e");
-      return {'success': false, 'message': 'فشل في قبول الطلب'};
+      print("❌ [API DEBUG] خطأ استثناء (Exception) في قبول الطلب: $e");
+      return {'success': false, 'message': 'فشل في الاتصال بالسيرفر: ${e.toString()}'};
     }
   }
 
@@ -3598,46 +3618,83 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
 
   Future<void> _acceptDelivery(String id) async {
     if (_isProcessingOrder) return;
-
     if (BalanceManager.current < _costInPoints) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('⚠️ رصيدك غير كافٍ'), backgroundColor: Colors.red));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('⚠️ رصيدك غير كافٍ'), backgroundColor: Colors.red)
+      );
       return;
     }
 
     setState(() => _isProcessingOrder = true);
 
     try {
+      // 1. خصم تفاؤلي
       final deducted = await BalanceManager.deductOptimistic(_costInPoints);
       if (!deducted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('❌ فشل الخصم - الرصيد غير كافٍ'), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('❌ فشل الخصم - الرصيد غير كافٍ'), backgroundColor: Colors.red)
+        );
         setState(() => _isProcessingOrder = false);
         return;
       }
 
-      setState(() {
-        _ordersList.removeWhere((o) => o['id'].toString() == id);
-        _newOrderIds.remove(id);
-      });
+      // 2. إظهار رسالة جاري المعالجة (بدون حذف الطلب من القائمة فوراً لتجنب الوميض)
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('⏳ جاري معالجة الطلب مع السيرفر...'), backgroundColor: Colors.blue)
+      );
 
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم القبول! جاري التوصيل...'), backgroundColor: Colors.green));
-
+      // 3. إرسال الطلب للسيرفر
       final res = await ApiService.acceptDeliveryV3(widget.authResult.token, id, fee: _costInPoints);
 
+      // 4. التحقق من النتيجة
       if (res['success'] == true) {
+        // نجاح: حذف الطلب من القائمة وتحديث الرصيد
+        setState(() {
+          _ordersList.removeWhere((o) => o['id'].toString() == id);
+          _newOrderIds.remove(id);
+        });
+
         final newBalance = res['current_balance'] ?? BalanceManager.current;
         BalanceManager.setCurrent(newBalance);
+
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('✅ تم القبول بنجاح! جاري التوصيل...'), backgroundColor: Colors.green)
+        );
 
         if (mounted && res['delivery_order'] != null) {
           widget.onDeliveryAccepted(res['delivery_order']);
         }
       } else {
+        // 🔥 فشل: استرداد النقطة فوراً وعرض رسالة الخطأ الدقيقة من السيرفر
         BalanceManager.refund(_costInPoints);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res['message'] ?? 'فشل في قبول الطلب'), backgroundColor: Colors.red));
-        setState(() => _isProcessingOrder = false);
+
+        final errorMsg = res['message'] ?? 'فشل في قبول الطلب';
+        final errorDetails = res['errors'] ?? 'لا توجد تفاصيل';
+
+        print("❌ [UI DEBUG] سبب الفشل من السيرفر: $errorMsg");
+        print("❌ [UI DEBUG] تفاصيل الأخطاء: $errorDetails");
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ $errorMsg'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4), // مدة أطول لقراءة الرسالة
+          ),
+        );
       }
     } catch (e) {
+      // استثناء غير متوقع (مثل انقطاع الإنترنت)
       BalanceManager.refund(_costInPoints);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ: ${e.toString()}'), backgroundColor: Colors.red));
+      print("❌ [UI DEBUG] استثناء (Exception) أثناء القبول: $e");
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('❌ خطأ في الشبكة: ${e.toString()}'),
+            backgroundColor: Colors.red
+        ),
+      );
+    } finally {
+      // ضمان إعادة تفعيل الزر في جميع الحالات
       setState(() => _isProcessingOrder = false);
     }
   }
