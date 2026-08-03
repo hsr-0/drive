@@ -4127,6 +4127,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   Future<void> _updateStatus(String newStatus, {String? reason}) async {
+    print("🔍 [DEBUG] ==========================================");
+    print("🔍 [DEBUG] محاولة تحديث الحالة إلى: $newStatus");
+    print("🔍 [DEBUG] Order ID المرسل: ${_currentDelivery['id']} (النوع: ${_currentDelivery['id'].runtimeType})");
+    print("🔍 [DEBUG] Token المرسل: ${widget.authResult.token.isNotEmpty ? widget.authResult.token.substring(0, 20) + '...' : 'فارغ!'}");
+    print("🔍 [DEBUG] ==========================================");
+
     setState(() => _isLoading = true);
     try {
       final response = await ApiService.updateDeliveryStatus(
@@ -4134,29 +4140,40 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         _currentDelivery['id'].toString(),
         newStatus,
       );
+
+      print("📡 [DEBUG] حالة الاستجابة (Status Code): ${response.statusCode}");
+      print("📦 [DEBUG] جسم الاستجابة الخام (Response Body): ${response.body}");
+
       final data = json.decode(response.body);
 
       if (mounted && response.statusCode == 200 && data['success'] == true) {
+        print("✅ [DEBUG] نجاح! تم تحديث الحالة بنجاح.");
         if (newStatus == 'delivered' || newStatus == 'cancelled') {
           widget.onDeliveryFinished();
         } else {
-          setState(() => _currentDelivery = data['delivery_order']);
+          // هنا قد يكون الخلل إذا كان data['delivery_order'] فارغاً
+          if (data['delivery_order'] != null) {
+            setState(() => _currentDelivery = data['delivery_order']);
+          } else {
+            print("⚠️ [DEBUG] تحذير: السيرفر لم يرجع delivery_order، سنستخدم البيانات المحلية.");
+          }
           widget.onDataChanged();
         }
       } else {
-        throw Exception(data['message'] ?? 'فشل التحديث');
+        print("❌ [DEBUG] فشل التحديث. رسالة السيرفر: ${data['message']}");
+        throw Exception(data['message'] ?? 'فشل التحديث من السيرفر');
       }
     } catch (e) {
+      print("💥 [DEBUG] حدث استثناء (Exception): $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(e.toString()), backgroundColor: Colors.red)
+          SnackBar(content: Text("خطأ: ${e.toString()}"), backgroundColor: Colors.red),
         );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
-
   Future<void> _launchWazeWithCoords(double lat, double lng) async {
     final cleanLat = lat.toStringAsFixed(6);
     final cleanLng = lng.toStringAsFixed(6);
