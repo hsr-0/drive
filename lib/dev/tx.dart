@@ -1141,16 +1141,36 @@ class Order {
   }
 }
 class ApiService {
-
   static const String baseUrl = 'https://de.beytei.com/api';
   static const _storage = FlutterSecureStorage();
 
-// جلب الملف المالي الكامل للسائق
+  // ===========================================================================
+  // 🛡️ الهيدر الموحد (لضمان الحماية ومنع صفحات HTML في كل التطبيق)
+  // ===========================================================================
+  static Map<String, String> _secureHeaders(String token) {
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer $token',
+      'Accept': 'application/json', // 🔥 درع الحماية ضد الـ HTML
+    };
+  }
+
+  static Map<String, String> _secureNoCacheHeaders(String token) {
+    return {
+      'Authorization': 'Bearer $token',
+      'Accept': 'application/json', // 🔥 درع الحماية ضد الـ HTML
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+    };
+  }
+  // ===========================================================================
+
+  // جلب الملف المالي الكامل للسائق
   static Future<Map<String, dynamic>> getFinancialProfile(String t) async {
     try {
       final res = await http.get(
         Uri.parse('$baseUrl/taxi/v3/driver/financial-profile'),
-        headers: {'Authorization': 'Bearer $t'},
+        headers: _secureHeaders(t),
       );
       return json.decode(res.body);
     } catch (e) {
@@ -1158,21 +1178,13 @@ class ApiService {
     }
   }
 
-// =============================================================================
-// 🆕 نظام التعويضات المعلق - دوال API جديدة
-// =============================================================================
-
-  /// جلب التعويضات المعلقة للمندوب (بانتظار مراجعة التيم ليدر)
+  // جلب التعويضات المعلقة للمندوب (بانتظار مراجعة التيم ليدر)
   static Future<Map<String, dynamic>> getMyPendingCompensations(String token) async {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       final res = await http.get(
         Uri.parse('$baseUrl/taxi/v3/driver/my-pending-compensations?_t=$timestamp'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-        },
+        headers: _secureNoCacheHeaders(token),
       );
       if (res.statusCode == 200) {
         return json.decode(res.body);
@@ -1184,17 +1196,13 @@ class ApiService {
     }
   }
 
-  /// جلب سجل التعويضات (المعتمدة + المرفوضة)
+  // جلب سجل التعويضات (المعتمدة + المرفوضة)
   static Future<Map<String, dynamic>> getCompensationHistory(String token) async {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       final res = await http.get(
         Uri.parse('$baseUrl/taxi/v3/driver/compensation-history?_t=$timestamp'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-        },
+        headers: _secureNoCacheHeaders(token),
       );
       if (res.statusCode == 200) {
         return json.decode(res.body);
@@ -1204,21 +1212,15 @@ class ApiService {
       print("❌ [API] getCompensationHistory Error: $e");
       return {'success': false, 'message': 'خطأ في الاتصال: $e'};
     }
-
   }
 
-
-// 🏪 جلب دليل المطاعم الكامل من السيرفر
+  // جلب دليل المطاعم الكامل من السيرفر
   static Future<Map<String, dynamic>> getRestaurantsDirectory(String token) async {
     try {
       final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       final res = await http.get(
         Uri.parse('$baseUrl/taxi/v3/restaurants/directory?_t=$timestamp'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-        },
+        headers: _secureNoCacheHeaders(token),
       ).timeout(const Duration(seconds: 15));
 
       if (res.statusCode == 200) {
@@ -1234,19 +1236,12 @@ class ApiService {
     }
   }
 
-// 🔄 تحويل الطلب لمطعم آخر
-  static Future<Map<String, dynamic>> transferOrderToNewRestaurant(
-      String token,
-      String orderId,
-      String newRestaurantName
-      ) async {
+  // تحويل الطلب لمطعم آخر
+  static Future<Map<String, dynamic>> transferOrderToNewRestaurant(String token, String orderId, String newRestaurantName) async {
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/taxi/v3/delivery/transfer-store'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
+        headers: _secureHeaders(token),
         body: json.encode({
           'order_id': orderId,
           'new_store_name': newRestaurantName,
@@ -1258,19 +1253,12 @@ class ApiService {
     }
   }
 
-// ❌ إلغاء الطلب مع السبب
-  static Future<Map<String, dynamic>> cancelOrderWithReason(
-      String token,
-      String orderId,
-      String reason
-      ) async {
+  // إلغاء الطلب مع السبب
+  static Future<Map<String, dynamic>> cancelOrderWithReason(String token, String orderId, String reason) async {
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/taxi/v3/delivery/update-status'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
+        headers: _secureHeaders(token),
         body: json.encode({
           'order_id': orderId,
           'status': 'cancelled',
@@ -1282,6 +1270,7 @@ class ApiService {
       return {'success': false, 'message': 'فشل الاتصال: $e'};
     }
   }
+
   static Future<void> storeAuthData(AuthResult auth) async {
     await _storage.write(key: 'token', value: auth.token);
     await _storage.write(key: 'uid', value: auth.userId);
@@ -1289,6 +1278,7 @@ class ApiService {
     await _storage.write(key: 'status', value: auth.driverStatus);
     await _storage.write(key: 'points', value: auth.points.toString());
   }
+
   static Future<AuthResult?> getStoredAuthData() async {
     try {
       final t = await _storage.read(key: 'token');
@@ -1322,7 +1312,7 @@ class ApiService {
         Uri.parse('$baseUrl/taxi-auth/v1/login'),
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json', // 👈 أضف هذا السطر هنا أيضاً
+          'Accept': 'application/json', // 👈 لا يحتاج توكن هنا لكن يحتاج Accept
         },
         body: json.encode({'phone_number': phone, 'password': password}),
       );
@@ -1331,14 +1321,12 @@ class ApiService {
       return {'success': false, 'message': '$e'};
     }
   }
+
   // استخدام الإصدار 3 لقبول الطلب
   static Future<void> acceptOrderV3(String token, String orderId) async {
     final response = await http.post(
       Uri.parse('$baseUrl/taxi/v3/delivery/accept'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $token'
-      },
+      headers: _secureHeaders(token),
       body: json.encode({'order_id': orderId}),
     );
 
@@ -1353,18 +1341,24 @@ class ApiService {
     }
   }
 
-// مسار رفع الفاتورة للحصول على تعويض
+  // مسار رفع الفاتورة للحصول على تعويض
   static Future<Map<String, dynamic>> uploadReceiptForCompensation(String t, String orderId, String base64Image, double collectedAmount) async {
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/taxi/v3/complete-order-with-receipt'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $t'},
+        headers: _secureHeaders(t),
         body: json.encode({
           'order_id': orderId,
           'receipt_image': base64Image,
-          'collected_amount': collectedAmount
+          'collected_amount': collectedAmount,
+          'status': 'delivered'
         }),
       );
+
+      if (res.body.trim().startsWith('<!DOCTYPE') || res.body.trim().startsWith('<html')) {
+        return {'success': false, 'message': 'خطأ في السيرفر (استجابة HTML)'};
+      }
+
       return json.decode(res.body);
     } catch (e) {
       print("Error uploading receipt: $e");
@@ -1372,13 +1366,12 @@ class ApiService {
     }
   }
 
-  // مسار توليد الباركود لتصفية الذمة من قبل التيم ليدر
-// 🔥 تحديث دالة توليد الباركود لتشمل الرصيد المعلق
+  // مسار توليد الباركود لتصفية الذمة
   static Future<Map<String, dynamic>> generateSettlementBarcode(String t) async {
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/taxi/v3/driver/generate-settlement-barcode'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $t'},
+        headers: _secureHeaders(t),
       );
       return json.decode(res.body);
     } catch (e) {
@@ -1387,10 +1380,28 @@ class ApiService {
     }
   }
 
+  // تبديل حالة السائق (متصل / غير متصل)
+  static Future<Map<String, dynamic>> toggleDriverOnline(String token, bool isOnline) async {
+    print("🔄 [API] جاري إرسال حالة الاتصال للسيرفر: ${isOnline ? 'متصل 🟢' : 'غير متاح 🔴'}");
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/taxi/v3/driver/toggle-online'),
+        headers: _secureHeaders(token),
+        body: json.encode({'is_online': isOnline}),
+      ).timeout(const Duration(seconds: 10));
+
+      print("📡 [API] رد سيرفر الحالة: ${res.statusCode} - ${res.body}");
+      return json.decode(res.body);
+    } catch (e) {
+      print("❌ [API] خطأ في تحديث الحالة: $e");
+      return {'success': false, 'message': 'فشل الاتصال بالسيرفر'};
+    }
+  }
+
   static Future<List<Order>> getAvailableOrdersV3(String token) async {
     final response = await http.get(
       Uri.parse('$baseUrl/taxi/v3/delivery/available'),
-      headers: {'Authorization': 'Bearer $token'},
+      headers: _secureHeaders(token),
     );
 
     if (response.statusCode != 200) {
@@ -1406,42 +1417,29 @@ class ApiService {
         .map((item) => Order.fromJson(item))
         .toList();
   }
-// في ملف ApiService (داخل كلاس ApiService)
-  static Future<void> updateFcmToken(String token, String fcmToken) async {
-    print("🚀 [FCM DEBUG] ================================");
-    print("🚀 [FCM DEBUG] بدء تحديث توكن FCM...");
-    print("🚀 [FCM DEBUG] طول توكن المصادقة (Auth): ${token.length}");
-    print("🚀 [FCM DEBUG] توكن FCM المستلم: ${fcmToken.isEmpty ? 'فارغ!' : fcmToken.substring(0, 20) + '...'}");
-    print("🚀 [FCM DEBUG] الرابط المستهدف: $baseUrl/taxi-auth/v1/update-fcm-token");
-    print("🚀 [FCM DEBUG] ================================");
 
+  static Future<void> updateFcmToken(String token, String fcmToken) async {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/taxi-auth/v1/update-fcm-token'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
+        headers: _secureHeaders(token),
         body: json.encode({'fcm_token': fcmToken}),
       ).timeout(const Duration(seconds: 10));
 
-      print("📡 [FCM DEBUG] حالة الاستجابة (Status Code): ${response.statusCode}");
-      print("📡 [FCM DEBUG] جسم الاستجابة (Body): ${response.body}");
-
       if (response.statusCode == 200) {
-        print("✅ [FCM DEBUG] تم تحديث التوكن بنجاح في السيرفر!");
+        print("✅ تم تحديث توكن الإشعارات بنجاح في السيرفر!");
       } else {
-        print("❌ [FCM DEBUG] السيرفر رفض الطلب. تحقق من الـ Auth Token أو مسار الـ API.");
+        print("❌ السيرفر رفض التوكن، الكود: ${response.statusCode}");
       }
     } catch (e) {
-      print("💥 [FCM DEBUG] حدث استثناء (Exception) أثناء الإرسال: $e");
+      print("💥 حدث خطأ أثناء إرسال توكن الإشعارات: $e");
     }
   }
+
   static Future<Map<String, dynamic>> registerDriverV3(Map<String, String> fields, Map<String, XFile> files) async {
     try {
       var request = http.MultipartRequest('POST', Uri.parse('$baseUrl/taxi-auth/v3/register/driver'));
 
-      // 🔥 إجبار لارافل على إرجاع الأخطاء بصيغة JSON بدلاً من HTML
       request.headers.addAll({
         'Accept': 'application/json',
       });
@@ -1454,7 +1452,6 @@ class ApiService {
       final streamedRes = await request.send();
       final res = await http.Response.fromStream(streamedRes);
 
-      // 🔥 فحص الاستجابة قبل فك التشفير لمنع الشاشة الحمراء
       if (res.body.trim().startsWith('<!DOCTYPE') || res.body.trim().startsWith('<html')) {
         print('❌ [API ERROR] Server returned HTML: ${res.statusCode}');
         return {'success': false, 'message': 'خطأ في السيرفر الداخلي (${res.statusCode}). يرجى مراجعة لوحة التحكم.'};
@@ -1466,28 +1463,17 @@ class ApiService {
     }
   }
 
-  // 🔥 دالة الطلبات فقط (أسرع - لا تطلب النقاط)
-// في ملف ApiService
+  // دالة الطلبات فقط (أسرع - لا تطلب النقاط)
   static Future<Map<String, dynamic>> getAvailableDeliveriesOnly(String t) async {
     try {
-      // 🔥 1. إضافة طابع زمني لكسر الكاش (ضروري جداً للتحديث الفوري)
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-
       final res = await http.get(
-        // 🔥 2. إضافة الطابع الزمني للرابط ليصبح فريداً في كل طلب
         Uri.parse('$baseUrl/taxi/v3/delivery/available?_t=$timestamp'),
-        headers: {
-          'Authorization': 'Bearer $t',
-          // 🔥 3. هيدرز إجبارية لمنع تخزين الاستجابة (Force No-Cache)
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-        },
+        headers: _secureNoCacheHeaders(t),
       );
 
-      // 🔥 طباعة حالة الاستجابة للتشخيص
       print('📡 [API DEBUG] Status Code: ${res.statusCode}');
 
-      // 🔥 فحص إذا كانت الاستجابة HTML بدلاً من JSON
       if (res.body.trim().startsWith('<!DOCTYPE') || res.body.trim().startsWith('<html')) {
         print('❌ [API ERROR] Server returned HTML instead of JSON!');
         return {
@@ -1514,7 +1500,6 @@ class ApiService {
         };
       }
 
-      // أي كود حالة آخر يعتبر خطأ
       return {
         'success': false,
         'message': 'خطأ في الاتصال (${res.statusCode})',
@@ -1523,7 +1508,6 @@ class ApiService {
 
     } catch (e) {
       print("❌ [API EXCEPTION] Error fetching orders: $e");
-      // 🔥 العودة بـ success: false ليتمكن التطبيق من معالجة الخطأ
       return {
         'success': false,
         'message': 'فشل في الاتصال: ${e.toString()}',
@@ -1531,17 +1515,12 @@ class ApiService {
       };
     }
   }
-// --- 1. تحديث دالة القبول لإخبار السيرفر أن التطبيق يدعم الدمج ---
-  // --- 1. تحديث دالة القبول لإرجاع رسالة الخطأ الدقيقة من السيرفر ---
+
   static Future<Map<String, dynamic>> acceptDeliveryV3(String t, String id, {int fee = 1}) async {
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/taxi/v3/delivery/accept'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $t',
-          'Accept': 'application/json', // 🔥 إضافة ضرورية لضمان استلام JSON
-        },
+        headers: _secureHeaders(t),
         body: json.encode({
           'order_id': id,
           'fee': fee,
@@ -1550,12 +1529,8 @@ class ApiService {
         }),
       );
 
-      // 🔥 التعديل الجذري: فك تشفير الرد سواء كان نجاحاً (200) أو خطأ (422/500)
       final decodedBody = json.decode(res.body);
-
-      // طباعة الرد في الكونسول لتتمكن من رؤية سبب الفشل بالضبط
       print("🔥 [API DEBUG] رد السيرفر على قبول الطلب: $decodedBody");
-
       return decodedBody;
     } catch (e) {
       print("❌ [API DEBUG] خطأ استثناء (Exception) في قبول الطلب: $e");
@@ -1563,22 +1538,18 @@ class ApiService {
     }
   }
 
-  // --- 2. تحديث دالة جلب الطلبات النشطة لترجع مصفوفة (List) ---
   static Future<List<dynamic>> getMyActiveDeliveriesList(String t) async {
     try {
       final res = await http.get(
         Uri.parse('$baseUrl/taxi/v3/driver/my-active-delivery'),
-        headers: {'Authorization': 'Bearer $t'},
+        headers: _secureHeaders(t),
       );
       if (res.statusCode == 200) {
         final d = json.decode(res.body);
         if (d['success'] == true) {
-          // السيرفر المحدث سيرجع active_deliveries
           if (d['active_deliveries'] != null) {
             return d['active_deliveries'];
-          }
-          // توافق عكسي في حال رجع طلب واحد
-          else if (d['delivery_order'] != null) {
+          } else if (d['delivery_order'] != null) {
             return [d['delivery_order']];
           }
         }
@@ -1586,11 +1557,12 @@ class ApiService {
     } catch (_) {}
     return [];
   }
+
   static Future<Map<String, dynamic>?> getMyActiveDelivery(String t) async {
     try {
       final res = await http.get(
         Uri.parse('$baseUrl/taxi/v3/driver/my-active-delivery'),
-        headers: {'Authorization': 'Bearer $t'},
+        headers: _secureHeaders(t),
       );
       if (res.statusCode == 200) {
         final d = json.decode(res.body);
@@ -1599,9 +1571,10 @@ class ApiService {
     } catch (_) {}
     return null;
   }
+
   static Future<http.Response> updateDeliveryStatus(String t, String id, String s) => http.post(
     Uri.parse('$baseUrl/taxi/v3/delivery/update-status'),
-    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $t'},
+    headers: _secureHeaders(t),
     body: json.encode({'order_id': id, 'status': s}),
   );
 
@@ -1609,27 +1582,18 @@ class ApiService {
     try {
       await http.post(
         Uri.parse('$baseUrl/taxi/v3/driver/update-location'),
-        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $t'},
+        headers: _secureHeaders(t),
         body: json.encode({'lat': lat, 'lng': lng}),
       );
     } catch (_) {}
   }
 
-// 🔥 دالة مخصصة لتحديث النقاط فقط (نسخة V3 - آمنة ومصححة)
   static Future<int> getPoints(String t) async {
     try {
-      // 🔥 1. إضافة طابع زمني لكسر الكاش
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-
       final res = await http.get(
-        // 🔥 2. إضافة الطابع الزمني للرابط
         Uri.parse('$baseUrl/taxi/v3/driver/hub?_t=$timestamp'),
-        headers: {
-          'Authorization': 'Bearer $t',
-          // 🔥 3. هيدرز منع الكاش الإجبارية
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-        },
+        headers: _secureNoCacheHeaders(t),
       );
 
       if (res.statusCode == 200) {
@@ -1648,11 +1612,12 @@ class ApiService {
     }
     return 0;
   }
+
   static Future<List<dynamic>> getHistoryV3(String t) async {
     try {
       final res = await http.get(
         Uri.parse('$baseUrl/taxi/v3/driver/history'),
-        headers: {'Authorization': 'Bearer $t'},
+        headers: _secureHeaders(t),
       );
       if (res.statusCode == 200) {
         final d = json.decode(res.body);
@@ -1662,17 +1627,12 @@ class ApiService {
     return [];
   }
 
-// 🔥 دالة جلب إحصائيات الأرباح
   static Future<Map<String, dynamic>> getDriverEarnings(String t) async {
     try {
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       final res = await http.get(
         Uri.parse('$baseUrl/taxi/v3/driver/earnings?_t=$timestamp'),
-        headers: {
-          'Authorization': 'Bearer $t',
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-        },
+        headers: _secureNoCacheHeaders(t),
       );
 
       if (res.statusCode == 200) {
@@ -1685,7 +1645,6 @@ class ApiService {
     }
   }
 }
-
 // =============================================================================
 // 🎨 شاشة الفحص الأولى (عصري وحديث)
 // =============================================================================
@@ -2704,14 +2663,7 @@ class _DriverRegisterV3State extends State<DriverRegisterV3> {
 // =============================================================================
 // MAIN LAYOUT - الإصدار النهائي (مع orderRefreshCounter)
 // =============================================================================
-class MainDeliveryLayout extends StatefulWidget {
-  final AuthResult authResult;
-  final VoidCallback onLogout;
-  const MainDeliveryLayout({super.key, required this.authResult, required this.onLogout});
 
-  @override
-  State<MainDeliveryLayout> createState() => _MainDeliveryLayoutState();
-}
 class DriverActiveOrdersPager extends StatelessWidget {
   final List<dynamic> orders;
   final AuthResult authResult;
@@ -2782,12 +2734,29 @@ class DriverActiveOrdersPager extends StatelessWidget {
     );
   }
 }
+// =============================================================================
+// الشاشة الرئيسية للمندوب (Main Delivery Layout) - الإصدار النهائي
+// =============================================================================
+class MainDeliveryLayout extends StatefulWidget {
+  final AuthResult authResult;
+  final VoidCallback onLogout;
+
+  const MainDeliveryLayout({
+    super.key,
+    required this.authResult,
+    required this.onLogout,
+  });
+
+  @override
+  State<MainDeliveryLayout> createState() => _MainDeliveryLayoutState();
+}
+
 class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBindingObserver {
   int _idx = 0;
-  List<dynamic> _activeOrders = []; // 🔥 التعديل 1: مصفوفة بدلاً من طلب واحد
+  List<dynamic> _activeOrders = [];
   Timer? _locationTimer;
   bool _isRefreshingOrders = false;
-  bool _isViewingAvailableWhileActive = false; // 🔥 التعديل 2: للتحكم في عرض المتاحة أثناء النشطة
+  bool _isViewingAvailableWhileActive = false;
 
   static const _deliveriesKey = ValueKey('deliveries_screen');
   static const _earningsKey = ValueKey('earnings_screen');
@@ -2800,30 +2769,63 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
     super.initState();
     print("🔹 [MAIN-LAYOUT] initState: تهيئة الواجهة الرئيسية");
 
-    // 🔥 تسجيل مراقب حياة التطبيق (للتحديث التلقائي عند العودة من الخلفية)
+    // إضافة مراقب دورة حياة التطبيق
     WidgetsBinding.instance.addObserver(this);
 
     _chk();
     _startLocationTracking();
     orderRefreshCounter.addListener(_handleGlobalRefresh);
+
+    // 🔥 فحص حالة الاتصال عند الدخول وإظهار التنبيه إذا كان مغلقاً
+    _checkInitialOnlineStatus();
   }
 
   @override
   void dispose() {
     _locationTimer?.cancel();
     orderRefreshCounter.removeListener(_handleGlobalRefresh);
-
-    // 🔥 تنظيف المراقب عند إغلاق الشاشة لتجنب تسريب الذاكرة
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  // 🔥 الدالة السحرية التي تعمل تلقائياً بمجرد استيقاظ التطبيق من الخلفية
+  // 🔥 التنبيه عند الدخول إذا كان السائق غير متصل
+  Future<void> _checkInitialOnlineStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    final isOnline = prefs.getBool('driver_is_online') ?? true;
+
+    if (!isOnline && mounted) {
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Row(
+                children: [
+                  Icon(Icons.wifi_off, color: Colors.white, size: 28),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'أنت غير متصل حالياً!\nقم بتفعيل زر "متصل" في الأعلى لاستقبال الطلبات الجديدة.',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: Colors.orange.shade800,
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 6),
+              margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+            ),
+          );
+        }
+      });
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       print("📱 [APP] عاد التطبيق للواجهة (استيقظ)! جاري التحديث التلقائي...");
-      // إجبار التطبيق على تحديث القوائم وسحب الطلبات الجديدة فوراً
       orderRefreshCounter.value++;
     }
   }
@@ -2845,12 +2847,10 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
     });
   }
 
-  // 🔥 التعديل 3: جلب مصفوفة الطلبات
   Future<void> _chk() async {
     final orders = await ApiService.getMyActiveDeliveriesList(widget.authResult.token);
     if (mounted) {
       if (_activeOrders.isEmpty && orders.isEmpty) return;
-
       setState(() {
         _activeOrders = orders;
         if (_activeOrders.isEmpty) {
@@ -2878,7 +2878,7 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
   @override
   Widget build(BuildContext context) {
     final pages = [
-      // 🔥 التعديل 4: استخدام Pager الذي يحتوي على الزر الأصفر
+      // الصفحة الأولى: الطلبات
       (_activeOrders.isNotEmpty && !_isViewingAvailableWhileActive)
           ? DriverActiveOrdersPager(
         key: _currentDeliveryKey,
@@ -2890,29 +2890,43 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
           setState(() => _isViewingAvailableWhileActive = true);
         },
       )
-          : Stack(
+          : Column(
         children: [
-          DriverAvailableDeliveriesV3Screen(
-            key: _deliveriesKey,
-            authResult: widget.authResult,
-            activeOrdersCount: _activeOrders.length,
-            onDeliveryAccepted: _onDeliveryAccepted,
-            onRefresh: _chk,
-          ),
-          if (_isViewingAvailableWhileActive)
-            Positioned(
-              bottom: 20,
-              right: 20,
-              child: FloatingActionButton.extended(
-                onPressed: () => setState(() => _isViewingAvailableWhileActive = false),
-                backgroundColor: Colors.indigo,
-                icon: const Icon(Icons.arrow_back, color: Colors.white),
-                label: const Text("العودة لطلباتي", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-              ),
+          // 🔥 هنا يتم عرض مفتاح الاتصال العصري + الرصيد في الأعلى بشكل أنيق
+          ModernOnlineToggle(token: widget.authResult.token),
+          _buildCompactBalanceHeader(),
+
+          Expanded(
+            child: Stack(
+              children: [
+                DriverAvailableDeliveriesV3Screen(
+                  key: _deliveriesKey,
+                  authResult: widget.authResult,
+                  activeOrdersCount: _activeOrders.length,
+                  onDeliveryAccepted: _onDeliveryAccepted,
+                  onRefresh: _chk,
+                ),
+                if (_isViewingAvailableWhileActive)
+                  Positioned(
+                    bottom: 20,
+                    right: 20,
+                    child: FloatingActionButton.extended(
+                      onPressed: () => setState(() => _isViewingAvailableWhileActive = false),
+                      backgroundColor: Colors.indigo,
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      label: const Text(
+                        "العودة لطلباتي",
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+              ],
             ),
+          ),
         ],
       ),
 
+      // الصفحات الأخرى
       EarningsTab(key: _earningsKey, token: widget.authResult.token),
       HistoryTabV3(
         key: _historyKey,
@@ -2931,6 +2945,7 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
     ];
 
     return Scaffold(
+      backgroundColor: Colors.grey.shade50, // خلفية عامة أنيقة
       appBar: AppBar(
         title: Text(
           _idx == 0
@@ -2938,7 +2953,10 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
               ? "طلبات جارية (${_activeOrders.length})"
               : "الطلبات المتاحة")
               : (_idx == 1 ? "أرباحي" : (_idx == 2 ? "السجل" : "حسابي")),
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
         ),
+        centerTitle: true,
+        elevation: 0,
         actions: [
           if (_idx == 0 && (_activeOrders.isEmpty || _isViewingAvailableWhileActive))
             IconButton(
@@ -2952,7 +2970,6 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
                 if (mounted) setState(() => _isRefreshingOrders = false);
               },
             ),
-          if (_idx == 0 && (_activeOrders.isEmpty || _isViewingAvailableWhileActive)) _buildBalanceWidget(),
           if (_idx != 0 || (_activeOrders.isNotEmpty && !_isViewingAvailableWhileActive))
             IconButton(
               icon: const Icon(Icons.refresh),
@@ -2968,30 +2985,47 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
         type: BottomNavigationBarType.fixed,
         selectedItemColor: Colors.indigo,
         unselectedItemColor: Colors.grey,
+        backgroundColor: Colors.white,
+        elevation: 10,
         onTap: (i) => setState(() => _idx = i),
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: "الرئيسية"),
-          BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet), label: "أرباحي"),
-          BottomNavigationBarItem(icon: Icon(Icons.history), label: "السجل"),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: "حسابي"),
+          BottomNavigationBarItem(icon: Icon(Icons.home_rounded), label: "الرئيسية"),
+          BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet_rounded), label: "أرباحي"),
+          BottomNavigationBarItem(icon: Icon(Icons.history_rounded), label: "السجل"),
+          BottomNavigationBarItem(icon: Icon(Icons.person_rounded), label: "حسابي"),
         ],
       ),
     );
   }
 
-  Widget _buildBalanceWidget() {
+  // 🔥 ويدجت مصغر وأنيق لعرض الرصيد بجانب مفتاح الاتصال
+  Widget _buildCompactBalanceHeader() {
     return Container(
-      margin: const EdgeInsets.only(right: 16),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(20)),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.indigo.shade50,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.indigo.shade100),
+      ),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.monetization_on, size: 18, color: Colors.amber),
-          const SizedBox(width: 4),
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: const BoxDecoration(color: Colors.indigo, shape: BoxShape.circle),
+            child: const Icon(Icons.stars_rounded, color: Colors.white, size: 18),
+          ),
+          const SizedBox(width: 10),
+          const Text("رصيدك الحالي:", style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.w600, fontSize: 14)),
+          const SizedBox(width: 6),
           ValueListenableBuilder<int>(
             valueListenable: BalanceManager.balanceNotifier,
             builder: (context, balance, child) {
-              return Text('$balance', style: const TextStyle(fontWeight: FontWeight.bold));
+              return Text(
+                '$balance نقطة',
+                style: const TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold, fontSize: 16),
+              );
             },
           ),
         ],
@@ -3000,7 +3034,196 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
   }
 }
 
+// =============================================================================
+// 🔥 ويدجت مفتاح الاتصال العصري والحديث (Modern Online Toggle)
+// =============================================================================
+class ModernOnlineToggle extends StatefulWidget {
+  final String token;
+  const ModernOnlineToggle({super.key, required this.token});
 
+  @override
+  State<ModernOnlineToggle> createState() => _ModernOnlineToggleState();
+}
+
+class _ModernOnlineToggleState extends State<ModernOnlineToggle> {
+  bool _isOnline = true;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAndLoadStatus();
+  }
+
+  Future<void> _checkAndLoadStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedStatus = prefs.getBool('driver_is_online') ?? true;
+    final lastToggleTime = prefs.getInt('last_toggle_time') ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    // ⏱️ مدة 8 ساعات بالميلي ثانية
+    const eightHoursInMillis = 28800000;
+
+    if (savedStatus && (now - lastToggleTime > eightHoursInMillis)) {
+      // إيقاف تلقائي بعد 8 ساعات
+      await prefs.setBool('driver_is_online', false);
+      await prefs.setInt('last_toggle_time', now);
+      setState(() => _isOnline = false);
+      await _updateServerStatus(false);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.timer_off, color: Colors.white),
+                SizedBox(width: 10),
+                Expanded(child: Text('تم إيقاف استقبال الطلبات تلقائياً بعد 8 ساعات من العمل')),
+              ],
+            ),
+            backgroundColor: Colors.blue,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } else {
+      setState(() => _isOnline = savedStatus);
+    }
+  }
+
+  Future<void> _handleToggle(bool value) async {
+    setState(() => _isLoading = true);
+    final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    // 1. تحديث محلي فوري (Optimistic UI)
+    await prefs.setBool('driver_is_online', value);
+    await prefs.setInt('last_toggle_time', now);
+    setState(() => _isOnline = value);
+
+    // 2. إرسال التحديث للسيرفر في الخلفية
+    await _updateServerStatus(value);
+    setState(() => _isLoading = false);
+
+    // 3. إظهار رسالة تأكيد
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(value ? Icons.wifi : Icons.wifi_off, color: Colors.white, size: 20),
+              const SizedBox(width: 10),
+              Text(value ? 'أنت متاح الآن لاستقبال الطلبات' : 'تم إيقاف استقبال الطلبات مؤقتاً'),
+            ],
+          ),
+          backgroundColor: value ? Colors.green.shade700 : Colors.grey.shade700,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    }
+  }
+
+  Future<void> _updateServerStatus(bool status) async {
+    try {
+      await ApiService.toggleDriverOnline(widget.token, status);
+    } catch (e) {
+      print("❌ [API] toggleDriverOnline Error: $e");
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: _isOnline ? Colors.green.withOpacity(0.15) : Colors.grey.withOpacity(0.1),
+            blurRadius: 15,
+            offset: const Offset(0, 5),
+          ),
+        ],
+        border: Border.all(
+          color: _isOnline ? Colors.green.shade300 : Colors.grey.shade200,
+          width: 1.5,
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: _isOnline ? Colors.green.shade50 : Colors.grey.shade100,
+                  shape: BoxShape.circle,
+                ),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Icon(
+                      _isOnline ? Icons.wifi : Icons.wifi_off,
+                      color: _isOnline ? Colors.green : Colors.grey,
+                      size: 26,
+                    ),
+                    if (_isOnline)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Colors.green,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 14),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _isOnline ? 'أنت متصل الآن' : 'غير متاح',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: _isOnline ? Colors.green.shade800 : Colors.grey.shade700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _isOnline ? 'تستقبل إشعارات الطلبات الجديدة' : 'لن تصلك طلبات حتى تعيد التشغيل',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          _isLoading
+              ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5))
+              : Switch(
+            value: _isOnline,
+            onChanged: _handleToggle,
+            activeColor: Colors.white,
+            activeTrackColor: Colors.green.shade600,
+            inactiveThumbColor: Colors.white,
+            inactiveTrackColor: Colors.grey.shade400,
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 
 
@@ -6182,6 +6405,158 @@ class _PointsTabState extends State<PointsTab> {
     );
   }
 }
+
+// =============================================================================
+// 🔥 ويدجت مفتاح الاتصال (Online/Offline Toggle)
+// =============================================================================
+class DriverOnlineToggle extends StatefulWidget {
+  final String token;
+  const DriverOnlineToggle({super.key, required this.token});
+
+  @override
+  State<DriverOnlineToggle> createState() => _DriverOnlineToggleState();
+}
+
+class _DriverOnlineToggleState extends State<DriverOnlineToggle> {
+  bool _isOnline = true; // الافتراضي متصل
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAndLoadStatus();
+  }
+
+  Future<void> _checkAndLoadStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedStatus = prefs.getBool('driver_is_online') ?? true;
+    final lastToggleTime = prefs.getInt('last_toggle_time') ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    // ⏱️ مدة 8 ساعات بالميلي ثانية (8 * 60 * 60 * 1000 = 28,800,000)
+    const eightHoursInMillis = 28800000;
+
+    // التحقق من مرور 8 ساعات
+    if (savedStatus && (now - lastToggleTime > eightHoursInMillis)) {
+      // إيقاف تلقائي بعد 8 ساعات
+      await prefs.setBool('driver_is_online', false);
+      await prefs.setInt('last_toggle_time', now);
+      setState(() => _isOnline = false);
+
+      // إشعار السيرفر بالحالة الجديدة
+      await ApiService.toggleDriverOnline(widget.token, false);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⏱️ تم إيقاف استقبال الطلبات تلقائياً بعد 8 ساعات من العمل'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } else {
+      setState(() => _isOnline = savedStatus);
+    }
+  }
+
+  Future<void> _handleToggle(bool value) async {
+    setState(() => _isLoading = true);
+    final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    // 1. تحديث محلي فوري (Optimistic UI)
+    await prefs.setBool('driver_is_online', value);
+    await prefs.setInt('last_toggle_time', now);
+    setState(() => _isOnline = value);
+
+    // 2. إرسال التحديث للسيرفر في الخلفية
+    final res = await ApiService.toggleDriverOnline(widget.token, value);
+
+    setState(() => _isLoading = false);
+
+    // 3. إظهار رسالة تأكيد
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(value ? '✅ أنت متاح الآن لاستقبال الطلبات' : '⏸️ تم إيقاف استقبال الطلبات مؤقتاً'),
+          backgroundColor: value ? Colors.green : Colors.grey[700],
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4)),
+        ],
+        border: Border.all(
+          color: _isOnline ? Colors.green.shade200 : Colors.grey.shade300,
+          width: 1.5,
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: _isOnline ? Colors.green.shade50 : Colors.grey.shade100,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  _isOnline ? Icons.wifi : Icons.wifi_off,
+                  color: _isOnline ? Colors.green : Colors.grey,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _isOnline ? 'أنت متصل الآن' : 'غير متاح',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: _isOnline ? Colors.green.shade800 : Colors.grey.shade700,
+                    ),
+                  ),
+                  Text(
+                    _isOnline ? 'تستقبل إشعارات الطلبات الجديدة' : 'لن تصلك طلبات حتى تعيد التشغيل',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          _isLoading
+              ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+              : Switch(
+            value: _isOnline,
+            onChanged: _handleToggle,
+            activeColor: Colors.green,
+            activeTrackColor: Colors.green.shade200,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+
+
+
 // =============================================================================
 // 🆕 شاشة تعويضاتي - عرض صور الفواتير وحالة كل تعويض
 // =============================================================================
