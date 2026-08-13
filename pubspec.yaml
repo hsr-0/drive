@@ -40,7 +40,6 @@ dependencies:
   latlong2: ^0.9.1
   flutter_secure_storage: any
   firebase_auth: any
-  livekit_client: ^2.8.1
   audioplayers: any
   google_sign_in: ^7.2.0
   firebase_remote_config: ^6.0.0 # تحديث هذا الإصدار هو المفتاح كما اقترح لك الخطأ
@@ -53,7 +52,7 @@ dependencies:
   intl: ^0.20.2
   just_audio: ^0.10.5
   logger: ^2.6.2
-
+  livekit_client: ^2.9.0
   fluttertoast: ^9.1.0  # <-- أضف هذا السطر لحل خطأ fluttertoast
   lottie: ^3.3.2
   open_file: ^3.5.10
