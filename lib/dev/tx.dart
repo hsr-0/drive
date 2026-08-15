@@ -869,16 +869,15 @@ class NotificationService {
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(_channel);
 
-    // 4️⃣ 🔥 الاستماع للإشعارات الواردة (Foreground)
-// 4️⃣ 🔥 الاستماع للإشعارات الواردة والتطبيق مفتوح (Foreground)
+    // 4️⃣ 🔥 الاستماع للإشعارات الواردة والتطبيق مفتوح (Foreground)
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       RemoteNotification? notification = message.notification;
       Map<String, dynamic> data = message.data;
       print("🔔 [NotificationService] Received: ${notification?.title} | Data: $data");
 
-      // إظهار الإشعار فوراً
-      String title = notification?.title ?? data['title'] ?? "🔔 طلب جديد!";
-      String body = notification?.body ?? data['body'] ?? "يوجد طلب بالقرب منك، اضغط للفتح.";
+      // إظهار الإشعار المحلي فوراً (لضمان سماع الصوت والاهتزاز)
+      String title = notification?.title ?? data['title'] ?? "🔔 تنبيه جديد!";
+      String body = notification?.body ?? data['body'] ?? "يوجد تحديث في التطبيق.";
       int notifId = notification?.hashCode ?? DateTime.now().millisecond;
 
       _localParams.show(
@@ -911,25 +910,61 @@ class NotificationService {
         if (hasVib == true) Vibration.vibrate(duration: 500);
       });
 
-      // 🔥🔥🔥 الحل الجذري: قراءة الريموت كنترول من السيرفر
-      if (data['force_refresh'] == 'true' || data['type'] == 'new_delivery') {
-        print("🔥 [SERVICE] السيرفر يطلب تحديث الشاشة الآن! جاري التحديث التلقائي...");
+      // ========================================================================
+      // 🔥🔥🔥 المنطق الجديد الآمن: التعامل مع أوامر السيرفر الخاصة 🔥🔥🔥
+      // ========================================================================
 
-        // زيادة العداد ستجبر شاشة "الطلبات المتاحة" وشاشة "الواجهة الرئيسية" على التحديث
+      // 1. إذا انتهى وقت الطلب وانتقل لسائق آخر
+      if (data['type'] == 'request_expired_for_driver') {
+        print("⏳ [EXPIRED] انتهى وقت الطلب لهذا السائق. جاري تحديث الواجهة...");
+
+        // أ) إجبار الواجهة على إعادة جلب الطلبات (سيختفي الطلب المنتهي تلقائياً)
+        orderRefreshCounter.value++;
+
+        // ب) إ رسالة توضيحية للسائق (فقط إذا كان التطبيق مفتوحاً)
+        if (navigatorKey.currentState?.overlay?.context != null) {
+          ScaffoldMessenger.of(navigatorKey.currentState!.overlay!.context).showSnackBar(
+            SnackBar(
+              content: const Row(
+                children: [
+                  Icon(Icons.timer_off, color: Colors.white, size: 24),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'انتهى وقت القبول! انتقل الطلب إلى سائق آخر.',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: Colors.orange.shade800,
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 4),
+              margin: const EdgeInsets.only(bottom: 100, left: 20, right: 20),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          );
+        }
+      }
+      // 2. التحديث العادي للطلبات الجديدة أو طلب التحديث من السيرفر
+      else if (data['force_refresh'] == 'true' || data['type'] == 'new_delivery') {
+        print("🔥 [SERVICE] السيرفر يطلب تحديث الشاشة الآن! جاري التحديث التلقائي...");
         orderRefreshCounter.value++;
       }
 
-      // معالجة الرصيد وعمليات السيرفر في الخلفية
+      // ========================================================================
+
+      // معالجة الرصيد وعمليات السيرفر في الخلفية (كما كان سابقاً تماماً)
       _handleBackgroundData(data);
     });
-    // 5️⃣ الاستماع عند فتح التطبيق من الإشعار
+
+    // 5️⃣ الاستماع عند فتح التطبيق من الإشعار (Background/Terminated)
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
       print("🔔 [NotificationService] App opened from notification: ${message.data}");
+      // يمكنك إضافة منطق التوجيه هنا لاحقاً إذا أردت
     });
 
-    // ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅
-    // 🔥🔥🔥 التعديل الأهم: الاستماع لتجديد توكن FCM تلقائيًا 🔥🔥🔥
-    // ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅
+    // ✅✅✅ الاستماع لتجديد توكن FCM تلقائيًا (موجود سابقاً وآمن) ✅✅✅
     FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
       print("🔄 [TOKEN REFRESH] New FCM token generated: ${newToken.substring(0, 20)}...");
 
@@ -943,12 +978,11 @@ class NotificationService {
         }
       }
     });
-    // ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅ ✅✅✅
 
     print("✅ NotificationService initialized successfully");
   }
 
-  // ✅ دالة جديدة لمعالجة بيانات الرصيد في الخلفية بهدوء
+  // ✅ دالة معالجة بيانات الرصيد في الخلفية (لم تتغير، تعمل كما هي)
   static Future<void> _handleBackgroundData(Map<String, dynamic> data) async {
     try {
       if (data['type'] == 'balance_update' || data['new_balance'] != null || data['current_balance'] != null) {
@@ -959,7 +993,6 @@ class NotificationService {
 
       // التحقق من الرصيد الصفري هنا (بعد أن ضمنّا أن الإشعار ظهر وعمل الصوت)
       if (BalanceManager.current == 0) {
-        // تأخير بسيط لضمان رؤية السائق للإشعار قبل قفل الشاشة
         await Future.delayed(const Duration(seconds: 1));
         navigatorKey.currentState?.pushReplacement(
           MaterialPageRoute(
