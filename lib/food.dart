@@ -205,9 +205,16 @@ class FoodItem {
 }
 
 class Order {
-  final int id; final String status; final DateTime dateCreated; final String total;
-  final String customerName; final String address; final String phone;
-  final List<LineItem> lineItems; final String? driverName; final String? driverPhone;
+  final int id;
+  final String status;
+  final DateTime dateCreated;
+  final String total;
+  final String customerName;
+  final String address;
+  final String phone;
+  final List<LineItem> lineItems;
+  final String? driverName;
+  final String? driverPhone;
 
   Order({
     required this.id, required this.status, required this.dateCreated, required this.total,
@@ -216,23 +223,54 @@ class Order {
   });
 
   factory Order.fromJson(Map<String, dynamic> json) {
+    // 1. معالجة الاسم بشكل آمن
+    final billing = json['billing'] as Map<String, dynamic>?;
+    final firstName = billing?['first_name'] ?? '';
+    final lastName = billing?['last_name'] ?? '';
+    final safeCustomerName = json['customerName'] ?? '$firstName $lastName'.trim();
+    if (safeCustomerName.isEmpty) 'زبون';
+
+    // 2. معالجة العناصر (Line Items) بشكل آمن لمنع الانهيار إذا كانت null
+    List<LineItem> safeLineItems = [];
+    if (json['line_items'] is List) {
+      safeLineItems = (json['line_items'] as List)
+          .where((item) => item is Map<String, dynamic>)
+          .map((item) => LineItem.fromJson(item as Map<String, dynamic>))
+          .toList();
+    }
+
     return Order(
-      id: json['id'], status: json['status'], dateCreated: DateTime.parse(json['date_created']),
-      total: json['total'].toString(),
-      customerName: json['customerName'] ?? '${json['billing']?['first_name'] ?? ''} ${json['billing']?['last_name'] ?? ''}'.trim(),
-      address: json['address'] ?? json['shipping']?['address_1'] ?? json['billing']?['address_1'] ?? 'N/A',
-      phone: json['phone'] ?? json['billing']?['phone'] ?? 'N/A',
-      lineItems: (json['line_items'] as List).map((i) => LineItem.fromJson(i)).toList(),
-      driverName: json['driver_name'], driverPhone: json['driver_phone'],
+      id: json['id'] ?? 0,
+      status: json['status'] ?? 'pending',
+      // منع الانهيار إذا كان التاريخ مفقوداً
+      dateCreated: json['date_created'] != null
+          ? DateTime.tryParse(json['date_created']) ?? DateTime.now()
+          : DateTime.now(),
+      total: json['total']?.toString() ?? '0',
+      customerName: safeCustomerName,
+      address: json['address'] ?? json['shipping']?['address_1'] ?? billing?['address_1'] ?? 'عنوان غير محدد',
+      phone: json['phone'] ?? billing?['phone'] ?? 'لا يوجد رقم',
+      lineItems: safeLineItems,
+      driverName: json['driver_name'],
+      driverPhone: json['driver_phone'],
     );
   }
 }
 
 class LineItem {
-  final String name; final int quantity; final String total;
+  final String name;
+  final int quantity;
+  final String total;
+
   LineItem({required this.name, required this.quantity, required this.total});
-  factory LineItem.fromJson(Map<String, dynamic> json) =>
-      LineItem(name: json['name'], quantity: json['quantity'], total: json['total'].toString());
+
+  factory LineItem.fromJson(Map<String, dynamic> json) {
+    return LineItem(
+      name: json['name'] ?? 'منتج غير معروف',
+      quantity: json['quantity'] is int ? json['quantity'] : int.tryParse(json['quantity'].toString()) ?? 1,
+      total: json['total']?.toString() ?? '0',
+    );
+  }
 }
 
 class RestaurantRatingsDashboard {
@@ -799,16 +837,25 @@ class DashboardProvider with ChangeNotifier {
   }
 
   Future<void> fetchDashboardData(String? token, {bool silent = false}) async {
-    if (token == null) return;
+    if (token == null) {
+      print("⚠️ [Dashboard] التوكن فارغ، لا يمكن جلب البيانات!");
+      return;
+    }
+
     if (!silent) {
       _isLoading = true;
       notifyListeners();
     }
+
     try {
+      print("🔄 [Dashboard] جاري جلب الطلبات للتوكن: ${token.substring(0, 10)}...");
       final ApiService api = ApiService();
+
       final activeFromServer = await api.getRestaurantOrders(status: 'active', token: token);
       final completedFromServer = await api.getRestaurantOrders(status: 'completed', token: token);
+
       List<Order> allOrders = [...activeFromServer, ...completedFromServer];
+      print("✅ [Dashboard] تم جلب ${allOrders.length} طلب من السيرفر بنجاح.");
 
       final ids = <int>{};
       allOrders.retainWhere((x) => ids.add(x.id));
@@ -830,16 +877,19 @@ class DashboardProvider with ChangeNotifier {
 
       _orders['active'] = finalActive;
       _orders['completed'] = finalCompleted;
+
       final ratings = await api.getDashboardRatings(token);
       _ratingsDashboard = ratings;
-    } catch (e) {
-      print("Error fetching dashboard: $e");
+
+    } catch (e, stackTrace) {
+      // 🔥 هذا هو السطر الأهم: سيخبرك بالضبط لماذا فشل الجلب
+      print("🔥🔥🔥 خطأ حرج في جلب بيانات لوحة التحكم: $e");
+      print("🔥🔥🔥 تفاصيل الخطأ (Stack Trace): $stackTrace");
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
-
   @override
   void dispose() {
     _timer?.cancel();
