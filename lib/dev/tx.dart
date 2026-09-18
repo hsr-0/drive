@@ -3126,37 +3126,59 @@ class _ModernOnlineToggleState extends State<ModernOnlineToggle> {
 
   Future<void> _handleToggle(bool value) async {
     setState(() => _isLoading = true);
-    final prefs = await SharedPreferences.getInstance();
-    final now = DateTime.now().millisecondsSinceEpoch;
 
-    // 1. تحديث محلي فوري (Optimistic UI)
-    await prefs.setBool('driver_is_online', value);
-    await prefs.setInt('last_toggle_time', now);
-    setState(() => _isOnline = value);
+    // 1. إرسال الطلب للسيرفر أولاً والانتظار (لا نغير أي شيء محلياً حتى نوافق)
+    final res = await ApiService.toggleDriverOnline(widget.token, value);
 
-    // 2. إرسال التحديث للسيرفر في الخلفية
-    await _updateServerStatus(value);
     setState(() => _isLoading = false);
 
-    // 3. إظهار رسالة تأكيد
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              Icon(value ? Icons.wifi : Icons.wifi_off, color: Colors.white, size: 20),
-              const SizedBox(width: 10),
-              Text(value ? 'أنت متاح الآن لاستقبال الطلبات' : 'تم إيقاف استقبال الطلبات مؤقتاً'),
-            ],
+    // 2. فحص النتيجة: هل وافق السيرفر؟
+    if (res['success'] == true) {
+      final prefs = await SharedPreferences.getInstance();
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      // ✅ الموافقة تمت: نحدث الذاكرة المحلية ولون الزر
+      await prefs.setBool('driver_is_online', value);
+      await prefs.setInt('last_toggle_time', now);
+      setState(() => _isOnline = value);
+
+      // إظهار رسالة النجاح
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(value ? Icons.wifi : Icons.wifi_off, color: Colors.white, size: 20),
+                const SizedBox(width: 10),
+                Expanded(child: Text(value ? 'أنت متاح الآن لاستقبال الطلبات' : 'تم إيقاف استقبال الطلبات مؤقتاً')),
+              ],
+            ),
+            backgroundColor: value ? Colors.green.shade700 : Colors.grey.shade700,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
-          backgroundColor: value ? Colors.green.shade700 : Colors.grey.shade700,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        ),
-      );
+        );
+      }
+    } else {
+      // ❌ الرفض: السيرفر رفض التغيير (الزر سيعود لحالته السابقة تلقائياً)
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline, color: Colors.white, size: 20),
+                const SizedBox(width: 10),
+                Expanded(child: Text('❌ فشل تغيير الحالة: ${res['message'] ?? 'تأكد من الإنترنت'}')),
+              ],
+            ),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
     }
   }
-
   Future<void> _updateServerStatus(bool status) async {
     try {
       await ApiService.toggleDriverOnline(widget.token, status);
@@ -3288,6 +3310,10 @@ class _ModernOnlineToggleState extends State<ModernOnlineToggle> {
 // شاشة الطلبات المتاحة (محسّنة)
 // =============================================================================
 // شاشة الطلبات المتاحة V3 (محسّنة + تشخيص مطبوع)
+
+// =============================================================================
+// شاشة الطلبات المتاحة V3 (مع إظهار ملاحظات الزبون بأسلوب عصري ملفت)
+// =============================================================================
 class DriverAvailableDeliveriesV3Screen extends StatefulWidget {
   final AuthResult authResult;
   final Function(Map<String, dynamic>) onDeliveryAccepted;
@@ -3383,7 +3409,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
             ),
             backgroundColor: Colors.green.shade700,
             behavior: SnackBarBehavior.floating,
-            // لرفعه قليلاً عن الأزرار السفلية
             margin: const EdgeInsets.only(bottom: 20, left: 20, right: 20),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
             duration: const Duration(seconds: 4),
@@ -3455,7 +3480,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     if (!isInitial && !isSilent) setState(() => _isLoading = true);
 
     try {
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
       final result = await ApiService.getAvailableDeliveriesOnly(widget.authResult.token);
 
       if (!mounted) return;
@@ -3597,6 +3621,10 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     final address = order['destination_address']?.toString() ?? 'العنوان';
     final deliveryFee = order['delivery_fee']?.toString() ?? '---';
 
+    // 🔥 استخراج الملاحظات للتحقق منها
+    final String customerNotes = (order['notes'] ?? order['items_description'] ?? '').toString().trim();
+    final bool hasNotes = customerNotes.isNotEmpty && customerNotes != 'null' && customerNotes != 'غير محدد';
+
     // 🔥 حساب وقت فك القفل بشكل حي ومباشر
     int remainingSeconds = _getRemainingLockSeconds(order['date_created']);
     bool isUnlocked = remainingSeconds == 0;
@@ -3663,6 +3691,36 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                 Expanded(child: Text(address, style: const TextStyle(fontSize: 14, color: Colors.black87), maxLines: 2)),
               ],
             ),
+
+            // 🔔 شارة تنبيهية فورية على الكارد إذا كانت هناك ملاحظة
+            if (hasNotes) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF8E1),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.amber.shade300),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.edit_note_rounded, size: 18, color: Colors.amber.shade900),
+                    const SizedBox(width: 6),
+                    Text(
+                      "يوجد ملاحظة خاصة من الزبون",
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.amber.shade900,
+                        fontFamily: 'Cairo',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
             const SizedBox(height: 16),
             Row(
               children: [
@@ -3726,6 +3784,10 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     final String orderId = order['id']?.toString() ?? '...';
     final String sourceType = order['source_type']?.toString() ?? 'restaurant';
 
+    // 🔥 استخراج الملاحظات بأمان
+    final String customerNotes = (order['notes'] ?? order['items_description'] ?? '').toString().trim();
+    final bool hasNotes = customerNotes.isNotEmpty && customerNotes != 'null' && customerNotes != 'غير محدد';
+
     List<dynamic> items = [];
     dynamic rawItems = order['line_items'] ?? order['items'];
     if (rawItems != null) {
@@ -3753,8 +3815,8 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
       builder: (ctx) {
         return DraggableScrollableSheet(
           expand: false,
-          initialChildSize: 0.6,
-          maxChildSize: 0.9,
+          initialChildSize: 0.65,
+          maxChildSize: 0.92,
           builder: (_, controller) => Container(
             padding: const EdgeInsets.all(24),
             child: ListView(
@@ -3774,7 +3836,65 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                     ),
                   ],
                 ),
-                const Divider(height: 30, color: Colors.black12),
+                const Divider(height: 25, color: Colors.black12),
+
+                // 🔔 بطاقة ملاحظات الزبون العصرية والبارزة
+                if (hasNotes) ...[
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF8E1),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.amber.shade400, width: 1.5),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.amber.withOpacity(0.12),
+                          blurRadius: 8,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: Colors.amber.shade700,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.edit_note_rounded, color: Colors.white, size: 18),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              "ملاحظات الزبون:",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                                color: Colors.amber.shade900,
+                                fontFamily: 'Cairo',
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          customerNotes,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                            height: 1.4,
+                            fontFamily: 'Cairo',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
 
                 if (items.isNotEmpty)
                   ...items.map((item) {
@@ -3894,7 +4014,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
         return;
       }
 
-      // 2. إظهار رسالة جاري المعالجة (بدون حذف الطلب من القائمة فوراً لتجنب الوميض)
+      // 2. إظهار رسالة جاري المعالجة
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('⏳ جاري معالجة الطلب مع السيرفر...'), backgroundColor: Colors.blue)
       );
@@ -3904,7 +4024,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
 
       // 4. التحقق من النتيجة
       if (res['success'] == true) {
-        // نجاح: حذف الطلب من القائمة وتحديث الرصيد
         setState(() {
           _ordersList.removeWhere((o) => o['id'].toString() == id);
           _newOrderIds.remove(id);
@@ -3921,7 +4040,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
           widget.onDeliveryAccepted(res['delivery_order']);
         }
       } else {
-        // 🔥 فشل: استرداد النقطة فوراً وعرض رسالة الخطأ الدقيقة من السيرفر
         BalanceManager.refund(_costInPoints);
 
         final errorMsg = res['message'] ?? 'فشل في قبول الطلب';
@@ -3934,12 +4052,11 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
           SnackBar(
             content: Text('❌ $errorMsg'),
             backgroundColor: Colors.red,
-            duration: const Duration(seconds: 4), // مدة أطول لقراءة الرسالة
+            duration: const Duration(seconds: 4),
           ),
         );
       }
     } catch (e) {
-      // استثناء غير متوقع (مثل انقطاع الإنترنت)
       BalanceManager.refund(_costInPoints);
       print("❌ [UI DEBUG] استثناء (Exception) أثناء القبول: $e");
 
@@ -3950,7 +4067,6 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
         ),
       );
     } finally {
-      // ضمان إعادة تفعيل الزر في جميع الحالات
       setState(() => _isProcessingOrder = false);
     }
   }
@@ -4083,7 +4199,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
     final normalizedName = restaurantName.trim().toLowerCase();
 
-    // البحث عن تطابق تام أولاً
     for (var rest in _restaurantsDirectory) {
       final restName = (rest['name']?.toString() ?? '').trim().toLowerCase();
       if (restName == normalizedName) {
@@ -4091,7 +4206,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       }
     }
 
-    // البحث عن تطابق جزئي (contains)
     for (var rest in _restaurantsDirectory) {
       final restName = (rest['name']?.toString() ?? '').trim().toLowerCase();
       if (restName.contains(normalizedName) || normalizedName.contains(restName)) {
@@ -4153,11 +4267,15 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   // ========================================================================
-  // 🔥 عرض تفاصيل الطلب
+  // 🔥 عرض تفاصيل الطلب مع الملاحظات
   // ========================================================================
   void _showOrderDetailsDialog() {
     final String orderId = _currentDelivery['id']?.toString() ?? '...';
     final String sourceType = _currentDelivery['source_type']?.toString() ?? 'restaurant';
+
+    // 🔥 قراءة ملاحظات الزبون بأمان
+    final String currentNotes = (_currentDelivery['notes'] ?? _currentDelivery['items_description'] ?? '').toString().trim();
+    final bool hasNotes = currentNotes.isNotEmpty && currentNotes != 'null' && currentNotes != 'غير محدد';
 
     List<dynamic> items = [];
     if (_currentDelivery['line_items'] != null && _currentDelivery['line_items'] is List) {
@@ -4180,8 +4298,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       builder: (ctx) {
         return DraggableScrollableSheet(
           expand: false,
-          initialChildSize: 0.6,
-          maxChildSize: 0.9,
+          initialChildSize: 0.65,
+          maxChildSize: 0.92,
           builder: (_, controller) => Container(
             padding: const EdgeInsets.all(20),
             child: ListView(
@@ -4207,7 +4325,66 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                     ),
                   ],
                 ),
-                const Divider(height: 30),
+                const Divider(height: 25),
+
+                // 🔔 بطاقة الملاحظات العصرية داخل نافذة التفاصيل
+                if (hasNotes) ...[
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF8E1),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.amber.shade400, width: 1.5),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.amber.withOpacity(0.12),
+                          blurRadius: 8,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: Colors.amber.shade700,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.edit_note_rounded, color: Colors.white, size: 18),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              "ملاحظات الزبون للطلب:",
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                                color: Colors.amber.shade900,
+                                fontFamily: 'Cairo',
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          currentNotes,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black87,
+                            height: 1.4,
+                            fontFamily: 'Cairo',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
                 if (items.isNotEmpty)
                   ...items.map((item) => Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8.0),
@@ -4385,8 +4562,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   Future<void> _updateStatus(String newStatus, {String? reason}) async {
     print("🔍 [DEBUG] ==========================================");
     print("🔍 [DEBUG] محاولة تحديث الحالة إلى: $newStatus");
-    print("🔍 [DEBUG] Order ID المرسل: ${_currentDelivery['id']} (النوع: ${_currentDelivery['id'].runtimeType})");
-    print("🔍 [DEBUG] Token المرسل: ${widget.authResult.token.isNotEmpty ? widget.authResult.token.substring(0, 20) + '...' : 'فارغ!'}");
+    print("🔍 [DEBUG] Order ID المرسل: ${_currentDelivery['id']}");
     print("🔍 [DEBUG] ==========================================");
 
     setState(() => _isLoading = true);
@@ -4397,9 +4573,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         newStatus,
       );
 
-      print("📡 [DEBUG] حالة الاستجابة (Status Code): ${response.statusCode}");
-      print("📦 [DEBUG] جسم الاستجابة الخام (Response Body): ${response.body}");
-
       final data = json.decode(response.body);
 
       if (mounted && response.statusCode == 200 && data['success'] == true) {
@@ -4407,20 +4580,15 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         if (newStatus == 'delivered' || newStatus == 'cancelled') {
           widget.onDeliveryFinished();
         } else {
-          // هنا قد يكون الخلل إذا كان data['delivery_order'] فارغاً
           if (data['delivery_order'] != null) {
             setState(() => _currentDelivery = data['delivery_order']);
-          } else {
-            print("⚠️ [DEBUG] تحذير: السيرفر لم يرجع delivery_order، سنستخدم البيانات المحلية.");
           }
           widget.onDataChanged();
         }
       } else {
-        print("❌ [DEBUG] فشل التحديث. رسالة السيرفر: ${data['message']}");
         throw Exception(data['message'] ?? 'فشل التحديث من السيرفر');
       }
     } catch (e) {
-      print("💥 [DEBUG] حدث استثناء (Exception): $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("خطأ: ${e.toString()}"), backgroundColor: Colors.red),
@@ -4430,6 +4598,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       if (mounted) setState(() => _isLoading = false);
     }
   }
+
   Future<void> _launchWazeWithCoords(double lat, double lng) async {
     final cleanLat = lat.toStringAsFixed(6);
     final cleanLng = lng.toStringAsFixed(6);
@@ -4443,9 +4612,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         'navigate': 'yes',
       },
     );
-
-    print("🗺️ [WAZE DEBUG] Opening URL: ${wazeUri.toString()}");
-    print("📍 [WAZE DEBUG] Coordinates: Lat=$cleanLat, Lng=$cleanLng");
 
     if (await canLaunchUrl(wazeUri)) {
       await launchUrl(wazeUri, mode: LaunchMode.externalApplication);
@@ -4489,8 +4655,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
   Future<void> _launchRestaurantMap() async {
     final pickup = _getPickupPoint();
-    print("🏪 [MAP DEBUG] Pickup Point: ${pickup?.toString() ?? 'NULL'}");
-
     if (pickup != null) {
       await _launchWazeWithCoords(pickup.latitude, pickup.longitude);
     } else {
@@ -4505,15 +4669,11 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
   Future<void> _launchCustomerMap() async {
     final destination = _getDestinationPoint();
-    print("🎯 [MAP DEBUG] Destination Point: ${destination?.toString() ?? 'NULL'}");
-    print("🎯 [MAP DEBUG] Raw Data - Lat: ${_currentDelivery['destination_lat']}, Lng: ${_currentDelivery['destination_lng']}");
-
     if (destination != null) {
       await _launchWazeWithCoords(destination.latitude, destination.longitude);
     } else {
       final destAddress = _currentDelivery['destination_address'] ?? '';
       if (destAddress.isNotEmpty && destAddress != 'غير معروف') {
-        print("⚠️ [MAP DEBUG] Using text address instead: $destAddress");
         await _launchWazeWithAddress(destAddress);
       } else {
         _showMapError("الزبون");
@@ -4523,9 +4683,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
   Future<void> _launchWaze() async {
     final target = _getTargetPoint();
-    print("🚗 [MAP DEBUG] Target Point: ${target?.toString() ?? 'NULL'}");
-    print("🚗 [MAP DEBUG] Current Status: ${_currentDelivery['order_status']}");
-
     if (target != null) {
       await _launchWazeWithCoords(target.latitude, target.longitude);
     } else {
@@ -4567,7 +4724,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  // 🆕 دالة الاتصال بالمطعم (من الدليل المحلي)
   Future<void> _callRestaurant() async {
     final restaurantName = _currentDelivery['pickup_location_name']?.toString() ?? '';
     final restaurantData = _findRestaurantInDirectory(restaurantName);
@@ -4586,31 +4742,15 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("❌ لا يمكن الاتصال بهذا الرقم"), backgroundColor: Colors.red),
+          const SnackBar(content: Text("❌ لا يمكن الاتصال بهذا الرقم"), backgroundColor: Colors.red),
         );
       }
     }
   }
 
-  Future<void> _makePhoneCall(String phoneNumber) async {
-    if (phoneNumber.isEmpty) return;
-    final Uri launchUri = Uri(scheme: 'tel', path: phoneNumber);
-    if (await canLaunchUrl(launchUri)) {
-      await launchUrl(launchUri);
-    }
-  }
-
-  // ========================================================================
-  // 🔥🔥🔥 التحديث الجذري هنا: استخدام LiveKit بدلاً من Agora 🔥🔥🔥
-  // ========================================================================
-// ========================================================================
-  // 🔥🔥🔥 دالة الاتصال الداخلي (LiveKit) 🔥🔥🔥
-  // ========================================================================
   Future<void> _startInternalCall() async {
-    // منع الضغط المتكرر
     if (_isLoading) return;
 
-    print("📞 [CALL] ========== بدء المكالمة الداخلية (LiveKit) ==========");
     setState(() => _isLoading = true);
 
     try {
@@ -4620,11 +4760,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
       final String sourceType = _currentDelivery['source_type']?.toString() ?? 'restaurant';
       final String customerPhone = _currentDelivery['end_customer_phone']?.toString() ?? _currentDelivery['customer_phone']?.toString() ?? '';
 
-      // ✅ تم توحيد الرابط ليكون دائماً سيرفر المكالمات
       final String callUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/start';
-      print("🌐 [CALL] جاري الاتصال بـ: $callUrl للطلب: $orderId");
 
-      // إضافة مهلة زمنية (Timeout) لمنع التعليق إلى الأبد
       final response = await http.post(
         Uri.parse(callUrl),
         headers: {
@@ -4644,21 +4781,17 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        print("📥 [CALL] رد السيرفر: $data");
 
         if (data['success'] == true || data['success'] == 'true') {
           final String roomName = data['room_name']?.toString() ?? '';
           final String livekitUrl = data['livekit_url']?.toString() ?? 'wss://call.beytei.com';
           final String token = data['token']?.toString() ?? '';
 
-          // 🔥🔥🔥 الفحص الصارم: منع الدخول للشاشة إذا كانت البيانات ناقصة (يمنع الشاشة البيضاء والـ Timeout)
           if (roomName.isEmpty || token.isEmpty) {
-            print("❌ [CALL ERROR] البيانات الواردة من السيرفر ناقصة (Room: '$roomName', Token: '$token')");
             _showError('فشل بدء المكالمة: بيانات المكالمة غير مكتملة من السيرفر.');
-            return; // إيقاف التنفيذ فوراً ومنع التنقل
+            return;
           }
 
-          // التنقل الآمن للشاشة (البيانات مضمونة الآن)
           if (mounted) {
             Navigator.push(
               context,
@@ -4679,11 +4812,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
           _showError(data['message'] ?? 'الزبون غير متصل أو لا يملك التطبيق');
         }
       } else {
-        print("❌ [CALL ERROR] خطأ في السيرفر: ${response.statusCode} - ${response.body}");
         _showError('خطأ في الخادم: ${response.statusCode}');
       }
     } catch (e) {
-      print("❌ [CALL EXCEPTION] $e");
       _showError('تأكد من اتصالك بالإنترنت أو حاول لاحقاً: $e');
     } finally {
       if (mounted) {
@@ -4692,7 +4823,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  // دالة مساعدة لعرض الأخطاء (تأكد من وجودها في نفس الـ State Class)
   void _showError(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -4763,9 +4893,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     return const SizedBox.shrink();
   }
 
-  // ========================================================================
-  // 🔥 دالة الأزرار الرئيسية - مع نظام الباركود والتحويل
-  // ========================================================================
   Widget _buildActionButton() {
     final status = _currentDelivery['order_status'];
     final buttonStyle = ElevatedButton.styleFrom(
@@ -4877,9 +5004,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  // ========================================================================
-  // 🆕 نافذة مسح الباركود بالكاميرا مباشرة
-  // ========================================================================
   void _showBarcodeScannerDialog(String expectedBarcode) {
     final String restaurantName = _currentDelivery['pickup_location_name']?.toString() ?? 'المطعم';
     MobileScannerController? cameraController;
@@ -5030,9 +5154,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  // ========================================================================
-  // 🆕 نافذة التحويل لمطعم آخر
-  // ========================================================================
   void _showTransferStoreDialog() {
     String? selectedStoreName;
 
@@ -5187,9 +5308,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     );
   }
 
-  // ========================================================================
-  // 🆕 نافذة إلغاء الطلب مع السبب
-  // ========================================================================
   void _showCancellationReasonDialog() {
     final TextEditingController reasonController = TextEditingController();
     bool isCancelling = false;
@@ -5264,9 +5382,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  // ========================================================================
-  // 🔥 نافذة رفع الفاتورة
-  // ========================================================================
   void _showReceiptUploadDialog() {
     File? imageFile;
     bool isUploading = false;
@@ -5401,7 +5516,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
   }
 
   // ========================================================================
-  // 🏗️ بناء الواجهة الرئيسية
+  // 🏗️ بناء الواجهة الرئيسية (مع إظهار ملاحظة الزبون مباشرة على الشاشة)
   // ========================================================================
   @override
   Widget build(BuildContext context) {
@@ -5426,6 +5541,10 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     final restaurantName = _currentDelivery['pickup_location_name']?.toString() ?? '';
     final restaurantData = _findRestaurantInDirectory(restaurantName);
     final bool hasRestaurantPhone = restaurantData?['phone']?.toString().isNotEmpty ?? false;
+
+    // 🔥 استخراج الملاحظة للشاشة الرئيسية
+    final String activeNotes = (_currentDelivery['notes'] ?? _currentDelivery['items_description'] ?? '').toString().trim();
+    final bool hasActiveNotes = activeNotes.isNotEmpty && activeNotes != 'null' && activeNotes != 'غير محدد';
 
     return Scaffold(
       backgroundColor: Colors.grey[100],
@@ -5504,6 +5623,75 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                 ],
               ),
             ),
+
+            // 🔔 بطاقة الملاحظات التنبيهية العصرية على الشاشة الرئيسية مباشرة
+            if (hasActiveNotes) ...[
+              const SizedBox(height: 15),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF8E1),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.amber.shade400, width: 2),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.amber.withOpacity(0.18),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.shade800,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          "ملاحظة خاصة من الزبون (يرجى الانتباه):",
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                            color: Colors.amber.shade900,
+                            fontFamily: 'Cairo',
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.amber.shade200),
+                      ),
+                      child: Text(
+                        activeNotes,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                          height: 1.4,
+                          fontFamily: 'Cairo',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
             const SizedBox(height: 20),
             Row(
               children: [
@@ -5534,7 +5722,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                 Expanded(
                   flex: 2,
                   child: ElevatedButton.icon(
-                    onPressed: _startInternalCall, // 🔥 هنا يتم استدعاء دالة LiveKit المحدثة
+                    onPressed: _startInternalCall,
                     icon: const Icon(Icons.headset_mic, size: 20),
                     label: const Text("مجاني", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.lightBlue, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 2),
@@ -6494,31 +6682,44 @@ class _DriverOnlineToggleState extends State<DriverOnlineToggle> {
 
   Future<void> _handleToggle(bool value) async {
     setState(() => _isLoading = true);
-    final prefs = await SharedPreferences.getInstance();
-    final now = DateTime.now().millisecondsSinceEpoch;
 
-    // 1. تحديث محلي فوري (Optimistic UI)
-    await prefs.setBool('driver_is_online', value);
-    await prefs.setInt('last_toggle_time', now);
-    setState(() => _isOnline = value);
-
-    // 2. إرسال التحديث للسيرفر في الخلفية
+    // 1. إرسال الطلب للسيرفر أولاً!
     final res = await ApiService.toggleDriverOnline(widget.token, value);
 
     setState(() => _isLoading = false);
 
-    // 3. إظهار رسالة تأكيد
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(value ? '✅ أنت متاح الآن لاستقبال الطلبات' : '⏸️ تم إيقاف استقبال الطلبات مؤقتاً'),
-          backgroundColor: value ? Colors.green : Colors.grey[700],
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    // 2. التحقق من السيرفر
+    if (res['success'] == true) {
+      final prefs = await SharedPreferences.getInstance();
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      // ✅ حفظ الحالة وتغيير الزر
+      await prefs.setBool('driver_is_online', value);
+      await prefs.setInt('last_toggle_time', now);
+      setState(() => _isOnline = value);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(value ? '✅ أنت متاح الآن لاستقبال الطلبات' : '⏸️ تم إيقاف استقبال الطلبات مؤقتاً'),
+            backgroundColor: value ? Colors.green : Colors.grey[700],
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } else {
+      // ❌ خطأ في السيرفر
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ فشل تغيير الحالة: ${res['message'] ?? 'تأكد من اتصالك بالإنترنت'}'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -7832,3 +8033,4 @@ class _DriverCallPageState extends State<DriverCallPage> {
     );
   }
 }
+

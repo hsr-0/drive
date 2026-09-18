@@ -1,4 +1,3 @@
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -16,7 +15,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:geolocator/geolocator.dart' as geolocator;
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:uuid/uuid.dart';
 
@@ -34,7 +33,65 @@ class AppConstants {
 }
 
 // =======================================================================
-// 🔷 القسم 2: الموديلات (Models)
+// 🔷 القسم 2: خدمة الصلاحيات (Permission Service) - 🔥 إصلاح رئيسي
+// =======================================================================
+/// 🔥 هذه الكلاس تحل مشكلة فشل تحديد الموقع بسبب نقص الصلاحيات
+class PermissionService {
+  static Future<bool> handleLocationPermission(BuildContext context) async {
+    // 1. فحص تفعيل خدمات الموقع (GPS)
+    bool serviceEnabled = await geolocator.Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('⚠️ خدمات الموقع معطلة. الرجاء تفعيل GPS من الإعدادات.'),
+              backgroundColor: Colors.orange,
+            )
+        );
+      }
+      return false;
+    }
+
+    // 2. فحص الصلاحيات الحالية
+    geolocator.LocationPermission permission = await geolocator.Geolocator.checkPermission();
+
+    if (permission == geolocator.LocationPermission.denied) {
+      // طلب الصلاحية لأول مرة
+      permission = await geolocator.Geolocator.requestPermission();
+      if (permission == geolocator.LocationPermission.denied) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('❌ تم رفض إذن الوصول للموقع.'),
+                backgroundColor: Colors.red,
+              )
+          );
+        }
+        return false;
+      }
+    }
+
+    // 3. فحص الرفض الدائم
+    if (permission == geolocator.LocationPermission.deniedForever) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('🔒 تم رفض إذن الموقع بشكل دائم. يرجى تفعيله من إعدادات التطبيق.'),
+              backgroundColor: Colors.red,
+              duration: Duration(seconds: 4),
+            )
+        );
+      }
+      return false;
+    }
+
+    // 4. النجاح!
+    return true;
+  }
+}
+
+// =======================================================================
+// 🔷 القسم 3: الموديلات (Models)
 // =======================================================================
 
 class Restaurant {
@@ -199,7 +256,7 @@ class Review {
 }
 
 // =======================================================================
-// 🔷 القسم 3: الخدمات (Services)
+// 🔷 القسم 4: الخدمات (Services)
 // =======================================================================
 
 class CacheService {
@@ -216,15 +273,19 @@ class CacheService {
 class AuthService {
   Future<String?> loginToServer(String baseUrl, String username, String password) async {
     try {
+      print("🔵 [Auth] محاولة الدخول إلى: $baseUrl");
       final response = await http.post(
           Uri.parse('$baseUrl/wp-json/jwt-auth/v1/token'),
           headers: {'Content-Type': 'application/json'},
           body: json.encode({'username': username, 'password': password})
       ).timeout(const Duration(seconds: 15));
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
+        print("✅ [Auth] نجح الدخول، تم استلام التوكن");
         return data['token'];
       }
+      print("❌ [Auth] فشل الدخول: ${response.statusCode} - ${response.body}");
       return null;
     } catch (e) {
       print("⚠️ [Auth] خطأ اتصال: $e");
@@ -236,7 +297,10 @@ class AuthService {
     if (token == null) return;
     try {
       String? fcmToken = await FirebaseMessaging.instance.getToken();
-      if (fcmToken == null) return;
+      if (fcmToken == null) {
+        print("⚠️ [FCM] لم يتم الحصول على FCM Token");
+        return;
+      }
       String platform = Platform.isAndroid ? 'android' : 'ios';
       Map<String, dynamic> bodyData = {'token': fcmToken, 'platform': platform};
       await http.post(
@@ -244,8 +308,9 @@ class AuthService {
         headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
         body: json.encode(bodyData),
       ).timeout(const Duration(seconds: 10));
+      print("✅ [FCM] تم تسجيل التوكن بنجاح");
     } catch (e) {
-      print("⚠️ [FCM] خطأ في التسجيل: $e");
+      print("⚠️ [FCM] خطأ في التسجيل (يمكن تجاهله): $e");
     }
   }
 
@@ -253,6 +318,8 @@ class AuthService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('jwt_token');
     await prefs.remove('user_role');
+    await prefs.remove('restaurant_lat');
+    await prefs.remove('restaurant_lng');
   }
 }
 
@@ -428,7 +495,6 @@ class ApiService {
     return response.statusCode == 201;
   }
 
-  // ✅ تم إصلاح خطأ تسمية المتغير هنا (تجنب تعارض اسم body)
   Future<bool> createMarketingOrder({required String token, required String title, required String bodyText, required String? imageUrl}) async {
     return _executeWithRetry(() async {
       List<Map<String, dynamic>> metaData = [
@@ -458,7 +524,7 @@ class ApiService {
 }
 
 // =======================================================================
-// 🔷 القسم 4: مزود المصادقة (Auth Provider)
+// 🔷 القسم 5: مزود المصادقة (Auth Provider)
 // =======================================================================
 class AuthProvider with ChangeNotifier {
   String? _token;
@@ -488,7 +554,18 @@ class AuthProvider with ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('jwt_token', _token!);
       await prefs.setString('user_role', role);
-      await authService.registerDeviceToken(_token);
+
+      // حفظ الموقع محلياً
+      if (restaurantLat != null && restaurantLng != null) {
+        await prefs.setString('restaurant_lat', restaurantLat);
+        await prefs.setString('restaurant_lng', restaurantLng);
+      }
+
+      // تسجيل FCM Token في الخلفية (لا ننتظر النتيجة)
+      authService.registerDeviceToken(_token).catchError((e) {
+        print("⚠️ [Auth] فشل تسجيل FCM في الخلفية: $e");
+      });
+
       _userRole = role;
       notifyListeners();
       return true;
@@ -515,7 +592,7 @@ class AuthProvider with ChangeNotifier {
 }
 
 // =======================================================================
-// 🔷 القسم 5: مزودي البيانات (Providers)
+// 🔷 القسم 6: مزودي البيانات (Providers)
 // =======================================================================
 
 class RestaurantSettingsProvider with ChangeNotifier {
@@ -772,7 +849,7 @@ class DashboardProvider with ChangeNotifier {
 }
 
 // =======================================================================
-// 🔷 القسم 6: الشاشات (Screens)
+// 🔷 القسم 7: الشاشات (Screens) - 🔥 إصلاح رئيسي لشاشة الدخول
 // =======================================================================
 
 class RestaurantLoginScreen extends StatefulWidget {
@@ -791,65 +868,132 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
   String _locationStatus = 'لم يتم تحديد موقع المطعم';
   final ApiService _apiService = ApiService();
 
+  /// 🔥 دالة تحديد الموقع المحسّنة باستخدام PermissionService
   Future<void> _getCurrentLocation() async {
     setState(() => _locationStatus = 'جاري تحديد الموقع...');
+
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        setState(() => _locationStatus = 'خدمة الموقع معطلة');
+      // 1. استخدام PermissionService للتحقق من الصلاحيات
+      final hasPermission = await PermissionService.handleLocationPermission(context);
+      if (!hasPermission) {
+        setState(() => _locationStatus = '❌ الصلاحية مرفوضة أو GPS معطل');
         return;
       }
 
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
+      // 2. الحصول على الموقع الحالي
+      geolocator.Position position = await geolocator.Geolocator.getCurrentPosition(
+        desiredAccuracy: geolocator.LocationAccuracy.high,
+      ).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          throw TimeoutException('انتهت مهلة تحديد الموقع');
+        },
+      );
 
-      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
-        setState(() => _locationStatus = 'الصلاحية مرفوضة');
-        return;
-      }
-
-      Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      // 3. تحديث الواجهة
       _latController.text = position.latitude.toString();
       _lngController.text = position.longitude.toString();
-      setState(() => _locationStatus = 'تم التحديد بنجاح');
+      setState(() {
+        _locationStatus = '✅ تم التحديد بنجاح (${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)})';
+      });
+
+      Fluttertoast.showToast(
+        msg: "تم تحديد الموقع بنجاح",
+        backgroundColor: Colors.green,
+        textColor: Colors.white,
+      );
+    } on TimeoutException {
+      setState(() => _locationStatus = '⌛ انتهت مهلة GPS. حاول مرة أخرى في مكان مكشوف.');
+      Fluttertoast.showToast(
+        msg: "انتهت مهلة تحديد الموقع",
+        backgroundColor: Colors.orange,
+      );
     } catch (e) {
-      setState(() => _locationStatus = 'خطأ في تحديد الموقع');
+      setState(() => _locationStatus = '❌ خطأ: ${e.toString().replaceAll("Exception: ", "")}');
+      print("⚠️ Location Error: $e");
     }
   }
 
+  /// 🔥 دالة تسجيل الدخول المحسّنة
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
+
+    // التحقق من الموقع
     if (_latController.text.isEmpty || _lngController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('الرجاء تحديد موقع المطعم أولاً.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ الرجاء تحديد موقع المطعم أولاً.'),
+            backgroundColor: Colors.orange,
+          )
+      );
       return;
     }
-    setState(() => _isLoading = true);
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    final success = await authProvider.login(
-        _usernameController.text, _passwordController.text, 'owner',
-        restaurantLat: _latController.text, restaurantLng: _lngController.text
-    );
 
-    if (success && mounted) {
-      try {
-        final token = authProvider.token!;
-        await _apiService.updateMyLocation(token, _latController.text, _lngController.text);
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const RestaurantDashboardScreen()));
-      } catch (e) {
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const RestaurantDashboardScreen()));
+    setState(() => _isLoading = true);
+
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+    try {
+      final success = await authProvider.login(
+          _usernameController.text,
+          _passwordController.text,
+          'owner',
+          restaurantLat: _latController.text,
+          restaurantLng: _lngController.text
+      ).timeout(const Duration(seconds: 20));
+
+      if (!mounted) return;
+
+      if (success) {
+        // محاولة حفظ الموقع على السيرفر (في الخلفية)
+        try {
+          final token = authProvider.token!;
+          _apiService.updateMyLocation(token, _latController.text, _lngController.text)
+              .catchError((e) => print("⚠️ Failed to save location to server: $e"));
+        } catch (e) {
+          print("⚠️ Location save error: $e");
+        }
+
+        // الانتقال للوحة التحكم
+        Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const RestaurantDashboardScreen())
+        );
+
+        Fluttertoast.showToast(
+          msg: "مرحباً بك! تم تسجيل الدخول بنجاح",
+          backgroundColor: Colors.green,
+          textColor: Colors.white,
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('❌ فشل تسجيل الدخول. تأكد من اسم المستخدم وكلمة المرور.'),
+              backgroundColor: Colors.red,
+            )
+        );
       }
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('فشل تسجيل الدخول.')));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('خطأ في الاتصال: ${e.toString()}'),
+              backgroundColor: Colors.red,
+            )
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
-    if (mounted) setState(() => _isLoading = false);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('دخول مدير المطعم')),
+      appBar: AppBar(
+        title: const Text('دخول مدير المطعم'),
+        backgroundColor: Colors.teal,
+        foregroundColor: Colors.white,
+      ),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
@@ -860,20 +1004,78 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
                 children: [
                   const Icon(Icons.store_mall_directory, size: 80, color: Colors.teal),
                   const SizedBox(height: 20),
-                  TextFormField(controller: _usernameController, decoration: const InputDecoration(labelText: 'اسم المستخدم'), validator: (v) => v!.isEmpty ? 'مطلوب' : null),
+                  const Text(
+                    'لوحة تحكم المطعم',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 30),
+                  TextFormField(
+                      controller: _usernameController,
+                      decoration: const InputDecoration(
+                        labelText: 'اسم المستخدم',
+                        prefixIcon: Icon(Icons.person),
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (v) => v!.isEmpty ? 'مطلوب' : null
+                  ),
                   const SizedBox(height: 20),
-                  TextFormField(controller: _passwordController, decoration: const InputDecoration(labelText: 'كلمة المرور'), obscureText: true, validator: (v) => v!.isEmpty ? 'مطلوب' : null),
+                  TextFormField(
+                      controller: _passwordController,
+                      decoration: const InputDecoration(
+                        labelText: 'كلمة المرور',
+                        prefixIcon: Icon(Icons.lock),
+                        border: OutlineInputBorder(),
+                      ),
+                      obscureText: true,
+                      validator: (v) => v!.isEmpty ? 'مطلوب' : null
+                  ),
                   const SizedBox(height: 40),
-                  OutlinedButton.icon(
-                      icon: const Icon(Icons.location_on), label: const Text('تحديد موقع المطعم الآن'),
-                      onPressed: _getCurrentLocation, style: OutlinedButton.styleFrom(minimumSize: const Size(double.infinity, 50))
+                  const Text(
+                    'تحديد موقع المطعم (إلزامي)',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                   ),
                   const SizedBox(height: 10),
-                  Text(_locationStatus, textAlign: TextAlign.center, style: TextStyle(color: _latController.text.isEmpty ? Colors.red : Colors.green, fontWeight: FontWeight.w600)),
+                  OutlinedButton.icon(
+                      icon: const Icon(Icons.location_on),
+                      label: const Text('تحديد موقع المطعم الآن'),
+                      onPressed: _getCurrentLocation,
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(double.infinity, 50),
+                        foregroundColor: Colors.teal,
+                      )
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: _latController.text.isEmpty
+                          ? Colors.grey.shade100
+                          : Colors.green.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                        _locationStatus,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            color: _latController.text.isEmpty ? Colors.red : Colors.green,
+                            fontWeight: FontWeight.w600
+                        )
+                    ),
+                  ),
                   const SizedBox(height: 40),
-                  _isLoading ? const CircularProgressIndicator() : ElevatedButton(
-                      onPressed: _login, style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
-                      child: const Text('تسجيل الدخول')
+                  _isLoading
+                      ? const CircularProgressIndicator()
+                      : ElevatedButton(
+                      onPressed: _login,
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size(double.infinity, 50),
+                        backgroundColor: Colors.teal,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text(
+                        'تسجيل الدخول',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      )
                   )
                 ]
             ),
@@ -1031,7 +1233,6 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
                         setState(() => isSending = true);
                         try {
                           final token = Provider.of<AuthProvider>(context, listen: false).token!;
-                          // ✅ تم تمرير bodyText بدلاً من body لتجنب التعارض
                           await _apiService.createMarketingOrder(token: token, title: titleController.text, bodyText: bodyController.text, imageUrl: null);
                           if (mounted) {
                             Navigator.pop(ctx);
@@ -1487,7 +1688,7 @@ class _WalletScreenState extends State<WalletScreen> {
 }
 
 // =======================================================================
-// 🔷 القسم 7: الويدجتات (Widgets)
+// 🔷 القسم 8: الويدجتات (Widgets)
 // =======================================================================
 
 class OrderCard extends StatefulWidget {
@@ -1615,12 +1816,20 @@ class ReviewCard extends StatelessWidget {
 }
 
 // =======================================================================
-// 🔷 القسم 8: نقطة الدخول (Main)
+// 🔷 القسم 9: نقطة الدخول (Main)
 // =======================================================================
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+
+  try {
+    await Firebase.initializeApp();
+    print("✅ Firebase initialized successfully");
+  } catch (e) {
+    print("⚠️ Firebase initialization failed: $e");
+    // Continue without Firebase if it fails
+  }
+
   runApp(const RestaurantManagerApp());
 }
 
@@ -1649,7 +1858,7 @@ class RestaurantManagerApp extends StatelessWidget {
         theme: ThemeData(
             primarySwatch: Colors.teal,
             scaffoldBackgroundColor: const Color(0xFFF5F5F5),
-            fontFamily: 'Tajawal', // تأكد من إضافة هذا الخط في pubspec.yaml
+            fontFamily: 'Tajawal',
             appBarTheme: const AppBarTheme(
                 backgroundColor: Colors.white, elevation: 0.5,
                 iconTheme: IconThemeData(color: Colors.black),
