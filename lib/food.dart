@@ -1162,26 +1162,36 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
     super.initState();
     _tabController = TabController(length: 5, vsync: this);
 
-    // 🔥 استخدام addPostFrameCallback لضمان أن الـ Context والـ Providers جاهزة تماماً
+    // 🔥 الحل الجذري: استخدام addPostFrameCallback لضمان جاهزية الـ Context والـ Providers
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+
       final token = Provider.of<AuthProvider>(context, listen: false).token;
+
+      // 🔍 رسالة تشخيصية: راقب الـ Console للتأكد من أن التوكن ليس فارغاً
+      print("🔍 [Dashboard Init] حالة التوكن: ${token != null ? 'موجود ✅' : 'فارغ ❌'}");
+
       if (token != null) {
         // 1. جلب إعدادات المطعم (الحالة، أوقات العمل، الموقع)
         Provider.of<RestaurantSettingsProvider>(context, listen: false).fetchSettings(token);
 
-        // 🔥 2. الحل الجذري: جلب المنتجات صراحةً عند فتح الداشبورد (هذا ما كان ينقص الملف المنفصل)
+        // 🔥 2. الحل السحري: جلب المنتجات صراحةً عند فتح الداشبورد (هذا ما كان ينقص الملف المنفصل)
         Provider.of<RestaurantProductsProvider>(context, listen: false).fetchProducts(token);
 
         // 3. بدء التحديث التلقائي للطلبات والتقييمات
         Provider.of<DashboardProvider>(context, listen: false).startAutoRefresh(token);
+      } else {
+        print("⚠️ [Dashboard Init] تحذير: تم فتح الداشبورد والتوكن فارغ! يرجى إعادة تسجيل الدخول.");
       }
     });
   }
 
   @override
   void dispose() {
-    // إيقاف التحديث التلقائي عند الخروج من الشاشة لتوفير موارد الجهاز
-    Provider.of<DashboardProvider>(context, listen: false).stopAutoRefresh();
+    // إيقاف التحديث التلقائي عند الخروج من الشاشة لتوفير موارد الجهاز والذاكرة
+    if (mounted) {
+      Provider.of<DashboardProvider>(context, listen: false).stopAutoRefresh();
+    }
     _tabController.dispose();
     super.dispose();
   }
@@ -1189,9 +1199,10 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
   @override
   Widget build(BuildContext context) {
     final auth = Provider.of<AuthProvider>(context, listen: false);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('لوحة تحكم المطعم'),
+        title: const Text('لوحة تحكم المطعم', style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
             icon: const Icon(Icons.account_balance_wallet, color: Colors.green),
@@ -1199,7 +1210,7 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
             tooltip: 'المحفظة والأرباح',
           ),
           IconButton(
-            icon: const Icon(Icons.logout),
+            icon: const Icon(Icons.logout, color: Colors.red),
             onPressed: () => auth.logout(context),
             tooltip: 'تسجيل الخروج',
           ),
@@ -1207,6 +1218,9 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
         bottom: TabBar(
           controller: _tabController,
           isScrollable: true,
+          labelColor: Colors.teal,
+          unselectedLabelColor: Colors.grey,
+          indicatorColor: Colors.teal,
           tabs: const [
             Tab(icon: Icon(Icons.list_alt), text: 'الطلبات'),
             Tab(icon: Icon(Icons.history), text: 'المكتملة'),
@@ -1256,54 +1270,60 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
-        builder: (context, setState) {
+        builder: (sheetContext, setState) {
           if (isLoadingBalance) {
-            final token = Provider.of<AuthProvider>(context, listen: false).token!;
-            _apiService.getWalletData(token).then((data) {
-              if (mounted) {
-                setState(() {
-                  currentBalance = double.tryParse(data['wallet_balance'].toString()) ?? 0.0;
-                  isLoadingBalance = false;
-                });
-              }
-            }).catchError((e) {
-              if (mounted) setState(() => isLoadingBalance = false);
-            });
+            final token = Provider.of<AuthProvider>(sheetContext, listen: false).token;
+            if (token != null) {
+              _apiService.getWalletData(token).then((data) {
+                if (mounted) {
+                  setState(() {
+                    currentBalance = double.tryParse(data['wallet_balance'].toString()) ?? 0.0;
+                    isLoadingBalance = false;
+                  });
+                }
+              }).catchError((e) {
+                if (mounted) setState(() => isLoadingBalance = false);
+              });
+            } else {
+              setState(() => isLoadingBalance = false);
+            }
           }
 
           return Container(
-            height: MediaQuery.of(context).size.height * 0.85,
+            height: MediaQuery.of(sheetContext).size.height * 0.85,
             decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(30))
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
             ),
             padding: EdgeInsets.only(
-                left: 20,
-                right: 20,
-                top: 20,
-                bottom: MediaQuery.of(context).viewInsets.bottom + 20
+              left: 20,
+              right: 20,
+              top: 20,
+              bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 20,
             ),
             child: SingleChildScrollView(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Center(
-                      child: Container(
-                          width: 50,
-                          height: 5,
-                          decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(10))
-                      )
+                    child: Container(
+                      width: 50,
+                      height: 5,
+                      decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(10)),
+                    ),
                   ),
                   const SizedBox(height: 20),
                   const Text("إرسال إشعار ترويجي", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   const Divider(height: 30),
+
+                  // بطاقة الرصيد والتكلفة
                   Container(
                     padding: const EdgeInsets.all(15),
                     decoration: BoxDecoration(
                       color: currentBalance >= AppConstants.AD_COST ? Colors.green.shade50 : Colors.red.shade50,
                       borderRadius: BorderRadius.circular(15),
                       border: Border.all(
-                          color: currentBalance >= AppConstants.AD_COST ? Colors.green.shade200 : Colors.red.shade200
+                        color: currentBalance >= AppConstants.AD_COST ? Colors.green.shade200 : Colors.red.shade200,
                       ),
                     ),
                     child: Row(
@@ -1311,22 +1331,24 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
                       children: [
                         Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                           const Text("تكلفة الخدمة", style: TextStyle(fontSize: 12)),
-                          Text("${NumberFormat('#,###').format(AppConstants.AD_COST)} د.ع", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          Text("${NumberFormat('#,###').format(AppConstants.AD_COST)} د.ع",
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                         ]),
                         Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
                           const Text("رصيدك الحالي", style: TextStyle(fontSize: 12)),
                           Text(
-                              "${NumberFormat('#,###').format(currentBalance)} د.ع",
-                              style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                  color: currentBalance >= AppConstants.AD_COST ? Colors.green : Colors.red
-                              )
+                            "${NumberFormat('#,###').format(currentBalance)} د.ع",
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: currentBalance >= AppConstants.AD_COST ? Colors.green : Colors.red,
+                            ),
                           ),
                         ]),
                       ],
                     ),
                   ),
+
                   if (currentBalance < AppConstants.AD_COST) ...[
                     const SizedBox(height: 10),
                     const Row(
@@ -1337,61 +1359,66 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
                       ],
                     ),
                   ],
+
                   const SizedBox(height: 20),
                   TextField(
-                      controller: titleController,
-                      decoration: const InputDecoration(labelText: "عنوان العرض", border: OutlineInputBorder())
+                    controller: titleController,
+                    decoration: const InputDecoration(labelText: "عنوان العرض", border: OutlineInputBorder()),
                   ),
                   const SizedBox(height: 15),
                   TextField(
-                      controller: bodyController,
-                      maxLines: 4,
-                      decoration: const InputDecoration(labelText: "تفاصيل العرض", border: OutlineInputBorder())
+                    controller: bodyController,
+                    maxLines: 4,
+                    decoration: const InputDecoration(labelText: "تفاصيل العرض", border: OutlineInputBorder()),
                   ),
                   const SizedBox(height: 30),
+
                   SizedBox(
                     width: double.infinity,
                     height: 55,
                     child: ElevatedButton(
                       onPressed: (isSending || currentBalance < AppConstants.AD_COST) ? null : () async {
                         if (titleController.text.isEmpty || bodyController.text.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text("الرجاء إدخال العنوان والتفاصيل"), backgroundColor: Colors.orange)
+                          ScaffoldMessenger.of(sheetContext).showSnackBar(
+                            const SnackBar(content: Text("الرجاء إدخال العنوان والتفاصيل"), backgroundColor: Colors.orange),
                           );
                           return;
                         }
+
                         setState(() => isSending = true);
                         try {
-                          final token = Provider.of<AuthProvider>(context, listen: false).token!;
+                          final token = Provider.of<AuthProvider>(sheetContext, listen: false).token!;
                           await _apiService.createMarketingOrder(
-                              token: token,
-                              title: titleController.text,
-                              bodyText: bodyController.text,
-                              imageUrl: null
+                            token: token,
+                            title: titleController.text,
+                            bodyText: bodyController.text,
+                            imageUrl: null,
                           );
+
                           if (mounted) {
-                            Navigator.pop(ctx);
+                            Navigator.pop(ctx); // إغلاق النافذة المنبثقة
                             ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text("تم إرسال طلب العرض بنجاح!"), backgroundColor: Colors.green)
+                              const SnackBar(content: Text("تم إرسال طلب العرض بنجاح!"), backgroundColor: Colors.green),
                             );
                           }
                         } catch (e) {
                           if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text("خطأ: ${e.toString().replaceAll('Exception:', '')}"), backgroundColor: Colors.red)
+                            ScaffoldMessenger.of(sheetContext).showSnackBar(
+                              SnackBar(content: Text("خطأ: ${e.toString().replaceAll('Exception:', '')}"), backgroundColor: Colors.red),
                             );
                             setState(() => isSending = false);
                           }
                         }
                       },
                       style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.purple.shade700,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
+                        backgroundColor: Colors.purple.shade700,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
                       ),
                       child: isSending
                           ? const CircularProgressIndicator(color: Colors.white)
-                          : Text("دفع ${NumberFormat('#,###').format(AppConstants.AD_COST)} د.ع وإرسال", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                          : Text("دفع ${NumberFormat('#,###').format(AppConstants.AD_COST)} د.ع وإرسال",
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     ),
                   ),
                 ],
