@@ -217,18 +217,29 @@ class Order {
   final String? driverPhone;
 
   Order({
-    required this.id, required this.status, required this.dateCreated, required this.total,
-    required this.customerName, required this.address, required this.phone,
-    required this.lineItems, this.driverName, this.driverPhone,
+    required this.id,
+    required this.status,
+    required this.dateCreated,
+    required this.total,
+    required this.customerName,
+    required this.address,
+    required this.phone,
+    required this.lineItems,
+    this.driverName,
+    this.driverPhone,
   });
 
   factory Order.fromJson(Map<String, dynamic> json) {
-    // 1. معالجة الاسم بشكل آمن
+    // 1. معالجة الاسم بشكل آمن وتصحيح الخطأ القديم
     final billing = json['billing'] as Map<String, dynamic>?;
     final firstName = billing?['first_name'] ?? '';
     final lastName = billing?['last_name'] ?? '';
-    final safeCustomerName = json['customerName'] ?? '$firstName $lastName'.trim();
-    if (safeCustomerName.isEmpty) 'زبون';
+
+    // استخراج الاسم الخام من السيرفر أو من بيانات الـ billing
+    final rawCustomerName = json['customerName'] ?? '$firstName $lastName'.trim();
+
+    // ✅ التصحيح الجذري: إذا كان الاسم فارغاً تماماً، نضع كلمة "زبون" كقيمة افتراضية
+    final finalCustomerName = rawCustomerName.toString().isEmpty ? 'زبون' : rawCustomerName.toString();
 
     // 2. معالجة العناصر (Line Items) بشكل آمن لمنع الانهيار إذا كانت null
     List<LineItem> safeLineItems = [];
@@ -239,24 +250,24 @@ class Order {
           .toList();
     }
 
+    // 3. بناء الكائن وإرجاعه
     return Order(
       id: json['id'] ?? 0,
       status: json['status'] ?? 'pending',
       // منع الانهيار إذا كان التاريخ مفقوداً
       dateCreated: json['date_created'] != null
-          ? DateTime.tryParse(json['date_created']) ?? DateTime.now()
+          ? DateTime.tryParse(json['date_created'].toString()) ?? DateTime.now()
           : DateTime.now(),
       total: json['total']?.toString() ?? '0',
-      customerName: safeCustomerName,
+      customerName: finalCustomerName, // ✅ استخدام الاسم المعالج نهائياً
       address: json['address'] ?? json['shipping']?['address_1'] ?? billing?['address_1'] ?? 'عنوان غير محدد',
       phone: json['phone'] ?? billing?['phone'] ?? 'لا يوجد رقم',
       lineItems: safeLineItems,
-      driverName: json['driver_name'],
-      driverPhone: json['driver_phone'],
+      driverName: json['driver_name']?.toString(),
+      driverPhone: json['driver_phone']?.toString(),
     );
   }
 }
-
 class LineItem {
   final String name;
   final int quantity;
@@ -1150,18 +1161,26 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
   void initState() {
     super.initState();
     _tabController = TabController(length: 5, vsync: this);
+
+    // 🔥 استخدام addPostFrameCallback لضمان أن الـ Context والـ Providers جاهزة تماماً
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final token = Provider.of<AuthProvider>(context, listen: false).token;
       if (token != null) {
-        Provider.of<RestaurantSettingsProvider>(context, listen: false).fetchSettings(token).then((_) {
-          if (mounted) Provider.of<DashboardProvider>(context, listen: false).startAutoRefresh(token);
-        });
+        // 1. جلب إعدادات المطعم (الحالة، أوقات العمل، الموقع)
+        Provider.of<RestaurantSettingsProvider>(context, listen: false).fetchSettings(token);
+
+        // 🔥 2. الحل الجذري: جلب المنتجات صراحةً عند فتح الداشبورد (هذا ما كان ينقص الملف المنفصل)
+        Provider.of<RestaurantProductsProvider>(context, listen: false).fetchProducts(token);
+
+        // 3. بدء التحديث التلقائي للطلبات والتقييمات
+        Provider.of<DashboardProvider>(context, listen: false).startAutoRefresh(token);
       }
     });
   }
 
   @override
   void dispose() {
+    // إيقاف التحديث التلقائي عند الخروج من الشاشة لتوفير موارد الجهاز
     Provider.of<DashboardProvider>(context, listen: false).stopAutoRefresh();
     _tabController.dispose();
     super.dispose();
@@ -1174,11 +1193,20 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
       appBar: AppBar(
         title: const Text('لوحة تحكم المطعم'),
         actions: [
-          IconButton(icon: const Icon(Icons.account_balance_wallet, color: Colors.green), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen()))),
-          IconButton(icon: const Icon(Icons.logout), onPressed: () => auth.logout(context)),
+          IconButton(
+            icon: const Icon(Icons.account_balance_wallet, color: Colors.green),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen())),
+            tooltip: 'المحفظة والأرباح',
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () => auth.logout(context),
+            tooltip: 'تسجيل الخروج',
+          ),
         ],
         bottom: TabBar(
-          controller: _tabController, isScrollable: true,
+          controller: _tabController,
+          isScrollable: true,
           tabs: const [
             Tab(icon: Icon(Icons.list_alt), text: 'الطلبات'),
             Tab(icon: Icon(Icons.history), text: 'المكتملة'),
@@ -1199,12 +1227,16 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
         ],
       ),
       floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.end,
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           FloatingActionButton.extended(
-            heroTag: "btn_offer", onPressed: () => _showModernOfferDialog(context),
-            icon: const Icon(Icons.campaign_rounded), label: const Text('إرسال عرض'),
-            backgroundColor: Colors.purple.shade700, foregroundColor: Colors.white,
+            heroTag: "btn_offer",
+            onPressed: () => _showModernOfferDialog(context),
+            icon: const Icon(Icons.campaign_rounded),
+            label: const Text('إرسال عرض'),
+            backgroundColor: Colors.purple.shade700,
+            foregroundColor: Colors.white,
           ),
           const SizedBox(height: 12),
         ],
@@ -1220,7 +1252,9 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
     bool isLoadingBalance = true;
 
     showModalBottomSheet(
-      context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setState) {
           if (isLoadingBalance) {
@@ -1232,18 +1266,34 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
                   isLoadingBalance = false;
                 });
               }
+            }).catchError((e) {
+              if (mounted) setState(() => isLoadingBalance = false);
             });
           }
 
           return Container(
             height: MediaQuery.of(context).size.height * 0.85,
-            decoration: const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.vertical(top: Radius.circular(30))),
-            padding: EdgeInsets.only(left: 20, right: 20, top: 20, bottom: MediaQuery.of(context).viewInsets.bottom + 20),
+            decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(30))
+            ),
+            padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 20
+            ),
             child: SingleChildScrollView(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Center(child: Container(width: 50, height: 5, decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(10)))),
+                  Center(
+                      child: Container(
+                          width: 50,
+                          height: 5,
+                          decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(10))
+                      )
+                  ),
                   const SizedBox(height: 20),
                   const Text("إرسال إشعار ترويجي", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   const Divider(height: 30),
@@ -1252,6 +1302,9 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
                     decoration: BoxDecoration(
                       color: currentBalance >= AppConstants.AD_COST ? Colors.green.shade50 : Colors.red.shade50,
                       borderRadius: BorderRadius.circular(15),
+                      border: Border.all(
+                          color: currentBalance >= AppConstants.AD_COST ? Colors.green.shade200 : Colors.red.shade200
+                      ),
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1262,41 +1315,83 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
                         ]),
                         Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
                           const Text("رصيدك الحالي", style: TextStyle(fontSize: 12)),
-                          Text("${NumberFormat('#,###').format(currentBalance)} د.ع", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          Text(
+                              "${NumberFormat('#,###').format(currentBalance)} د.ع",
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                  color: currentBalance >= AppConstants.AD_COST ? Colors.green : Colors.red
+                              )
+                          ),
                         ]),
                       ],
                     ),
                   ),
+                  if (currentBalance < AppConstants.AD_COST) ...[
+                    const SizedBox(height: 10),
+                    const Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded, color: Colors.red, size: 16),
+                        SizedBox(width: 5),
+                        Text("رصيدك غير كافي. يرجى الشحن أولاً.", style: TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ],
                   const SizedBox(height: 20),
-                  TextField(controller: titleController, decoration: const InputDecoration(labelText: "عنوان العرض", border: OutlineInputBorder())),
+                  TextField(
+                      controller: titleController,
+                      decoration: const InputDecoration(labelText: "عنوان العرض", border: OutlineInputBorder())
+                  ),
                   const SizedBox(height: 15),
-                  TextField(controller: bodyController, maxLines: 4, decoration: const InputDecoration(labelText: "تفاصيل العرض", border: OutlineInputBorder())),
+                  TextField(
+                      controller: bodyController,
+                      maxLines: 4,
+                      decoration: const InputDecoration(labelText: "تفاصيل العرض", border: OutlineInputBorder())
+                  ),
                   const SizedBox(height: 30),
                   SizedBox(
-                    width: double.infinity, height: 55,
+                    width: double.infinity,
+                    height: 55,
                     child: ElevatedButton(
                       onPressed: (isSending || currentBalance < AppConstants.AD_COST) ? null : () async {
                         if (titleController.text.isEmpty || bodyController.text.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("الرجاء إدخال العنوان والتفاصيل")));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text("الرجاء إدخال العنوان والتفاصيل"), backgroundColor: Colors.orange)
+                          );
                           return;
                         }
                         setState(() => isSending = true);
                         try {
                           final token = Provider.of<AuthProvider>(context, listen: false).token!;
-                          await _apiService.createMarketingOrder(token: token, title: titleController.text, bodyText: bodyController.text, imageUrl: null);
+                          await _apiService.createMarketingOrder(
+                              token: token,
+                              title: titleController.text,
+                              bodyText: bodyController.text,
+                              imageUrl: null
+                          );
                           if (mounted) {
                             Navigator.pop(ctx);
-                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("تم الإرسال بنجاح!"), backgroundColor: Colors.green));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text("تم إرسال طلب العرض بنجاح!"), backgroundColor: Colors.green)
+                            );
                           }
                         } catch (e) {
                           if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("خطأ: ${e.toString()}"), backgroundColor: Colors.red));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text("خطأ: ${e.toString().replaceAll('Exception:', '')}"), backgroundColor: Colors.red)
+                            );
                             setState(() => isSending = false);
                           }
                         }
                       },
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.purple.shade700, foregroundColor: Colors.white),
-                      child: isSending ? const CircularProgressIndicator(color: Colors.white) : Text("دفع ${NumberFormat('#,###').format(AppConstants.AD_COST)} د.ع وإرسال"),
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.purple.shade700,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))
+                      ),
+                      child: isSending
+                          ? const CircularProgressIndicator(color: Colors.white)
+                          : Text("دفع ${NumberFormat('#,###').format(AppConstants.AD_COST)} د.ع وإرسال", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     ),
                   ),
                 ],
@@ -1308,7 +1403,6 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
     );
   }
 }
-
 class ProductManagementTab extends StatefulWidget {
   const ProductManagementTab({super.key});
   @override
@@ -1890,9 +1984,36 @@ class RestaurantManagerApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
+        // 1. مزود المصادقة الأساسي
         ChangeNotifierProvider(create: (_) => AuthProvider()),
-        ChangeNotifierProvider(create: (_) => RestaurantSettingsProvider()),
-        ChangeNotifierProvider(create: (_) => RestaurantProductsProvider()),
+
+        // 🔥 2. ربط إعدادات المطعم بحالة تسجيل الدخول (ليتم جلبها تلقائياً)
+        ChangeNotifierProxyProvider<AuthProvider, RestaurantSettingsProvider>(
+          create: (_) => RestaurantSettingsProvider(),
+          update: (_, auth, settings) {
+            if (settings != null && auth.isLoggedIn && auth.token != null) {
+              settings.fetchSettings(auth.token);
+            } else if (settings != null && !auth.isLoggedIn) {
+              settings.clearData();
+            }
+            return settings!;
+          },
+        ),
+
+        // 🔥 3. ربط المنتجات بحالة تسجيل الدخول (هذا هو السبب الرئيسي لعدم ظهور المنتجات)
+        ChangeNotifierProxyProvider<AuthProvider, RestaurantProductsProvider>(
+          create: (_) => RestaurantProductsProvider(),
+          update: (_, auth, products) {
+            if (products != null && auth.isLoggedIn && auth.token != null) {
+              products.fetchProducts(auth.token);
+            } else if (products != null && !auth.isLoggedIn) {
+              products.clearData();
+            }
+            return products!;
+          },
+        ),
+
+        // 🔥 4. ربط لوحة التحكم والطلبات بحالة تسجيل الدخول
         ChangeNotifierProxyProvider<AuthProvider, DashboardProvider>(
           create: (_) => DashboardProvider(),
           update: (_, auth, dashboard) {
