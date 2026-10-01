@@ -229,6 +229,9 @@ class Order {
     this.driverPhone,
   });
 
+  // 🔥 الإضافة الجديدة: لتسهيل حساب الأرباح والمبالغ في الإحصائيات
+  double get totalAmount => double.tryParse(total) ?? 0.0;
+
   factory Order.fromJson(Map<String, dynamic> json) {
     // 1. معالجة الاسم بشكل آمن وتصحيح الخطأ القديم
     final billing = json['billing'] as Map<String, dynamic>?;
@@ -254,7 +257,7 @@ class Order {
     return Order(
       id: json['id'] ?? 0,
       status: json['status'] ?? 'pending',
-      // منع الانهيار إذا كان التاريخ مفقوداً
+      // منع الانهيار إذا كان التاريخ مفقوداً أو بصيغة خاطئة
       dateCreated: json['date_created'] != null
           ? DateTime.tryParse(json['date_created'].toString()) ?? DateTime.now()
           : DateTime.now(),
@@ -266,6 +269,12 @@ class Order {
       driverName: json['driver_name']?.toString(),
       driverPhone: json['driver_phone']?.toString(),
     );
+  }
+
+  // 🔥 إضافة دالة toString للمساعدة في تتبع الأخطاء (Debugging) في الـ Console
+  @override
+  String toString() {
+    return 'Order(id: $id, status: $status, total: $total, customerName: $customerName, itemsCount: ${lineItems.length})';
   }
 }
 class LineItem {
@@ -811,7 +820,155 @@ class RestaurantProductsProvider with ChangeNotifier {
     notifyListeners();
   }
 }
+class UnifiedOrdersScreen extends StatefulWidget {
+  const UnifiedOrdersScreen({super.key});
 
+  @override
+  State<UnifiedOrdersScreen> createState() => _UnifiedOrdersScreenState();
+}
+
+class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
+  @override
+  Widget build(BuildContext context) {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+    return Consumer<DashboardProvider>(
+      builder: (context, dashboard, child) {
+        if (dashboard.isLoading && (dashboard.orders['active'] == null && dashboard.orders['completed'] == null)) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final activeOrders = dashboard.orders['active'] ?? [];
+        final completedOrders = dashboard.orders['completed'] ?? [];
+        final allOrders = [...activeOrders, ...completedOrders];
+
+        // 🔥 حساب الإحصائيات
+        final now = DateTime.now();
+        final todayStart = DateTime(now.year, now.month, now.day);
+        final monthStart = DateTime(now.year, now.month, 1);
+
+        int todayCount = 0, monthCount = 0, totalCount = completedOrders.length;
+        double todayEarnings = 0.0, monthEarnings = 0.0, totalEarnings = 0.0;
+
+        for (var order in completedOrders) {
+          double amount = order.totalAmount;
+          totalEarnings += amount;
+
+          if (order.dateCreated.isAfter(todayStart) || order.dateCreated.isAtSameMomentAs(todayStart)) {
+            todayCount++;
+            todayEarnings += amount;
+          }
+          if (order.dateCreated.isAfter(monthStart) || order.dateCreated.isAtSameMomentAs(monthStart)) {
+            monthCount++;
+            monthEarnings += amount;
+          }
+        }
+
+        return RefreshIndicator(
+          onRefresh: () => dashboard.fetchDashboardData(authProvider.token),
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              // 🔥 قسم الإحصائيات
+              const Text("📊 إحصائيات الأداء", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal)),
+              const SizedBox(height: 12),
+              GridView.count(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                crossAxisCount: 2,
+                childAspectRatio: 1.5,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+                children: [
+                  _buildStatCard("طلبات اليوم", todayCount.toString(), Icons.today, Colors.blue),
+                  _buildStatCard("أرباح اليوم", "${todayEarnings.toStringAsFixed(0)} د.ع", Icons.attach_money, Colors.green),
+                  _buildStatCard("طلبات الشهر", monthCount.toString(), Icons.calendar_month, Colors.orange),
+                  _buildStatCard("أرباح الشهر", "${monthEarnings.toStringAsFixed(0)} د.ع", Icons.trending_up, Colors.purple),
+                  _buildStatCard("إجمالي الطلبات", totalCount.toString(), Icons.receipt_long, Colors.grey.shade700),
+                  _buildStatCard("إجمالي الأرباح", "${totalEarnings.toStringAsFixed(0)} د.ع", Icons.account_balance_wallet, Colors.teal),
+                ],
+              ),
+
+              const SizedBox(height: 24),
+
+              // 🔥 قسم الطلبات النشطة
+              if (activeOrders.isNotEmpty) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text("🔔 الطلبات الجارية", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: Colors.red.shade100, borderRadius: BorderRadius.circular(12)), child: Text(activeOrders.length.toString(), style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold))),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ...activeOrders.map((order) => OrderCard(
+                    order: order,
+                    onStatusChanged: () => dashboard.fetchDashboardData(authProvider.token),
+                    isCompleted: false,
+                    pickupCode: dashboard.pickupCodes[order.id]
+                )),
+                const SizedBox(height: 24),
+              ],
+
+              // 🔥 قسم الطلبات المكتملة
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text("✅ الطلبات المكتملة مؤخراً", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (completedOrders.isEmpty)
+                const Center(child: Padding(padding: EdgeInsets.all(20), child: Text("لا توجد طلبات مكتملة بعد", style: TextStyle(color: Colors.grey))))
+              else
+                ...completedOrders.take(10).map((order) => OrderCard( // عرض آخر 10 طلبات مكتملة لتوفير الأداء
+                  order: order,
+                  onStatusChanged: () => dashboard.fetchDashboardData(authProvider.token),
+                  isCompleted: true,
+                )),
+
+              if (completedOrders.length > 10)
+                TextButton(
+                    onPressed: () {
+                      // يمكن إضافة شاشة منفصلة لعرض كل الطلبات المكتملة لاحقاً إذا لزم الأمر
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("يتم عرض آخر 10 طلبات مكتملة في هذه الشاشة")));
+                    },
+                    child: const Text("عرض المزيد من الطلبات المكتملة...")
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildStatCard(String title, String value, IconData icon, Color color) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: color, size: 24),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(title, style: const TextStyle(fontSize: 13, color: Colors.grey, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+          ],
+        ),
+      ),
+    );
+  }
+}
 class DashboardProvider with ChangeNotifier {
   Map<String, List<Order>> _orders = {};
   RestaurantRatingsDashboard? _ratingsDashboard;
@@ -835,6 +992,9 @@ class DashboardProvider with ChangeNotifier {
   void startAutoRefresh(String token) {
     _timer?.cancel();
     fetchDashboardData(token, silent: true);
+    _timer = Timer.periodic(const Duration(seconds: 15), (_) {
+      fetchDashboardData(token, silent: true);
+    });
   }
 
   void stopAutoRefresh() {
@@ -848,10 +1008,7 @@ class DashboardProvider with ChangeNotifier {
   }
 
   Future<void> fetchDashboardData(String? token, {bool silent = false}) async {
-    if (token == null) {
-      print("⚠️ [Dashboard] التوكن فارغ، لا يمكن جلب البيانات!");
-      return;
-    }
+    if (token == null) return;
 
     if (!silent) {
       _isLoading = true;
@@ -859,15 +1016,15 @@ class DashboardProvider with ChangeNotifier {
     }
 
     try {
-      print("🔄 [Dashboard] جاري جلب الطلبات للتوكن: ${token.substring(0, 10)}...");
       final ApiService api = ApiService();
 
+      // 🔥 جلب الطلبات النشطة والمكتملة بشكل منفصل لضمان الدقة
       final activeFromServer = await api.getRestaurantOrders(status: 'active', token: token);
       final completedFromServer = await api.getRestaurantOrders(status: 'completed', token: token);
 
       List<Order> allOrders = [...activeFromServer, ...completedFromServer];
-      print("✅ [Dashboard] تم جلب ${allOrders.length} طلب من السيرفر بنجاح.");
 
+      // إزالة التكرار بناءً على معرف الطلب
       final ids = <int>{};
       allOrders.retainWhere((x) => ids.add(x.id));
 
@@ -883,6 +1040,7 @@ class DashboardProvider with ChangeNotifier {
         }
       }
 
+      // ترتيب الطلبات من الأحدث للأقدم
       finalCompleted.sort((a, b) => b.dateCreated.compareTo(a.dateCreated));
       finalActive.sort((a, b) => b.dateCreated.compareTo(a.dateCreated));
 
@@ -893,14 +1051,14 @@ class DashboardProvider with ChangeNotifier {
       _ratingsDashboard = ratings;
 
     } catch (e, stackTrace) {
-      // 🔥 هذا هو السطر الأهم: سيخبرك بالضبط لماذا فشل الجلب
-      print("🔥🔥🔥 خطأ حرج في جلب بيانات لوحة التحكم: $e");
-      print("🔥🔥🔥 تفاصيل الخطأ (Stack Trace): $stackTrace");
+      print("🔥🔥🔥 خطأ في جلب بيانات لوحة التحكم: $e");
+      print("🔥🔥🔥 تفاصيل الخطأ: $stackTrace");
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
+
   @override
   void dispose() {
     _timer?.cancel();
@@ -908,7 +1066,6 @@ class DashboardProvider with ChangeNotifier {
     super.dispose();
   }
 }
-
 // =======================================================================
 // 🔷 القسم 7: الشاشات (Screens) - 🔥 إصلاح رئيسي لشاشة الدخول
 // =======================================================================
@@ -1149,6 +1306,7 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
 
 class RestaurantDashboardScreen extends StatefulWidget {
   const RestaurantDashboardScreen({super.key});
+
   @override
   State<RestaurantDashboardScreen> createState() => _RestaurantDashboardScreenState();
 }
@@ -1160,7 +1318,8 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    // 🔥 تم تقليل عدد التبويبات إلى 4 (حذفنا تبويب المكتملة المنفصل)
+    _tabController = TabController(length: 4, vsync: this);
 
     // 🔥 الحل الجذري: استخدام addPostFrameCallback لضمان جاهزية الـ Context والـ Providers
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1175,7 +1334,7 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
         // 1. جلب إعدادات المطعم (الحالة، أوقات العمل، الموقع)
         Provider.of<RestaurantSettingsProvider>(context, listen: false).fetchSettings(token);
 
-        // 🔥 2. الحل السحري: جلب المنتجات صراحةً عند فتح الداشبورد (هذا ما كان ينقص الملف المنفصل)
+        // 🔥 2. الحل السحري: جلب المنتجات صراحةً عند فتح الداشبورد
         Provider.of<RestaurantProductsProvider>(context, listen: false).fetchProducts(token);
 
         // 3. بدء التحديث التلقائي للطلبات والتقييمات
@@ -1222,8 +1381,7 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
           unselectedLabelColor: Colors.grey,
           indicatorColor: Colors.teal,
           tabs: const [
-            Tab(icon: Icon(Icons.list_alt), text: 'الطلبات'),
-            Tab(icon: Icon(Icons.history), text: 'المكتملة'),
+            Tab(icon: Icon(Icons.dashboard), text: 'الطلبات والإحصائيات'), // تم دمجه
             Tab(icon: Icon(Icons.fastfood_outlined), text: 'المنتجات'),
             Tab(icon: Icon(Icons.star_rate), text: 'التقييمات'),
             Tab(icon: Icon(Icons.settings), text: 'الإعدادات'),
@@ -1233,17 +1391,32 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
       body: TabBarView(
         controller: _tabController,
         children: [
-          OrdersListScreen(status: 'active'),
-          OrdersListScreen(status: 'completed'),
+          const UnifiedOrdersScreen(), // 🔥 الشاشة الجديدة الموحدة (تحتوي على الإحصائيات + النشطة + المكتملة)
           const ProductManagementTab(),
           const RatingsDashboardScreen(),
           const RestaurantSettingsScreen(),
         ],
       ),
+      // 🔥 ترتيب الأزرار العائمة: إضافة وجبة فوق إرسال عرض
       floatingActionButton: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
+          // 1. زر إضافة وجبة (في الأعلى)
+          FloatingActionButton.extended(
+            heroTag: "btn_add_meal",
+            onPressed: () {
+              // الانتقال لتبويب المنتجات لفتح شاشة الإضافة
+              _tabController.animateTo(1);
+              // ملاحظة: يمكنك أيضاً استدعاء دالة فتح نافذة الإضافة مباشرة هنا إذا أردت
+            },
+            icon: const Icon(Icons.add_circle_outline),
+            label: const Text('إضافة وجبة'),
+            backgroundColor: Colors.teal.shade700,
+            foregroundColor: Colors.white,
+          ),
+          const SizedBox(height: 12),
+          // 2. زر إرسال عرض (في الأسفل)
           FloatingActionButton.extended(
             heroTag: "btn_offer",
             onPressed: () => _showModernOfferDialog(context),
@@ -1252,7 +1425,6 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
             backgroundColor: Colors.purple.shade700,
             foregroundColor: Colors.white,
           ),
-          const SizedBox(height: 12),
         ],
       ),
     );
