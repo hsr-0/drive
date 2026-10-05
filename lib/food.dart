@@ -380,7 +380,121 @@ class AuthService {
     await prefs.remove('restaurant_lng');
   }
 }
+class ManageSectionsScreen extends StatefulWidget {
+  final int restaurantId;
+  const ManageSectionsScreen({super.key, required this.restaurantId});
 
+  @override
+  State<ManageSectionsScreen> createState() => _ManageSectionsScreenState();
+}
+
+class _ManageSectionsScreenState extends State<ManageSectionsScreen> {
+  final ApiService _apiService = ApiService();
+  List<Map<String, dynamic>> _sections = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSections();
+  }
+
+  Future<void> _loadSections() async {
+    setState(() => _isLoading = true);
+    final token = Provider.of<AuthProvider>(context, listen: false).token;
+    if (token != null) {
+      try {
+        final data = await _apiService.getRestaurantSections(token, widget.restaurantId);
+        setState(() {
+          _sections = data;
+          _isLoading = false;
+        });
+      } catch (e) {
+        setState(() => _isLoading = false);
+        Fluttertoast.showToast(msg: "فشل جلب الأقسام");
+      }
+    }
+  }
+
+  void _showSectionDialog({Map<String, dynamic>? section}) {
+    final nameController = TextEditingController(text: section?['name'] ?? '');
+    final iconController = TextEditingController(text: section?['icon'] ?? '🍽️');
+    final orderController = TextEditingController(text: (section?['display_order'] ?? 99).toString());
+    final isEditing = section != null;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(isEditing ? 'تعديل القسم' : 'إضافة قسم جديد'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameController, decoration: const InputDecoration(labelText: 'اسم القسم')),
+            const SizedBox(height: 10),
+            TextField(controller: iconController, decoration: const InputDecoration(labelText: 'الأيقونة (Emoji)'), textAlign: TextAlign.center),
+            const SizedBox(height: 10),
+            TextField(controller: orderController, decoration: const InputDecoration(labelText: 'ترتيب الظهور (رقم)'), keyboardType: TextInputType.number),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final token = Provider.of<AuthProvider>(context, listen: false).token;
+              if (token != null) {
+                final success = isEditing
+                    ? await _apiService.updateSection(token, section!['id'], nameController.text, iconController.text, int.parse(orderController.text))
+                    : await _apiService.createSection(token, nameController.text, iconController.text, int.parse(orderController.text));
+
+                if (success) {
+                  Fluttertoast.showToast(msg: "تم الحفظ بنجاح");
+                  _loadSections();
+                } else {
+                  Fluttertoast.showToast(msg: "حدث خطأ أثناء الحفظ");
+                }
+              }
+            },
+            child: Text(isEditing ? 'حفظ التعديلات' : 'إضافة'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('إدارة الأقسام')),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _showSectionDialog(),
+        child: const Icon(Icons.add),
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _sections.isEmpty
+          ? const Center(child: Text('لا توجد أقسام مضافة بعد'))
+          : ListView.builder(
+        itemCount: _sections.length,
+        itemBuilder: (context, index) {
+          final sec = _sections[index];
+          return Card(
+            margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            child: ListTile(
+              leading: Text(sec['icon'] ?? '🍽️', style: const TextStyle(fontSize: 24)),
+              title: Text(sec['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text('ترتيب الظهور: ${sec['display_order']} | عدد المنتجات: ${sec['count']}'),
+              trailing: IconButton(
+                icon: const Icon(Icons.edit, color: Colors.blue),
+                onPressed: () => _showSectionDialog(section: sec),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
 class ApiService {
   final String _authString = 'Basic ${base64Encode(utf8.encode('${AppConstants.CONSUMER_KEY}:${AppConstants.CONSUMER_SECRET}'))}';
   final CacheService _cacheService = CacheService();
@@ -449,7 +563,18 @@ class ApiService {
     });
   }
 
-  Future<bool> createProduct(String token, String name, String price, String? salePrice, String? description, File? imageFile) async {
+  // =======================================================================
+  // 🔥 التصحيح هنا: إضافة المعامل السابع (int categoryId)
+  // =======================================================================
+  Future<bool> createProduct(
+      String token,
+      String name,
+      String price,
+      String? salePrice,
+      String? description,
+      File? imageFile,
+      int categoryId // 🔥 المعامل السابع المفقود
+      ) async {
     return _executeWithRetry(() async {
       String? imageBase64;
       if (imageFile != null) {
@@ -460,15 +585,19 @@ class ApiService {
         Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/create-product'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
         body: json.encode({
-          'name': name, 'regular_price': price, 'sale_price': salePrice,
-          'description': description, 'image_base64': imageBase64,
+          'name': name,
+          'regular_price': price,
+          'sale_price': salePrice,
+          'description': description,
+          'image_base64': imageBase64,
+          'category_id': categoryId, // 🔥 إرسال معرف القسم للسيرفر
         }),
       );
       return response.statusCode == 201 || response.statusCode == 200;
     });
   }
 
-  Future<bool> updateMyProduct(String token, int productId, String name, String price, String salePrice, File? newImageFile) async {
+  Future<bool> updateMyProduct(String token, int productId, String name, String price, String salePrice, File? newImageFile, int categoryId) async {
     return _executeWithRetry(() async {
       String? imageBase64;
       if (newImageFile != null) {
@@ -479,8 +608,12 @@ class ApiService {
         Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/update-product'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
         body: json.encode({
-          'product_id': productId, 'name': name, 'regular_price': price,
-          'sale_price': salePrice, 'image_base64': imageBase64,
+          'product_id': productId,
+          'name': name,
+          'regular_price': price,
+          'sale_price': salePrice,
+          'image_base64': imageBase64,
+          'category_id': categoryId,
         }),
       );
       return response.statusCode == 200;
@@ -577,6 +710,50 @@ class ApiService {
 
       final responseBody = json.decode(response.body);
       throw Exception(responseBody['message'] ?? 'فشل إنشاء طلب الإعلان');
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getRestaurantSections(String token, int restaurantId) async {
+    return _executeWithRetry(() async {
+      final response = await http.get(
+        Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/restaurant/$restaurantId/subcategories'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (response.statusCode == 200) {
+        return List<Map<String, dynamic>>.from(json.decode(response.body));
+      }
+      throw Exception('فشل جلب الأقسام');
+    });
+  }
+
+  Future<bool> createSection(String token, String name, String icon, int displayOrder) async {
+    return _executeWithRetry(() async {
+      final response = await http.post(
+        Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/create-subcategory'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: json.encode({
+          'name': name,
+          'icon': icon,
+          'display_order': displayOrder,
+        }),
+      );
+      return response.statusCode == 201 || response.statusCode == 200;
+    });
+  }
+
+  Future<bool> updateSection(String token, int termId, String name, String icon, int displayOrder) async {
+    return _executeWithRetry(() async {
+      final response = await http.post(
+        Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/update-subcategory'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: json.encode({
+          'term_id': termId,
+          'name': name,
+          'icon': icon,
+          'display_order': displayOrder,
+        }),
+      );
+      return response.statusCode == 200;
     });
   }
 }
@@ -773,12 +950,29 @@ class RestaurantProductsProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> updateProduct(String token, int productId, String name, String price, String salePrice, File? newImage) async {
+  Future<bool> updateProduct(
+      String token,
+      int productId,
+      String name,
+      String price,
+      String salePrice,
+      File? newImage,
+      int categoryId, // 🔥 المعامل السابع: معرف القسم
+      ) async {
     _isLoading = true;
     notifyListeners();
     bool success = false;
     try {
-      success = await _apiService.updateMyProduct(token, productId, name, price, salePrice, newImage);
+      // 🔥 تمرير جميع المعاملات السبعة لدالة الـ API
+      success = await _apiService.updateMyProduct(
+        token,
+        productId,
+        name,
+        price,
+        salePrice,
+        newImage,
+        categoryId,
+      );
       if (success) await fetchProducts(token);
     } catch (e) {
       _errorMessage = "فشل تحديث المنتج: ${e.toString()}";
@@ -789,13 +983,33 @@ class RestaurantProductsProvider with ChangeNotifier {
     return success;
   }
 
-  Future<bool> addProduct(String token, String name, String price, String? salePrice, String description, File? image) async {
+  Future<bool> addProduct(
+      String token,
+      String name,
+      String price,
+      String? salePrice,
+      String description,
+      File? image,
+      int categoryId, // 🔥 المعامل السابع: معرف القسم
+      ) async {
     _isLoading = true;
     notifyListeners();
     bool success = false;
     try {
-      success = await _apiService.createProduct(token, name, price, salePrice, description, image);
-      if (success) await fetchProducts(token);
+      // 🔥 تمرير معرف القسم (categoryId) إلى دالة الـ API ليتم حفظه في السيرفر
+      success = await _apiService.createProduct(
+        token,
+        name,
+        price,
+        salePrice,
+        description,
+        image,
+        categoryId,
+      );
+
+      if (success) {
+        await fetchProducts(token);
+      }
     } catch (e) {
       _errorMessage = "فشل إضافة المنتج: ${e.toString()}";
       success = false;
@@ -805,11 +1019,20 @@ class RestaurantProductsProvider with ChangeNotifier {
     return success;
   }
 
-  void search(String query) {
-    if (query.isEmpty) {
+  // 🔥 تحديث دالة البحث لتدعم الفلترة حسب القسم أيضاً
+  void search(String query, {int? categoryId}) {
+    if (query.isEmpty && categoryId == null) {
       _filteredProducts = _allProducts;
     } else {
-      _filteredProducts = _allProducts.where((item) => item.name.toLowerCase().contains(query.toLowerCase())).toList();
+      _filteredProducts = _allProducts.where((item) {
+        // التحقق من مطابقة اسم المنتج للبحث
+        bool matchesSearch = query.isEmpty || item.name.toLowerCase().contains(query.toLowerCase());
+        // التحقق من مطابقة المنتج للقسم المختار
+        bool matchesCategory = categoryId == null || item.categoryId == categoryId;
+
+        // يجب أن يتحقق الشرطان معاً
+        return matchesSearch && matchesCategory;
+      }).toList();
     }
     notifyListeners();
   }
@@ -1611,20 +1834,111 @@ class ProductManagementTab extends StatefulWidget {
 class _ProductManagementTabState extends State<ProductManagementTab> {
   final TextEditingController _searchController = TextEditingController();
   bool _showOffersOnly = false;
+  final ApiService _apiService = ApiService();
+
+  List<Map<String, dynamic>> _sections = [];
+  int _restaurantId = 0;
+  bool _isLoadingSections = true;
 
   @override
-  void dispose() { _searchController.dispose(); super.dispose(); }
+  void initState() {
+    super.initState();
+    _loadInitialData();
+  }
+
+  /// 🔥 دالة جلب معرف المطعم والأقسام التابعة له
+  Future<void> _loadInitialData() async {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    if (authProvider.token == null) return;
+
+    try {
+      // 1. جلب معرف المطعم من الإعدادات
+      final settings = await _apiService.getRestaurantSettings(authProvider.token!);
+      if (settings['restaurant_info'] != null && settings['restaurant_info']['id'] != null) {
+        _restaurantId = int.tryParse(settings['restaurant_info']['id'].toString()) ?? 0;
+      }
+
+      // 2. جلب الأقسام إذا تم العثور على معرف المطعم
+      if (_restaurantId > 0) {
+        final sections = await _apiService.getRestaurantSections(authProvider.token!, _restaurantId);
+        if (mounted) {
+          setState(() {
+            _sections = sections;
+            _isLoadingSections = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoadingSections = false);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoadingSections = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   void _navigateToEditScreen(FoodItem product) async {
     final productProvider = Provider.of<RestaurantProductsProvider>(context, listen: false);
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    await Navigator.push(context, MaterialPageRoute(builder: (_) => EditProductScreen(product: product, productProvider: productProvider, authProvider: authProvider)));
+
+    // ملاحظة: يجب تحديث EditProductScreen لاستقبال قائمة الأقسام (sections: _sections)
+    final result = await Navigator.push(context, MaterialPageRoute(builder: (_) => EditProductScreen(
+      product: product,
+      productProvider: productProvider,
+      authProvider: authProvider,
+      sections: _sections,
+    )));
+
+    if (result == true) {
+      _loadInitialData(); // تحديث الأقسام إذا تم التعديل
+      productProvider.fetchProducts(authProvider.token);
+    }
   }
 
   void _navigateToAddScreen() async {
     final productProvider = Provider.of<RestaurantProductsProvider>(context, listen: false);
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    await Navigator.push(context, MaterialPageRoute(builder: (_) => AddProductScreen(productProvider: productProvider, authProvider: authProvider)));
+
+    // ملاحظة: يجب تحديث AddProductScreen لاستقبال قائمة الأقسام (sections: _sections)
+    final result = await Navigator.push(context, MaterialPageRoute(builder: (_) => AddProductScreen(
+      productProvider: productProvider,
+      authProvider: authProvider,
+      sections: _sections,
+    )));
+
+    if (result == true) {
+      _loadInitialData();
+      productProvider.fetchProducts(authProvider.token);
+    }
+  }
+
+  /// 🔥 فتح شاشة إدارة الأقسام
+  void _openManageSections() async {
+    if (_restaurantId == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('لم يتم تحميل معرف المطعم بعد. تأكد من إعدادات السيرفر.'), backgroundColor: Colors.red)
+      );
+      return;
+    }
+
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => ManageSectionsScreen(restaurantId: _restaurantId)));
+
+    // إعادة تحميل الأقسام والمنتجات عند العودة من شاشة الإدارة
+    _loadInitialData();
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final productProvider = Provider.of<RestaurantProductsProvider>(context, listen: false);
+    productProvider.fetchProducts(auth.token);
+  }
+
+  /// دالة مساعدة لجلب اسم القسم من معرفه
+  String _getSectionName(int categoryId) {
+    if (categoryId == 0) return 'بدون قسم';
+    final section = _sections.firstWhere((s) => s['id'] == categoryId, orElse: () => {});
+    return section.isNotEmpty ? (section['name'] ?? 'بدون قسم') : 'بدون قسم';
   }
 
   @override
@@ -1636,16 +1950,32 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
         if (_showOffersOnly) displayedProducts = provider.products.where((p) => p.salePrice != null && p.salePrice! > 0).toList();
 
         return Scaffold(
-          floatingActionButton: FloatingActionButton.extended(onPressed: _navigateToAddScreen, label: const Text("إضافة وجبة"), icon: const Icon(Icons.fastfood)),
+          floatingActionButton: FloatingActionButton.extended(
+              onPressed: _navigateToAddScreen,
+              label: const Text("إضافة وجبة"),
+              icon: const Icon(Icons.fastfood)
+          ),
           appBar: AppBar(
             automaticallyImplyLeading: false,
             title: TextField(
-                controller: _searchController, decoration: const InputDecoration(hintText: 'ابحث عن منتج...', prefixIcon: Icon(Icons.search), border: InputBorder.none),
+                controller: _searchController,
+                decoration: const InputDecoration(hintText: 'ابحث عن منتج...', prefixIcon: Icon(Icons.search), border: InputBorder.none),
                 onChanged: (query) => provider.search(query)
             ),
+            actions: [
+              // 🔥 أيقونة إدارة الأقسام
+              IconButton(
+                icon: const Icon(Icons.category_outlined, color: Colors.teal),
+                tooltip: 'إدارة الأقسام',
+                onPressed: _openManageSections,
+              ),
+            ],
           ),
           body: RefreshIndicator(
-            onRefresh: () => provider.fetchProducts(auth.token),
+            onRefresh: () async {
+              await provider.fetchProducts(auth.token);
+              _loadInitialData();
+            },
             child: displayedProducts.isEmpty
                 ? const Center(child: Text("لا توجد منتجات"))
                 : ListView.builder(
@@ -1654,12 +1984,33 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
               itemBuilder: (context, index) {
                 final product = displayedProducts[index];
                 final bool isOffer = product.salePrice != null && product.salePrice! > 0;
+                final String sectionName = _getSectionName(product.categoryId);
+
                 return Card(
                   margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   child: ListTile(
                     leading: ClipRRect(borderRadius: BorderRadius.circular(8), child: CachedNetworkImage(imageUrl: product.imageUrl, width: 60, height: 60, fit: BoxFit.cover)),
                     title: Text(product.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text(isOffer ? "سعر العرض: ${product.salePrice} د.ع" : "السعر: ${product.price} د.ع"),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(isOffer ? "سعر العرض: ${product.salePrice} د.ع" : "السعر: ${product.price} د.ع"),
+                        const SizedBox(height: 4),
+                        // 🔥 عرض اسم القسم كـ Badge
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                              color: Colors.teal.shade50,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: Colors.teal.shade200)
+                          ),
+                          child: Text(
+                            sectionName,
+                            style: const TextStyle(fontSize: 11, color: Colors.teal, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    ),
                     trailing: IconButton(icon: const Icon(Icons.edit_outlined, color: Colors.blue), onPressed: () => _navigateToEditScreen(product)),
                   ),
                 );
@@ -1671,12 +2022,20 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
     );
   }
 }
-
 class EditProductScreen extends StatefulWidget {
   final FoodItem product;
   final RestaurantProductsProvider productProvider;
   final AuthProvider authProvider;
-  const EditProductScreen({super.key, required this.product, required this.productProvider, required this.authProvider});
+  final List<Map<String, dynamic>> sections; // 🔥 قائمة الأقسام المستلمة
+
+  const EditProductScreen({
+    super.key,
+    required this.product,
+    required this.productProvider,
+    required this.authProvider,
+    required this.sections, // 🔥 مطلوب هنا
+  });
+
   @override
   State<EditProductScreen> createState() => _EditProductScreenState();
 }
@@ -1688,17 +2047,25 @@ class _EditProductScreenState extends State<EditProductScreen> {
   bool _isLoading = false;
   final ImagePicker _picker = ImagePicker();
 
+  // 🔥 متغير لتخزين القسم المختار حالياً
+  int? _selectedCategoryId;
+
   @override
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.product.name);
     _priceController = TextEditingController(text: widget.product.price.toStringAsFixed(0));
     _salePriceController = TextEditingController(text: widget.product.salePrice?.toStringAsFixed(0) ?? '');
+
+    // 🔥 تعيين القسم الحالي للمنتج كقيمة افتراضية
+    _selectedCategoryId = widget.product.categoryId;
   }
 
   @override
   void dispose() {
-    _nameController.dispose(); _priceController.dispose(); _salePriceController.dispose();
+    _nameController.dispose();
+    _priceController.dispose();
+    _salePriceController.dispose();
     super.dispose();
   }
 
@@ -1709,10 +2076,28 @@ class _EditProductScreenState extends State<EditProductScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+
+    //  التحقق من اختيار قسم (اختياري لكن موصى به)
+    if (_selectedCategoryId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ يرجى اختيار قسم للمنتج'), backgroundColor: Colors.orange),
+      );
+      return;
+    }
+
     setState(() => _isLoading = true);
+
+    // 🔥 تمرير معرف القسم الجديد (أو الحالي) إلى دالة التحديث
     final success = await widget.productProvider.updateProduct(
-        widget.authProvider.token!, widget.product.id, _nameController.text, _priceController.text, _salePriceController.text, _selectedImage
+        widget.authProvider.token!,
+        widget.product.id,
+        _nameController.text,
+        _priceController.text,
+        _salePriceController.text,
+        _selectedImage,
+        _selectedCategoryId! // 🔥 المعامل السابع: معرف القسم
     );
+
     if (mounted) {
       setState(() => _isLoading = false);
       if (success) Navigator.pop(context, true);
@@ -1740,6 +2125,30 @@ class _EditProductScreenState extends State<EditProductScreen> {
               TextFormField(controller: _nameController, decoration: const InputDecoration(labelText: 'اسم المنتج'), validator: (v) => v!.isEmpty ? 'مطلوب' : null),
               TextFormField(controller: _priceController, decoration: const InputDecoration(labelText: 'السعر العادي'), keyboardType: TextInputType.number),
               TextFormField(controller: _salePriceController, decoration: const InputDecoration(labelText: 'سعر الخصم (اختياري)'), keyboardType: TextInputType.number),
+
+              // 🔥 القائمة المنسدلة لاختيار القسم
+              const SizedBox(height: 20),
+              widget.sections.isEmpty
+                  ? const Center(child: Padding(padding: EdgeInsets.all(10), child: Text('⚠️ لا توجد أقسام متاحة. يرجى إضافة أقسام أولاً.')))
+                  : DropdownButtonFormField<int>(
+                value: _selectedCategoryId,
+                decoration: const InputDecoration(
+                  labelText: 'القسم التابع له',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.category),
+                ),
+                items: widget.sections.map((sec) {
+                  return DropdownMenuItem<int>(
+                    value: sec['id'],
+                    child: Text('${sec['icon'] ?? '🍽️'} ${sec['name']}'),
+                  );
+                }).toList(),
+                onChanged: (val) {
+                  setState(() => _selectedCategoryId = val);
+                },
+                validator: (v) => v == null ? 'يرجى اختيار قسم' : null,
+              ),
+
               const SizedBox(height: 30),
               ElevatedButton(onPressed: _isLoading ? null : _submit, child: _isLoading ? const CircularProgressIndicator() : const Text('حفظ التعديلات')),
             ]
@@ -1748,44 +2157,85 @@ class _EditProductScreenState extends State<EditProductScreen> {
     );
   }
 }
-
 class AddProductScreen extends StatefulWidget {
   final RestaurantProductsProvider productProvider;
   final AuthProvider authProvider;
-  const AddProductScreen({super.key, required this.productProvider, required this.authProvider});
+  final List<Map<String, dynamic>> sections; // ✅ قائمة الأقسام المستلمة
+
+  const AddProductScreen({
+    super.key,
+    required this.productProvider,
+    required this.authProvider,
+    required this.sections, // ✅ مطلوب هنا
+  });
+
   @override
   State<AddProductScreen> createState() => _AddProductScreenState();
 }
 
 class _AddProductScreenState extends State<AddProductScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController(), _priceController = TextEditingController(), _salePriceController = TextEditingController(), _descController = TextEditingController();
+  final _nameController = TextEditingController();
+  final _priceController = TextEditingController();
+  final _salePriceController = TextEditingController();
+  final _descController = TextEditingController();
   File? _selectedImage;
   bool _isLoading = false;
   final ImagePicker _picker = ImagePicker();
 
+  int? _selectedCategoryId; // ✅ متغير لتخزين القسم المختار
+
   @override
   void dispose() {
-    _nameController.dispose(); _priceController.dispose(); _salePriceController.dispose(); _descController.dispose();
+    _nameController.dispose();
+    _priceController.dispose();
+    _salePriceController.dispose();
+    _descController.dispose();
     super.dispose();
   }
 
   Future<void> _pickImage() async {
-    final XFile? pickedFile = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
-    if (pickedFile != null) setState(() => _selectedImage = File(pickedFile.path));
+    final XFile? pickedFile = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 70,
+    );
+    if (pickedFile != null) {
+      setState(() => _selectedImage = File(pickedFile.path));
+    }
   }
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate() || _selectedImage == null) return;
+
+    // ✅ التحقق من اختيار قسم قبل الإرسال
+    if (_selectedCategoryId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⚠️ يرجى اختيار قسم للمنتج'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
     setState(() => _isLoading = true);
-    final success = await ApiService().createProduct(
-        widget.authProvider.token!, _nameController.text, _priceController.text,
-        _salePriceController.text.isEmpty ? null : _salePriceController.text, _descController.text, _selectedImage
+
+    // ✅ تمرير معرف القسم (المعامل السابع) إلى دالة الإضافة في الـ Provider
+    final success = await widget.productProvider.addProduct(
+      widget.authProvider.token!,
+      _nameController.text,
+      _priceController.text,
+      _salePriceController.text.isEmpty ? null : _salePriceController.text,
+      _descController.text,
+      _selectedImage,
+      _selectedCategoryId!,
     );
+
     if (mounted) {
       setState(() => _isLoading = false);
       if (success) {
-        widget.productProvider.fetchProducts(widget.authProvider.token);
+        // إعادة جلب المنتجات لتحديث القائمة
+        await widget.productProvider.fetchProducts(widget.authProvider.token);
         Navigator.pop(context, true);
       }
     }
@@ -1794,32 +2244,160 @@ class _AddProductScreenState extends State<AddProductScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("إضافة وجبة جديدة")),
+      appBar: AppBar(
+        title: const Text("إضافة وجبة جديدة"),
+        centerTitle: true,
+      ),
       body: Form(
         key: _formKey,
         child: ListView(
-            padding: const EdgeInsets.all(16.0),
-            children: [
-              GestureDetector(
-                  onTap: _pickImage,
-                  child: Container(
-                      height: 200, decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(15)),
-                      child: _selectedImage != null
-                          ? ClipRRect(borderRadius: BorderRadius.circular(15), child: Image.file(_selectedImage!, fit: BoxFit.cover))
-                          : const Center(child: Icon(Icons.add_a_photo, size: 50, color: Colors.grey))
-                  )
+          padding: const EdgeInsets.all(16.0),
+          children: [
+            // حقل اختيار الصورة
+            GestureDetector(
+              onTap: _pickImage,
+              child: Container(
+                height: 200,
+                decoration: BoxDecoration(
+                  color: Colors.grey[200],
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: _selectedImage != null
+                    ? ClipRRect(
+                  borderRadius: BorderRadius.circular(15),
+                  child: Image.file(_selectedImage!, fit: BoxFit.cover),
+                )
+                    : const Center(
+                  child: Icon(Icons.add_a_photo, size: 50, color: Colors.grey),
+                ),
               ),
-              const SizedBox(height: 20),
-              TextFormField(controller: _nameController, decoration: const InputDecoration(labelText: 'اسم الوجبة'), validator: (v) => v!.isEmpty ? 'مطلوب' : null),
-              Row(children: [
-                Expanded(child: TextFormField(controller: _priceController, decoration: const InputDecoration(labelText: 'السعر'), keyboardType: TextInputType.number)),
+            ),
+            const SizedBox(height: 20),
+
+            // حقل الاسم
+            TextFormField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: 'اسم الوجبة',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.restaurant_menu),
+              ),
+              validator: (v) => v!.isEmpty ? 'مطلوب' : null,
+            ),
+            const SizedBox(height: 15),
+
+            // حقول السعر
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _priceController,
+                    decoration: const InputDecoration(
+                      labelText: 'السعر الأصلي',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.attach_money),
+                    ),
+                    keyboardType: TextInputType.number,
+                    validator: (v) => v!.isEmpty ? 'مطلوب' : null,
+                  ),
+                ),
                 const SizedBox(width: 10),
-                Expanded(child: TextFormField(controller: _salePriceController, decoration: const InputDecoration(labelText: 'سعر الخصم'), keyboardType: TextInputType.number))
-              ]),
-              TextFormField(controller: _descController, decoration: const InputDecoration(labelText: 'الوصف'), maxLines: 3),
-              const SizedBox(height: 30),
-              ElevatedButton(onPressed: _isLoading ? null : _submit, child: _isLoading ? const CircularProgressIndicator() : const Text('حفظ الوجبة')),
-            ]
+                Expanded(
+                  child: TextFormField(
+                    controller: _salePriceController,
+                    decoration: const InputDecoration(
+                      labelText: 'سعر الخصم (اختياري)',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.local_offer),
+                    ),
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 15),
+
+            // حقل الوصف
+            TextFormField(
+              controller: _descController,
+              decoration: const InputDecoration(
+                labelText: 'الوصف',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.description),
+              ),
+              maxLines: 3,
+            ),
+            const SizedBox(height: 20),
+
+            // ✅ القائمة المنسدلة لاختيار القسم
+            widget.sections.isEmpty
+                ? Container(
+              padding: const EdgeInsets.all(15),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '⚠️ لا توجد أقسام متاحة. يرجى إضافة أقسام أولاً من شاشة إدارة الأقسام.',
+                      style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+            )
+                : DropdownButtonFormField<int>(
+              value: _selectedCategoryId,
+              decoration: const InputDecoration(
+                labelText: 'القسم التابع له',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.category),
+              ),
+              items: widget.sections.map((sec) {
+                return DropdownMenuItem<int>(
+                  value: sec['id'],
+                  child: Text('${sec['icon'] ?? '🍽️'} ${sec['name']}'),
+                );
+              }).toList(),
+              onChanged: (val) {
+                setState(() => _selectedCategoryId = val);
+              },
+              validator: (v) => v == null ? 'يرجى اختيار قسم' : null,
+            ),
+
+            const SizedBox(height: 30),
+
+            // زر الحفظ
+            ElevatedButton(
+              onPressed: _isLoading ? null : _submit,
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: _isLoading
+                  ? const SizedBox(
+                height: 20,
+                width: 20,
+                child: CircularProgressIndicator(
+                  color: Colors.white,
+                  strokeWidth: 2,
+                ),
+              )
+                  : const Text(
+                'حفظ الوجبة',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
         ),
       ),
     );

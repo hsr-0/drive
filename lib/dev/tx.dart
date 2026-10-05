@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:mobile_scanner/mobile_scanner.dart'; // 🆕 مكتبة مسح الباركود
+
+
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:mobile_scanner/mobile_scanner.dart'; // 🆕 مكتبة مسح الباركود
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' hide ConnectionState, Priority;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:image_picker/image_picker.dart';
@@ -13,7 +17,6 @@ import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
@@ -5793,10 +5796,995 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 }
 
 
+class DriverPerformanceScreen extends StatefulWidget {
+  const DriverPerformanceScreen({Key? key}) : super(key: key);
 
-// =============================================================================
-// HISTORY & POINTS
-// =============================================================================
+  @override
+  State<DriverPerformanceScreen> createState() =>
+      _DriverPerformanceScreenState();
+}
+
+class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  bool _isLoading = true;
+
+  Map<String, dynamic>? _myStats;
+  Map<String, dynamic>? _leaderboard;
+  Map<String, dynamic>? _overtakeData;
+  Map<String, dynamic>? _previousChampion;
+  Map<String, dynamic>? _zoneIncentives;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _fetchAllData();
+  }
+
+  Future<String?> _getToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('token') ?? prefs.getString('api_token');
+  }
+
+  Future<void> _fetchAllData() async {
+    setState(() => _isLoading = true);
+    try {
+      final token = await _getToken();
+      final headers = {
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+      };
+
+      final results = await Future.wait([
+        http.get(Uri.parse('https://de.beytei.com/api/driver/performance'),
+            headers: headers),
+        http.get(Uri.parse('https://de.beytei.com/api/driver/stats/leaderboard'),
+            headers: headers),
+        http.get(
+            Uri.parse('https://de.beytei.com/api/driver/stats/my-stats'),
+            headers: headers),
+      ]);
+
+      if (results[0].statusCode == 200) {
+        final perf = json.decode(results[0].body);
+        setState(() {
+          _overtakeData = perf['overtake'];
+          _previousChampion = perf['previous_week_champion'];
+          _zoneIncentives = perf['zone_incentives'];
+          _myStats = perf['my_data'];
+        });
+      }
+
+      if (results[1].statusCode == 200) {
+        setState(() => _leaderboard = json.decode(results[1].body));
+      }
+
+      if (results[2].statusCode == 200 && _myStats != null) {
+        final stats = json.decode(results[2].body);
+        setState(() {
+          _myStats = {
+            ..._myStats!,
+            'detailed': stats,
+          };
+        });
+      }
+    } catch (e) {
+      print('خطأ: $e');
+    }
+    setState(() => _isLoading = false);
+  }
+
+  @override
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: ui.TextDirection.rtl,  // ← استخدم ui. هنا
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0F1729),
+        body: _isLoading
+            ? const Center(
+          child: CircularProgressIndicator(
+            color: Color(0xFFFFD700),
+          ),
+        )
+            : CustomScrollView(
+          slivers: [
+            _buildAppBar(),
+            SliverToBoxAdapter(child: _buildHeroStatsCard()),
+            if (_overtakeData != null)
+              SliverToBoxAdapter(child: _buildOvertakeChallengeCard()),
+            if (_previousChampion != null)
+              SliverToBoxAdapter(child: _buildChampionCard()),
+            SliverToBoxAdapter(child: _buildTabsHeader()),
+            SliverFillRemaining(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  _buildLeaderboardTab(),
+                  _buildRewardsTab(),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  // ═══════════════════════════════════════════════════════
+  // AppBar مع تأثيرات Gradient
+  // ═══════════════════════════════════════════════════════
+  Widget _buildAppBar() {
+    return SliverAppBar(
+      expandedHeight: 120,
+      floating: false,
+      pinned: true,
+      backgroundColor: const Color(0xFF0F1729),
+      flexibleSpace: FlexibleSpaceBar(
+        title: const Text(
+          'أدائي ومنافساتي',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 20,
+          ),
+        ),
+        background: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topRight,
+              end: Alignment.bottomLeft,
+              colors: [
+                Color(0xFF1A237E),
+                Color(0xFF3949AB),
+                Color(0xFF5C6BC0),
+              ],
+            ),
+          ),
+          child: Stack(
+            children: [
+              Positioned(
+                top: -30,
+                right: -30,
+                child: Container(
+                  width: 120,
+                  height: 120,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white.withOpacity(0.1),
+                  ),
+                ),
+              ),
+              Positioned(
+                bottom: -20,
+                left: -20,
+                child: Container(
+                  width: 80,
+                  height: 80,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white.withOpacity(0.08),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.refresh, color: Colors.white),
+          onPressed: _fetchAllData,
+        ),
+      ],
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // البطاقة الرئيسية (Hero Stats)
+  // ═══════════════════════════════════════════════════════
+  Widget _buildHeroStatsCard() {
+    final rank = _myStats?['current_rank'] ?? 0;
+    final score = _myStats?['current_score'] ?? 0.0;
+    final highest = _myStats?['highest_rank_achieved'] ?? 0;
+    final consecutive = _myStats?['consecutive_perfect_orders'] ?? 0;
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFFFFD700),
+              Color(0xFFFFA000),
+              Color(0xFFFF6F00),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFFFFD700).withOpacity(0.3),
+              blurRadius: 20,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            // الترتيب الرئيسي
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  rank == 1
+                      ? Icons.emoji_events
+                      : rank == 2
+                      ? Icons.workspace_premium
+                      : Icons.military_tech,
+                  size: 40,
+                  color: Colors.white,
+                ),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'ترتيبك الحالي',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                    ),
+                    Text(
+                      '#$rank',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 42,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            const Divider(color: Colors.white24, thickness: 1),
+            const SizedBox(height: 20),
+
+            // الإحصائيات
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildStatItem('نقاطي', score.toStringAsFixed(1), Icons.stars),
+                _buildStatItem(
+                    'أعلى ترتيب', '#$highest', Icons.trending_up),
+                _buildStatItem(
+                    'سلسلة مثالية', '$consecutive', Icons.local_fire_department),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatItem(String label, String value, IconData icon) {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, color: Colors.white, size: 24),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 11,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // بطاقة التحدي (Overtake Challenge) - لحظية
+  // ═══════════════════════════════════════════════════════
+  Widget _buildOvertakeChallengeCard() {
+    final action = _overtakeData!['action_required'];
+    final progress = _overtakeData!['progress'];
+    final targetName = _overtakeData!['target_driver_name'];
+    final targetRank = _overtakeData!['target_rank'];
+    final scoreGap = _overtakeData!['score_gap'];
+
+    final completed = action['completed_orders'] ?? 0;
+    final needed = action['needed_orders'] ?? 1;
+    final remaining = action['remaining_orders'] ?? needed;
+    final percentage = (progress?['percentage'] ?? 0.0).toDouble();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topRight,
+            end: Alignment.bottomLeft,
+            colors: [
+              Color(0xFF1E3A8A),
+              Color(0xFF3B82F6),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF3B82F6).withOpacity(0.3),
+              blurRadius: 15,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // العنوان
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.flag, color: Colors.amber, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'هدفك القادم',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
+                      ),
+                      Text(
+                        'تجاوز المركز #$targetRank',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // المقارنة
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  _buildCompareItem('أنت', progress['current_score'], true),
+                  const Icon(Icons.arrow_back, color: Colors.white54, size: 20),
+                  _buildCompareItem(targetName, progress['target_score'], false),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // شريط التقدم
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'التقدم: $completed / $needed',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Text(
+                  '${percentage.toStringAsFixed(0)}%',
+                  style: const TextStyle(
+                    color: Colors.amber,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: LinearProgressIndicator(
+                value: percentage / 100,
+                minHeight: 10,
+                backgroundColor: Colors.white.withOpacity(0.2),
+                valueColor: const AlwaysStoppedAnimation<Color>(Colors.amber),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // الرسالة
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, color: Colors.amber, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      remaining == 0
+                          ? '🎉 مبروك! انتظر التحديث القادم (3 فجراً)'
+                          : '🎯 متبقي $remaining طلبات مثالية (5 نجوم + وصول سريع)',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // معلومات التحديث
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                const Icon(Icons.update, color: Colors.white54, size: 16),
+                const SizedBox(width: 6),
+                Text(
+                  'التحديث الرسمي: يومياً الساعة 3:00 فجراً',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.7),
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompareItem(String name, dynamic score, bool isMe) {
+    return Column(
+      children: [
+        Text(
+          name,
+          style: TextStyle(
+            color: isMe ? Colors.amber : Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 14,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${(score ?? 0).toStringAsFixed(1)} نقطة',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // بطاقة بطل الأسبوع السابق
+  // ═══════════════════════════════════════════════════════
+  Widget _buildChampionCard() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFFFD700).withOpacity(0.3)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFFFD700), Color(0xFFFFA000)],
+                ),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.emoji_events,
+                  color: Colors.white, size: 32),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'بطل الأسبوع السابق 👑',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _previousChampion!['driver_name'] ?? 'غير محدد',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text(
+                    'الجائزة: ${_previousChampion!['prize'] ?? '-'}',
+                    style: const TextStyle(
+                      color: Color(0xFFFFD700),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.arrow_back_ios,
+              color: Colors.white.withOpacity(0.3),
+              size: 16,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // Tabs Header
+  // ═══════════════════════════════════════════════════════
+  Widget _buildTabsHeader() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E293B),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: TabBar(
+          controller: _tabController,
+          indicator: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF3B82F6), Color(0xFF1E40AF)],
+            ),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.grey,
+          indicatorSize: TabBarIndicatorSize.tab,
+          tabs: const [
+            Tab(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.leaderboard, size: 18),
+                  SizedBox(width: 6),
+                  Text('المتصدرون', style: TextStyle(fontSize: 13)),
+                ],
+              ),
+            ),
+            Tab(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.card_giftcard, size: 18),
+                  SizedBox(width: 6),
+                  Text('الجوائز', style: TextStyle(fontSize: 13)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // Tab 1: لوحة المتصدرين
+  // ═══════════════════════════════════════════════════════
+  Widget _buildLeaderboardTab() {
+    if (_leaderboard == null || _leaderboard!['leaders'] == null) {
+      return const Center(
+        child: Text(
+          'لا توجد بيانات',
+          style: TextStyle(color: Colors.white54),
+        ),
+      );
+    }
+
+    final leaders = _leaderboard!['leaders'] as List;
+    final myDriverId = _myStats != null
+        ? (_myStats!['detailed']?['driver']?['id'] ?? -1)
+        : -1;
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      itemCount: leaders.length,
+      itemBuilder: (context, index) {
+        final leader = leaders[index];
+        final isMe = leader['driver_id'] == myDriverId;
+        final rank = index + 1;
+
+        return _buildLeaderItem(leader, rank, isMe);
+      },
+    );
+  }
+
+  Widget _buildLeaderItem(Map<String, dynamic> leader, int rank, bool isMe) {
+    Color rankColor;
+    IconData rankIcon;
+
+    if (rank == 1) {
+      rankColor = const Color(0xFFFFD700);
+      rankIcon = Icons.looks_one;
+    } else if (rank == 2) {
+      rankColor = const Color(0xFFC0C0C0);
+      rankIcon = Icons.looks_two;
+    } else if (rank == 3) {
+      rankColor = const Color(0xFFCD7F32);
+      rankIcon = Icons.looks_3;
+    } else {
+      rankColor = const Color(0xFF3B82F6);
+      rankIcon = Icons.format_list_numbered;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isMe ? const Color(0xFF1E3A8A) : const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(16),
+        border: isMe
+            ? Border.all(color: const Color(0xFFFFD700), width: 2)
+            : Border.all(color: Colors.white.withOpacity(0.05)),
+        boxShadow: isMe
+            ? [
+          BoxShadow(
+            color: const Color(0xFFFFD700).withOpacity(0.2),
+            blurRadius: 10,
+          ),
+        ]
+            : null,
+      ),
+      child: Row(
+        children: [
+          // الترتيب
+          Container(
+            width: 50,
+            height: 50,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [rankColor, rankColor.withOpacity(0.7)],
+              ),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(rankIcon, color: Colors.white, size: 28),
+          ),
+          const SizedBox(width: 12),
+
+          // الاسم والبيانات
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        isMe ? '${leader['name']} (أنت)' : leader['name'],
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (isMe) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFD700),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'أنت',
+                          style: TextStyle(
+                            color: Colors.black,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Icon(Icons.stars, size: 14, color: Colors.amber),
+                    const SizedBox(width: 4),
+                    Text(
+                      '${leader['score']} نقطة',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Icon(Icons.shopping_bag,
+                        size: 14, color: Colors.blue.shade300),
+                    const SizedBox(width: 4),
+                    Text(
+                      '${leader['completed_orders']} طلب',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+
+          // نسبة القبول
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                '${leader['acceptance_rate']}%',
+                style: const TextStyle(
+                  color: Colors.green,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              const Text(
+                'قبول',
+                style: TextStyle(
+                  color: Colors.white54,
+                  fontSize: 10,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // Tab 2: الجوائز المتاحة
+  // ═══════════════════════════════════════════════════════
+  Widget _buildRewardsTab() {
+    if (_zoneIncentives == null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.info_outline,
+                size: 64, color: Colors.white.withOpacity(0.3)),
+            const SizedBox(height: 16),
+            const Text(
+              'نظام الحوافز غير مفعل في منطقتك حالياً',
+              style: TextStyle(color: Colors.white54, fontSize: 14),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      children: [
+        _buildPrizeCard(
+          title: 'المركز الأول 🥇',
+          prize: _zoneIncentives!['prize_1st'] ?? '-',
+          color1: const Color(0xFFFFD700),
+          color2: const Color(0xFFFFA000),
+          icon: Icons.emoji_events,
+        ),
+        const SizedBox(height: 12),
+        _buildPrizeCard(
+          title: 'المركز الثاني 🥈',
+          prize: _zoneIncentives!['prize_2nd'] ?? '-',
+          color1: const Color(0xFFC0C0C0),
+          color2: const Color(0xFF9E9E9E),
+          icon: Icons.workspace_premium,
+        ),
+        const SizedBox(height: 12),
+        _buildPrizeCard(
+          title: 'المركز الثالث 🥉',
+          prize: _zoneIncentives!['prize_3rd'] ?? '-',
+          color1: const Color(0xFFCD7F32),
+          color2: const Color(0xFF8B4513),
+          icon: Icons.military_tech,
+        ),
+        const SizedBox(height: 20),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E293B),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.help_outline, color: Colors.amber, size: 20),
+                  SizedBox(width: 8),
+                  Text(
+                    'كيف تفوز؟',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              _buildRuleItem(
+                  'تقييم 5 نجوم من الزبون', Icons.star, Colors.amber),
+              _buildRuleItem(
+                  'الوصول السريع للمطعم', Icons.speed, Colors.green),
+              _buildRuleItem(
+                  'قبول أكبر عدد من الطلبات', Icons.check_circle, Colors.blue),
+              _buildRuleItem(
+                  'الفائز يُحدد كل جمعة 11:59 مساءً', Icons.calendar_today,
+                  Colors.purple),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPrizeCard({
+    required String title,
+    required String prize,
+    required Color color1,
+    required Color color2,
+    required IconData icon,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [color1, color2],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: color1.withOpacity(0.3),
+            blurRadius: 15,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: Colors.white, size: 32),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  prize,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRuleItem(String text, IconData icon, Color color) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, color: color, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+}
+
+
 class HistoryTabV3 extends StatelessWidget {
   final String token;
   // 🔥 دالة لفتح الطلب في الرئيسية
@@ -7496,6 +8484,10 @@ class _EarningsTabState extends State<EarningsTab> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // 🔥🔥🔥 البطاقة الجديدة: أدائي ومنافساتي 🎯
+            _buildPerformanceEntryCard(context),
+            const SizedBox(height: 20),
+
             // 📅 بطاقة أرباح اليوم (مميزة)
             Container(
               width: double.infinity,
@@ -7508,7 +8500,10 @@ class _EarningsTabState extends State<EarningsTab> {
                 ),
                 borderRadius: BorderRadius.circular(25),
                 boxShadow: [
-                  BoxShadow(color: Colors.blue.withOpacity(0.3), blurRadius: 15, offset: const Offset(0, 8))
+                  BoxShadow(
+                      color: Colors.blue.withOpacity(0.3),
+                      blurRadius: 15,
+                      offset: const Offset(0, 8))
                 ],
               ),
               child: Column(
@@ -7518,24 +8513,45 @@ class _EarningsTabState extends State<EarningsTab> {
                     children: const [
                       Icon(Icons.today, color: Colors.white, size: 24),
                       SizedBox(width: 8),
-                      Text("أرباح اليوم (الصافية)", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                      Text("أرباح اليوم (الصافية)",
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold)),
                     ],
                   ),
                   const SizedBox(height: 15),
                   Text(
                     "${NumberFormat('#,###').format(_todayEarnings)}",
-                    style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white),
+                    style: const TextStyle(
+                        fontSize: 48,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white),
                   ),
-                  const Text("دينار عراقي", style: TextStyle(color: Colors.white70, fontSize: 16)),
-                  const Padding(padding: EdgeInsets.symmetric(vertical: 15), child: Divider(color: Colors.white30, thickness: 1)),
+                  const Text("دينار عراقي",
+                      style: TextStyle(
+                          color: Colors.white70, fontSize: 16)),
+                  const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 15),
+                      child:
+                      Divider(color: Colors.white30, thickness: 1)),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text("الرحلات المكتملة اليوم:", style: TextStyle(color: Colors.white, fontSize: 16)),
+                      const Text("الرحلات المكتملة اليوم:",
+                          style: TextStyle(
+                              color: Colors.white, fontSize: 16)),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 5),
-                        decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(20)),
-                        child: Text("$_todayTrips رحلة", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 15, vertical: 5),
+                        decoration: BoxDecoration(
+                            color: Colors.white24,
+                            borderRadius: BorderRadius.circular(20)),
+                        child: Text("$_todayTrips رحلة",
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16)),
                       ),
                     ],
                   ),
@@ -7544,7 +8560,11 @@ class _EarningsTabState extends State<EarningsTab> {
             ),
 
             const SizedBox(height: 30),
-            const Text("📊 الإحصائيات الشاملة", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.indigo)),
+            const Text("📊 الإحصائيات الشاملة",
+                style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.indigo)),
             const SizedBox(height: 15),
 
             // 💰 بطاقة الأرباح الكلية
@@ -7553,7 +8573,8 @@ class _EarningsTabState extends State<EarningsTab> {
                 Expanded(
                   child: _buildStatCard(
                     title: "إجمالي الأرباح",
-                    value: "${NumberFormat('#,###').format(_totalEarnings)}",
+                    value:
+                    "${NumberFormat('#,###').format(_totalEarnings)}",
                     unit: "د.ع",
                     icon: Icons.account_balance_wallet,
                     color: Colors.green,
@@ -7581,16 +8602,18 @@ class _EarningsTabState extends State<EarningsTab> {
               decoration: BoxDecoration(
                   color: Colors.indigo.shade50,
                   borderRadius: BorderRadius.circular(15),
-                  border: Border.all(color: Colors.indigo.shade100)
-              ),
+                  border:
+                  Border.all(color: Colors.indigo.shade100)),
               child: Row(
                 children: [
-                  Icon(Icons.info_outline, color: Colors.indigo.shade400),
+                  Icon(Icons.info_outline,
+                      color: Colors.indigo.shade400),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       "هذه الأرباح تمثل (أجور التوصيل) الصافية الخاصة بك للطلبات المكتملة فقط.",
-                      style: TextStyle(color: Colors.indigo.shade800, fontSize: 13),
+                      style: TextStyle(
+                          color: Colors.indigo.shade800, fontSize: 13),
                     ),
                   ),
                 ],
@@ -7602,35 +8625,126 @@ class _EarningsTabState extends State<EarningsTab> {
     );
   }
 
+  // 🔥🔥🔥 بطاقة الدخول لشاشة الأداء والمنافسات
+  Widget _buildPerformanceEntryCard(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => const DriverPerformanceScreen(),
+          ),
+        );
+      },
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFFFFD700), Color(0xFFFF6F00)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFFFFD700).withOpacity(0.4),
+              blurRadius: 15,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.25),
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: const Icon(Icons.emoji_events,
+                  color: Colors.white, size: 32),
+            ),
+            const SizedBox(width: 15),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: const [
+                  Text(
+                    'أدائي ومنافساتي',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'شاهد ترتيبك، تحدى المنافسين، واربح الجوائز 🏆',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      height: 1.3,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.arrow_back_ios,
+                color: Colors.white, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
   // تصميم البطاقات الصغيرة
-  Widget _buildStatCard({required String title, required String value, required String unit, required IconData icon, required MaterialColor color}) {
+  Widget _buildStatCard(
+      {required String title,
+        required String value,
+        required String unit,
+        required IconData icon,
+        required MaterialColor color}) {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 4))
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
             padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: color.shade50, shape: BoxShape.circle),
+            decoration:
+            BoxDecoration(color: color.shade50, shape: BoxShape.circle),
             child: Icon(icon, color: color.shade600, size: 28),
           ),
           const SizedBox(height: 15),
-          Text(title, style: TextStyle(color: Colors.grey.shade600, fontSize: 14, fontWeight: FontWeight.bold)),
+          Text(title,
+              style: TextStyle(
+                  color: Colors.grey.shade600,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold)),
           const SizedBox(height: 5),
-          Text(value, style: TextStyle(color: color.shade800, fontSize: 24, fontWeight: FontWeight.bold)),
-          Text(unit, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+          Text(value,
+              style: TextStyle(
+                  color: color.shade800,
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold)),
+          Text(unit,
+              style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
         ],
       ),
     );
   }
 }
-
-
 class DriverCallPage extends StatefulWidget {
   final String roomName;
   final String livekitUrl;
