@@ -1627,6 +1627,7 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
             onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen())),
             tooltip: 'المحفظة والأرباح',
           ),
+          IconButton(icon: const Icon(Icons.delivery_dining),tooltip:'طلب مندوب',onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>const ManagerCourierScreen()))),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.red),
             onPressed: () => auth.logout(context),
@@ -1861,6 +1862,74 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
     );
   }
 }
+class ManagerCourierScreen extends StatefulWidget {
+  const ManagerCourierScreen({super.key});
+  @override State<ManagerCourierScreen> createState()=>_ManagerCourierScreenState();
+}
+class _ManagerCourierScreenState extends State<ManagerCourierScreen> {
+  final _api=ApiService();
+  final _form=GlobalKey<FormState>();
+  final _phone=TextEditingController(), _address=TextEditingController();
+  final _lat=TextEditingController(), _lng=TextEditingController();
+  List<Map<String,dynamic>> _areas=[];
+  int? _zone;
+  bool _busy=false, _loading=true;
+  String? _loadError;
+  @override void initState(){super.initState();_load();}
+  Future<void> _load() async {
+    try{
+      final token=Provider.of<AuthProvider>(context,listen:false).token!;
+      final info=await _api.getManagerContext(token);
+      if(!mounted)return;
+      setState((){
+        _areas=(info['areas'] as List? ?? []).map((x)=>Map<String,dynamic>.from(x)).toList();
+        _zone=null; _loading=false;
+      });
+    }catch(e){if(mounted)setState((){_loading=false;_loadError='$e';});}
+  }
+  @override void dispose(){_phone.dispose();_address.dispose();_lat.dispose();_lng.dispose();super.dispose();}
+  Future<void> _submit() async {
+    if(!_form.currentState!.validate()||_zone==null){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('اختر منطقة التوصيل')));return;}
+    setState(()=>_busy=true);
+    try{
+      final token=Provider.of<AuthProvider>(context,listen:false).token!;
+      final result=await _api.requestManualDriver(token,{
+        'phone':_phone.text.trim(),'address':_address.text.trim(),'zone_id':_zone,
+        'destination_lat':double.parse(_lat.text.trim()),'destination_lng':double.parse(_lng.text.trim())
+      });
+      if(!mounted)return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('تم إرسال الطلب #${result['order_id']} - أجرة التوصيل ${result['delivery_fee']} د.ع')));
+    }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('$e')));}
+    finally{if(mounted)setState(()=>_busy=false);}
+  }
+  @override Widget build(BuildContext context) {
+    return Scaffold(appBar:AppBar(title:const Text('طلب مندوب توصيل')),
+      body:_loading?const Center(child:CircularProgressIndicator()):_loadError!=null
+        ?Center(child:Text('فشل تحميل معلومات المطعم: $_loadError'))
+        :Form(key:_form,child:ListView(padding:const EdgeInsets.all(16),children:[
+          const Text('خدمة توصيل فقط - ستُحسب الأجرة على السيرفر، ولن يتم إرسال الطلب بلا موقع الزبون الحقيقي.'),
+          const SizedBox(height:16),
+          TextFormField(controller:_phone,keyboardType:TextInputType.phone,
+            decoration:const InputDecoration(labelText:'رقم هاتف الزبون'),
+            validator:(v)=>(v??'').trim().length<10?'رقم الهاتف غير مكتمل':null),
+          TextFormField(controller:_address,decoration:const InputDecoration(labelText:'عنوان الزبون بالتفصيل'),
+            validator:(v)=>(v??'').trim().isEmpty?'العنوان مطلوب':null),
+          DropdownButtonFormField<int>(value:_zone,decoration:const InputDecoration(labelText:'منطقة التوصيل'),
+            items:_areas.map((a)=>DropdownMenuItem<int>(value:int.tryParse(a['id'].toString()),child:Text(a['name'].toString()))).toList(),
+            onChanged:(v)=>setState(()=>_zone=v),validator:(v)=>v==null?'اختر منطقة':null),
+          TextFormField(controller:_lat,keyboardType:const TextInputType.numberWithOptions(decimal:true,signed:true),
+            decoration:const InputDecoration(labelText:'خط عرض موقع الزبون (Latitude)'),
+            validator:(v)=>double.tryParse(v??'')==null?'أدخل إحداثياً صحيحاً':null),
+          TextFormField(controller:_lng,keyboardType:const TextInputType.numberWithOptions(decimal:true,signed:true),
+            decoration:const InputDecoration(labelText:'خط طول موقع الزبون (Longitude)'),
+            validator:(v)=>double.tryParse(v??'')==null?'أدخل إحداثياً صحيحاً':null),
+          const SizedBox(height:24),
+          ElevatedButton.icon(onPressed:_busy?null:_submit,icon:const Icon(Icons.delivery_dining),
+            label:Text(_busy?'جاري الإرسال':'طلب مندوب')),
+        ])));
+  }
+}
+
 class ProductManagementTab extends StatefulWidget {
   const ProductManagementTab({super.key});
   @override
