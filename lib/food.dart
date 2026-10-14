@@ -163,12 +163,13 @@ class Restaurant {
 class FoodItem {
   final int id; final String name; final String description;
   final double price; final double? salePrice; final String imageUrl;
-  int quantity; final int categoryId;
+  int quantity; final int categoryId; final String status;
+  bool get isHidden => status != 'publish';
 
   FoodItem({
     required this.id, required this.name, required this.description,
     required this.price, this.salePrice, required this.imageUrl,
-    this.quantity = 1, required this.categoryId,
+    this.quantity = 1, required this.categoryId, this.status = 'publish',
   });
 
   factory FoodItem.fromJson(Map<String, dynamic> json) {
@@ -183,13 +184,13 @@ class FoodItem {
       if (images is List && images.isNotEmpty && images[0] is Map && images[0]['src'] != null) {
         return images[0]['src'];
       }
-      return 'https://via.placeholder.com/150';
+      return '';
     }
 
     int extractRestaurantId(Map<String, dynamic> json) {
       dynamic categories = json['categories'];
       if (categories is List && categories.isNotEmpty && categories[0] is Map) {
-        return categories[0]['id'];
+        return int.tryParse(categories[0]['id'].toString()) ?? 0;
       }
       return 0;
     }
@@ -199,7 +200,7 @@ class FoodItem {
       description: json['short_description'] is String ? json['short_description'].replaceAll(RegExp(r'<[^>]*>|&nbsp;'), '').trim() : '',
       price: safeParseDouble(json['regular_price']),
       salePrice: (json['sale_price'] != '' && json['sale_price'] != null) ? safeParseDouble(json['sale_price'], -1.0) : null,
-      imageUrl: extractImageUrl(json['images']), categoryId: extractRestaurantId(json),
+      imageUrl: extractImageUrl(json['images']), categoryId: extractRestaurantId(json), status: json['status']?.toString() ?? 'publish',
     );
   }
 }
@@ -484,10 +485,21 @@ class _ManageSectionsScreenState extends State<ManageSectionsScreen> {
               leading: Text(sec['icon'] ?? '🍽️', style: const TextStyle(fontSize: 24)),
               title: Text(sec['name'], style: const TextStyle(fontWeight: FontWeight.bold)),
               subtitle: Text('ترتيب الظهور: ${sec['display_order']} | عدد المنتجات: ${sec['count']}'),
-              trailing: IconButton(
-                icon: const Icon(Icons.edit, color: Colors.blue),
-                onPressed: () => _showSectionDialog(section: sec),
-              ),
+              trailing: Row(mainAxisSize:MainAxisSize.min,children:[
+                IconButton(icon:const Icon(Icons.edit,color:Colors.blue),onPressed:()=>_showSectionDialog(section:sec)),
+                IconButton(icon:const Icon(Icons.delete_outline,color:Colors.red),onPressed:() async {
+                  final ok=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(
+                      title:const Text('حذف القسم'),content:const Text('لا يمكن حذف قسم يحتوي على وجبات.'),
+                      actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
+                        TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('حذف'))]));
+                  if(ok!=true)return;
+                  try{
+                    final token=Provider.of<AuthProvider>(context,listen:false).token;
+                    await _apiService.productAction(token!,'delete-category',int.parse(sec['id'].toString()));
+                    await _loadSections();
+                  }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('$e')));}
+                }),
+              ]),
             ),
           );
         },
@@ -711,6 +723,30 @@ class ApiService {
       final responseBody = json.decode(response.body);
       throw Exception(responseBody['message'] ?? 'فشل إنشاء طلب الإعلان');
     });
+  }
+
+  String _apiError(http.Response response) {
+    try{return json.decode(response.body)['message']?.toString() ?? 'HTTP ${response.statusCode}';}
+    catch(_){return 'HTTP ${response.statusCode}';}
+  }
+  Future<Map<String,dynamic>> getManagerContext(String token) async {
+    final r=await http.get(Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/manager-context'),headers:{'Authorization':'Bearer $token'}).timeout(AppConstants.API_TIMEOUT);
+    if(r.statusCode!=200) throw Exception(_apiError(r));
+    return Map<String,dynamic>.from(json.decode(r.body));
+  }
+  Future<void> productAction(String token,String operation,int id,{bool hidden=false}) async {
+    final route={'hide':'toggle-product-visibility','delete':'delete-product','delete-category':'delete-subcategory'}[operation];
+    if(route==null) throw ArgumentError('Invalid action');
+    final r=await http.post(Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/$route'),
+        headers:{'Authorization':'Bearer $token','Content-Type':'application/json'},
+        body:json.encode(operation=='delete-category'?{'term_id':id}:{'product_id':id,'is_hidden':hidden})).timeout(AppConstants.API_TIMEOUT);
+    if(r.statusCode!=200) throw Exception(_apiError(r));
+  }
+  Future<Map<String,dynamic>> requestManualDriver(String token, Map<String,dynamic> payload) async {
+    final r=await http.post(Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/manager-request-driver'),
+        headers:{'Authorization':'Bearer $token','Content-Type':'application/json'},body:json.encode(payload)).timeout(const Duration(seconds:45));
+    if(r.statusCode!=200) throw Exception(_apiError(r));
+    return Map<String,dynamic>.from(json.decode(r.body));
   }
 
   Future<List<Map<String, dynamic>>> getRestaurantSections(String token, int restaurantId) async {
@@ -1591,6 +1627,7 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
             onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen())),
             tooltip: 'المحفظة والأرباح',
           ),
+          IconButton(icon: const Icon(Icons.delivery_dining),tooltip:'طلب مندوب',onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>const ManagerCourierScreen()))),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.red),
             onPressed: () => auth.logout(context),
@@ -1825,6 +1862,74 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
     );
   }
 }
+class ManagerCourierScreen extends StatefulWidget {
+  const ManagerCourierScreen({super.key});
+  @override State<ManagerCourierScreen> createState()=>_ManagerCourierScreenState();
+}
+class _ManagerCourierScreenState extends State<ManagerCourierScreen> {
+  final _api=ApiService();
+  final _form=GlobalKey<FormState>();
+  final _phone=TextEditingController(), _address=TextEditingController();
+  final _lat=TextEditingController(), _lng=TextEditingController();
+  List<Map<String,dynamic>> _areas=[];
+  int? _zone;
+  bool _busy=false, _loading=true;
+  String? _loadError;
+  @override void initState(){super.initState();_load();}
+  Future<void> _load() async {
+    try{
+      final token=Provider.of<AuthProvider>(context,listen:false).token!;
+      final info=await _api.getManagerContext(token);
+      if(!mounted)return;
+      setState((){
+        _areas=(info['areas'] as List? ?? []).map((x)=>Map<String,dynamic>.from(x)).toList();
+        _zone=null; _loading=false;
+      });
+    }catch(e){if(mounted)setState((){_loading=false;_loadError='$e';});}
+  }
+  @override void dispose(){_phone.dispose();_address.dispose();_lat.dispose();_lng.dispose();super.dispose();}
+  Future<void> _submit() async {
+    if(!_form.currentState!.validate()||_zone==null){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('اختر منطقة التوصيل')));return;}
+    setState(()=>_busy=true);
+    try{
+      final token=Provider.of<AuthProvider>(context,listen:false).token!;
+      final result=await _api.requestManualDriver(token,{
+        'phone':_phone.text.trim(),'address':_address.text.trim(),'zone_id':_zone,
+        'destination_lat':double.parse(_lat.text.trim()),'destination_lng':double.parse(_lng.text.trim())
+      });
+      if(!mounted)return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('تم إرسال الطلب #${result['order_id']} - أجرة التوصيل ${result['delivery_fee']} د.ع')));
+    }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('$e')));}
+    finally{if(mounted)setState(()=>_busy=false);}
+  }
+  @override Widget build(BuildContext context) {
+    return Scaffold(appBar:AppBar(title:const Text('طلب مندوب توصيل')),
+        body:_loading?const Center(child:CircularProgressIndicator()):_loadError!=null
+            ?Center(child:Text('فشل تحميل معلومات المطعم: $_loadError'))
+            :Form(key:_form,child:ListView(padding:const EdgeInsets.all(16),children:[
+          const Text('خدمة توصيل فقط - ستُحسب الأجرة على السيرفر، ولن يتم إرسال الطلب بلا موقع الزبون الحقيقي.'),
+          const SizedBox(height:16),
+          TextFormField(controller:_phone,keyboardType:TextInputType.phone,
+              decoration:const InputDecoration(labelText:'رقم هاتف الزبون'),
+              validator:(v)=>(v??'').trim().length<10?'رقم الهاتف غير مكتمل':null),
+          TextFormField(controller:_address,decoration:const InputDecoration(labelText:'عنوان الزبون بالتفصيل'),
+              validator:(v)=>(v??'').trim().isEmpty?'العنوان مطلوب':null),
+          DropdownButtonFormField<int>(value:_zone,decoration:const InputDecoration(labelText:'منطقة التوصيل'),
+              items:_areas.map((a)=>DropdownMenuItem<int>(value:int.tryParse(a['id'].toString()),child:Text(a['name'].toString()))).toList(),
+              onChanged:(v)=>setState(()=>_zone=v),validator:(v)=>v==null?'اختر منطقة':null),
+          TextFormField(controller:_lat,keyboardType:const TextInputType.numberWithOptions(decimal:true,signed:true),
+              decoration:const InputDecoration(labelText:'خط عرض موقع الزبون (Latitude)'),
+              validator:(v)=>double.tryParse(v??'')==null?'أدخل إحداثياً صحيحاً':null),
+          TextFormField(controller:_lng,keyboardType:const TextInputType.numberWithOptions(decimal:true,signed:true),
+              decoration:const InputDecoration(labelText:'خط طول موقع الزبون (Longitude)'),
+              validator:(v)=>double.tryParse(v??'')==null?'أدخل إحداثياً صحيحاً':null),
+          const SizedBox(height:24),
+          ElevatedButton.icon(onPressed:_busy?null:_submit,icon:const Icon(Icons.delivery_dining),
+              label:Text(_busy?'جاري الإرسال':'طلب مندوب')),
+        ])));
+  }
+}
+
 class ProductManagementTab extends StatefulWidget {
   const ProductManagementTab({super.key});
   @override
@@ -1853,10 +1958,8 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
 
     try {
       // 1. جلب معرف المطعم من الإعدادات
-      final settings = await _apiService.getRestaurantSettings(authProvider.token!);
-      if (settings['restaurant_info'] != null && settings['restaurant_info']['id'] != null) {
-        _restaurantId = int.tryParse(settings['restaurant_info']['id'].toString()) ?? 0;
-      }
+      final settings = await _apiService.getManagerContext(authProvider.token!);
+      _restaurantId = int.tryParse(settings['id'].toString()) ?? 0;
 
       // 2. جلب الأقسام إذا تم العثور على معرف المطعم
       if (_restaurantId > 0) {
@@ -1995,6 +2098,7 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(isOffer ? "سعر العرض: ${product.salePrice} د.ع" : "السعر: ${product.price} د.ع"),
+                        if(product.isHidden) const Text('مخفية عن الزبائن',style:TextStyle(color:Colors.red)),
                         const SizedBox(height: 4),
                         // 🔥 عرض اسم القسم كـ Badge
                         Container(
@@ -2011,7 +2115,27 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
                         ),
                       ],
                     ),
-                    trailing: IconButton(icon: const Icon(Icons.edit_outlined, color: Colors.blue), onPressed: () => _navigateToEditScreen(product)),
+                    trailing: PopupMenuButton<String>(
+                      onSelected:(action) async {
+                        if(action=='edit'){_navigateToEditScreen(product);return;}
+                        if(action=='delete'){
+                          final accepted=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(
+                              title:const Text('حذف الوجبة'),content:const Text('سيتم نقل الوجبة إلى سلة المحذوفات'),
+                              actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
+                                TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('حذف'))]));
+                          if(accepted!=true)return;
+                        }
+                        try{
+                          await _apiService.productAction(auth.token!,action,product.id,hidden:!product.isHidden);
+                          await provider.fetchProducts(auth.token);
+                        }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('$e')));}
+                      },
+                      itemBuilder:(_)=>[
+                        const PopupMenuItem(value:'edit',child:Text('تعديل')),
+                        PopupMenuItem(value:'hide',child:Text(product.isHidden?'إظهار للزبائن':'إخفاء مؤقتاً')),
+                        const PopupMenuItem(value:'delete',child:Text('حذف')),
+                      ],
+                    ),
                   ),
                 );
               },
@@ -2058,7 +2182,7 @@ class _EditProductScreenState extends State<EditProductScreen> {
     _salePriceController = TextEditingController(text: widget.product.salePrice?.toStringAsFixed(0) ?? '');
 
     // 🔥 تعيين القسم الحالي للمنتج كقيمة افتراضية
-    _selectedCategoryId = widget.product.categoryId;
+    _selectedCategoryId = widget.sections.any((x)=>x['id']==widget.product.categoryId) ? widget.product.categoryId : null;
   }
 
   @override
@@ -2100,7 +2224,7 @@ class _EditProductScreenState extends State<EditProductScreen> {
 
     if (mounted) {
       setState(() => _isLoading = false);
-      if (success) Navigator.pop(context, true);
+      if (success) Navigator.pop(context, true); else ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(widget.productProvider.errorMessage ?? 'فشل التعديل')));
     }
   }
 
@@ -2205,7 +2329,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
   }
 
   Future<void> _submit() async {
-    if (!_formKey.currentState!.validate() || _selectedImage == null) return;
+    if (!_formKey.currentState!.validate()) return;
 
     // ✅ التحقق من اختيار قسم قبل الإرسال
     if (_selectedCategoryId == null) {
@@ -2233,6 +2357,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
 
     if (mounted) {
       setState(() => _isLoading = false);
+      if (!success) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(widget.productProvider.errorMessage ?? 'فشل الحفظ')));
       if (success) {
         // إعادة جلب المنتجات لتحديث القائمة
         await widget.productProvider.fetchProducts(widget.authProvider.token);

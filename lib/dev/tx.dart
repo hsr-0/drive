@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-
-
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -4775,7 +4773,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
           'secret_key': 'BEYTEI_SECURE_2025',
           'order_id': orderId,
           'caller_type': 'driver',
-          'caller_name': driverName,
+          'caller_name': driverName.startsWith('مندوب منصة بيتي')
+              ? driverName
+              : 'مندوب منصة بيتي - $driverName',
           'caller_phone': driverPhone,
         }),
       ).timeout(const Duration(seconds: 15));
@@ -4807,6 +4807,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   customerPhone: customerPhone,
                   orderId: orderId,
                   sourceType: sourceType,
+                  callUuid: data['uuid']?.toString() ?? '',
                 ),
               ),
             );
@@ -8753,6 +8754,7 @@ class DriverCallPage extends StatefulWidget {
   final String customerPhone;
   final String orderId;
   final String sourceType;
+  final String callUuid; // UUID received from the same /start response as the Apple push
 
   const DriverCallPage({
     super.key,
@@ -8763,6 +8765,7 @@ class DriverCallPage extends StatefulWidget {
     required this.customerPhone,
     required this.orderId,
     required this.sourceType,
+    this.callUuid = '',
   });
 
   @override
@@ -8772,90 +8775,109 @@ class DriverCallPage extends StatefulWidget {
 class _DriverCallPageState extends State<DriverCallPage> {
   Room? _room;
   EventsListener<RoomEvent>? _listener;
+
   bool _isConnected = false;
   bool _isCustomerConnected = false;
   bool _muted = false;
   bool _speaker = true;
+  bool _isEnding = false;
+  bool _hasError = false;
+  String _errorMessage = '';
+
   int _callDuration = 0;
   Timer? _durationTimer;
   Timer? _timeoutTimer;
-  bool _hasError = false;
-  String _errorMessage = "";
 
   @override
   void initState() {
     super.initState();
     _initLiveKit();
 
-    // إغلاق المكالمة تلقائياً بعد 45 ثانية إذا لم يرد الزبون
+    // IMPORTANT: 45 seconds is a warning, NOT an automatic hang-up.
+    // The previous automatic hang-up could disconnect the driver while
+    // CallKit was still ringing or the iPhone was opening its LiveKit room.
+    // A real no-answer timeout must be coordinated with iOS CallKit/server.
     _timeoutTimer = Timer(const Duration(seconds: 45), () {
-      if (!_isCustomerConnected && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('الزبون لا يرد حالياً، جاري إنهاء المكالمة'), backgroundColor: Colors.orange),
-        );
-        _endCall();
-      }
+      if (!mounted || _isEnding || _isCustomerConnected) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('الزبون لم يدخل المكالمة بعد؛ يمكنك الانتظار أو إنهاء الاتصال'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 5),
+        ),
+      );
+      print('⏳ لم يدخل الزبون الغرفة بعد 45 ثانية؛ لم يتم قطع المكالمة');
     });
   }
 
+  void _markCustomerConnected() {
+    if (_isEnding || !mounted || _isCustomerConnected) return;
+    _timeoutTimer?.cancel();
+    setState(() => _isCustomerConnected = true);
+    _startDurationTimer();
+    print('✅ الزبون دخل غرفة LiveKit - ألغيت مهلة انتظار الرد');
+  }
+
   Future<void> _initLiveKit() async {
-    print("🔍 [LiveKit Debug] بدء تهيئة المكالمة...");
-    print("🔗 [LiveKit Debug] URL: ${widget.livekitUrl}");
-    print("🔑 [LiveKit Debug] Token: ${widget.token}");
-    print("🚪 [LiveKit Debug] Room: ${widget.roomName}");
+    print('📞 بدء اتصال السائق بالغرفة: ${widget.roomName}');
+    // Never log a LiveKit JWT: it grants room access.
 
     final status = await Permission.microphone.request();
-    if (status.isDenied || status.isPermanentlyDenied) {
-      print("❌ [LiveKit Debug] إذن المايكروفون مرفوض!");
-      if (mounted) {
-        setState(() {
-          _hasError = true;
-          _errorMessage = "يرجى منح صلاحية المايكروفون";
-        });
-      }
+    if (_isEnding || !mounted) return;
+
+    if (!status.isGranted) {
+      setState(() {
+        _hasError = true;
+        _errorMessage = 'يرجى منح صلاحية المايكروفون';
+      });
+      _timeoutTimer?.cancel();
       return;
     }
 
     try {
-      _room = Room();
-      _listener = _room!.createListener();
+      final room = Room();
+      _room = room;
+      final listener = room.createListener();
+      _listener = listener;
 
-      // ✅ 1. مستمع دخول الزبون للغرفة
-      _listener!.on<ParticipantConnectedEvent>((event) {
-        if (mounted && !_isCustomerConnected) {
-          setState(() => _isCustomerConnected = true);
-          _startDurationTimer();
-          print("✅ [LiveKit Debug] الزبون دخل الغرفة بنجاح!");
+      listener.on<ParticipantConnectedEvent>((event) {
+        _markCustomerConnected();
+      });
+
+      listener.on<TrackSubscribedEvent>((event) {
+        if (event.track is AudioTrack) {
+          _markCustomerConnected();
         }
       });
 
-      // ✅ 2. مستمع استقبال الصوت (أكثر موثوقية لضمان عدم التعليق)
-      _listener!.on<TrackSubscribedEvent>((event) {
-        if (mounted && !_isCustomerConnected) {
-          setState(() => _isCustomerConnected = true);
-          _startDurationTimer();
-          print("✅ [LiveKit Debug] تم استقبال مسار الصوت من الزبون!");
+      // Matches the customer's Flutter `beytei_call` data message.
+      listener.on<DataReceivedEvent>((event) {
+        if (_isEnding || event.topic != 'beytei_call') return;
+        try {
+          final decoded = jsonDecode(utf8.decode(event.data));
+          if (decoded is! Map) return;
+          if (decoded['action'] != 'call_ended') return;
+          if (decoded['room_name']?.toString() != widget.roomName) return;
+          print('📴 وصل إشعار إنهاء المكالمة من الزبون');
+          unawaited(_finishCall(remoteEnded: true, reason: 'الزبون أنهى المكالمة'));
+        } catch (e) {
+          print('⚠️ خطأ في قراءة رسالة انتهاء المكالمة: $e');
         }
       });
 
-      // 🔥🔥🔥 3. المستمع الناقص (السبب الجذري للمشكلة): مغادرة الزبون للغرفة 🔥🔥🔥
-      _listener!.on<ParticipantDisconnectedEvent>((event) {
-        print("📞 [LiveKit Debug] الزبون غادر الغرفة (أنهى المكالمة)!");
-        if (mounted && _isConnected) {
-          _showCallEndedDialog("أنهى الزبون المكالمة");
-        }
+      listener.on<ParticipantDisconnectedEvent>((event) {
+        if (_isEnding) return;
+        print('📴 خرج الزبون من غرفة LiveKit');
+        unawaited(_finishCall(remoteEnded: true, reason: 'الزبون أنهى المكالمة'));
       });
 
-      // ✅ 4. مستمع انغلاق الغرفة بالكامل (كخطة بديلة)
-      _listener!.on<RoomDisconnectedEvent>((event) {
-        print("⚠️ [LiveKit Debug] انقطع الاتصال بالغرفة. السبب: ${event.reason}");
-        if (mounted && _isConnected) {
-          _showCallEndedDialog("انقطع الاتصال");
-        }
+      listener.on<RoomDisconnectedEvent>((event) {
+        if (_isEnding) return;
+        print('📴 انقطع الاتصال بغرفة LiveKit: ${event.reason}');
+        unawaited(_finishCall(remoteEnded: true, reason: 'انقطع الاتصال'));
       });
 
-      print("⏳ [LiveKit Debug] جاري محاولة الاتصال...");
-      await _room!.connect(
+      await room.connect(
         widget.livekitUrl,
         widget.token,
         roomOptions: const RoomOptions(
@@ -8864,35 +8886,40 @@ class _DriverCallPageState extends State<DriverCallPage> {
         ),
       );
 
-      print("🎉 [LiveKit Debug] الاتصال ناجح! جاري تفعيل المايكروفون...");
-      if (mounted) {
-        setState(() => _isConnected = true);
-
-        // ✅ 5. فحص فوري: هل الزبون موجود بالفعل في الغرفة قبل أن نجهز المستمع؟
-        if (_room!.remoteParticipants.isNotEmpty) {
-          setState(() => _isCustomerConnected = true);
-          _startDurationTimer();
-          print("✅ [LiveKit Debug] الزبون موجود مسبقاً في الغرفة!");
-        }
+      if (_isEnding || !mounted) {
+        // The screen may have closed while connect() was in flight.
+        try { await room.disconnect(); } catch (_) {}
+        return;
       }
-      await _room!.localParticipant?.setMicrophoneEnabled(true);
 
-    } catch (e, stackTrace) {
-      print("💥 [LiveKit Debug] فشل الاتصال بشكل قاطع!");
-      print("💥 [LiveKit Debug] نوع الخطأ: ${e.runtimeType}");
-      print("💥 [LiveKit Debug] رسالة الخطأ: $e");
-      if (mounted) {
+      setState(() => _isConnected = true);
+      if (room.remoteParticipants.isNotEmpty) {
+        _markCustomerConnected();
+      }
+
+      await room.localParticipant?.setMicrophoneEnabled(true);
+      if (_isEnding) {
+        try { await room.localParticipant?.setMicrophoneEnabled(false); } catch (_) {}
+      }
+      print('✅ السائق اتصل بـ LiveKit وفعّل الميكروفون');
+    } catch (e) {
+      print('❌ فشل اتصال LiveKit للسائق: $e');
+      if (mounted && !_isEnding) {
+        _timeoutTimer?.cancel();
         setState(() {
           _hasError = true;
-          _errorMessage = "فشل الاتصال: ${e.toString()}";
+          _errorMessage = 'فشل الاتصال: $e';
         });
       }
     }
   }
+
   void _startDurationTimer() {
-    _durationTimer?.cancel();
-    _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) setState(() => _callDuration++);
+    if (_durationTimer?.isActive == true || _isEnding) return;
+    _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && !_isEnding && _isCustomerConnected) {
+        setState(() => _callDuration++);
+      }
     });
   }
 
@@ -8902,97 +8929,157 @@ class _DriverCallPageState extends State<DriverCallPage> {
     return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
-  void _showCallEndedDialog(String message) {
-    _durationTimer?.cancel();
-    _timeoutTimer?.cancel();
-    if (mounted) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Row(children: [Icon(Icons.call_end, color: Colors.red), SizedBox(width: 10), Text("انتهت المكالمة")]),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(message),
-              const SizedBox(height: 10),
-              Text("المدة: ${_formatDuration(_callDuration)}", style: const TextStyle(fontWeight: FontWeight.bold)),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _endCall();
-              },
-              child: const Text("موافق", style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-          ],
-        ),
-      );
-    }
-  }
-
   Future<void> _toggleMute() async {
+    if (_isEnding) return;
     setState(() => _muted = !_muted);
-    await _room?.localParticipant?.setMicrophoneEnabled(!_muted);
+    try {
+      await _room?.localParticipant?.setMicrophoneEnabled(!_muted);
+    } catch (e) {
+      print('⚠️ فشل تغيير الميكروفون: $e');
+    }
   }
 
   Future<void> _toggleSpeaker() async {
+    if (_isEnding) return;
     setState(() => _speaker = !_speaker);
-    await Hardware.instance.setSpeakerphoneOn(_speaker);
+    try {
+      await Hardware.instance.setSpeakerphoneOn(_speaker);
+    } catch (e) {
+      print('⚠️ فشل تغيير السماعة: $e');
+    }
   }
 
-  Future<void> _sendCancelSignalToServer() async {
+  // Existing backend routes: /cancel before answer, /end after connection.
+  // A separate native iOS cancellation mechanism is still needed to stop
+  // a *ringing, unanswered* CallKit screen reliably on the customer phone.
+  Future<void> _sendCallStateToServer({required bool wasConnected}) async {
     try {
-      // ✅ تم توحيد رابط الإلغاء ليكون دائماً سيرفر المكالمات
-      final String cancelUrl = 'https://re.beytei.com/wp-json/beytei-calls/v1/cancel';
-
-      await http.post(
-        Uri.parse(cancelUrl),
+      final route = wasConnected ? 'end' : 'cancel';
+      final response = await http.post(
+        Uri.parse('https://re.beytei.com/wp-json/beytei-calls/v1/$route'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({
+        body: jsonEncode({
           'secret_key': 'BEYTEI_SECURE_2025',
           'order_id': widget.orderId,
+          'uuid': widget.callUuid,
           'channel_name': widget.roomName,
+          'duration': _callDuration,
         }),
-      );
+      ).timeout(const Duration(seconds: 5));
+      print('📡 Call $route: HTTP ${response.statusCode} | ${response.body}');
+      if (response.statusCode != 200) {
+        print('⚠️ السيرفر رفض إنهاء/إلغاء المكالمة؛ تحقق من UUID والحالة');
+      }
     } catch (e) {
-      print("Error cancelling call: $e");
+      print('⚠️ تعذر تسجيل انتهاء المكالمة في السيرفر: $e');
     }
   }
 
-  Future<void> _endCall() async {
-    _durationTimer?.cancel();
-    _timeoutTimer?.cancel();
+  Future<void> _releaseCallResources(
+      Room? room,
+      EventsListener<RoomEvent>? listener,
+      ) async {
+    try { await room?.localParticipant?.setMicrophoneEnabled(false); }
+    catch (e) { print('⚠️ تعذر إيقاف الميكروفون: $e'); }
 
-    try {
-      await _listener?.dispose();
-      await _room?.disconnect();
-      _room = null;
-    } catch (e) {
-      print("Error releasing LiveKit room: $e");
+    try { await listener?.dispose(); }
+    catch (e) { print('⚠️ خطأ في تحرير مستمع LiveKit: $e'); }
+
+    try { await room?.disconnect(); }
+    catch (e) { print('⚠️ خطأ في مغادرة LiveKit: $e'); }
+
+    try { await room?.dispose(); }
+    catch (e) { print('⚠️ خطأ تحرير غرفة LiveKit: $e'); }
+  }
+
+  Future<void> _finishCall({
+    required bool remoteEnded,
+    String reason = '',
+  }) async {
+    if (_isEnding) return;
+    _isEnding = true;
+
+    final bool wasConnected = _isCustomerConnected;
+    _timeoutTimer?.cancel();
+    _durationTimer?.cancel();
+    _timeoutTimer = null;
+    _durationTimer = null;
+
+    final room = _room;
+    final listener = _listener;
+    _room = null;
+    _listener = null;
+
+    print('📴 إغلاق مكالمة السائق: $reason (remoteEnded=$remoteEnded)');
+
+    // Notify customer before disconnecting; reliable data only works once
+    // both peers have joined LiveKit.  Keep it short for responsive UI.
+    if (!remoteEnded && wasConnected && room?.localParticipant != null) {
+      try {
+        await room!.localParticipant!.publishData(
+          utf8.encode(jsonEncode({
+            'action': 'call_ended',
+            'room_name': widget.roomName,
+            'order_id': widget.orderId,
+          })),
+          reliable: true,
+          topic: 'beytei_call',
+        ).timeout(const Duration(milliseconds: 1500));
+        print('✅ أرسلت إشارة نهاية المكالمة إلى الزبون');
+      } catch (e) {
+        print('⚠️ تعذر إرسال إشارة إنهاء المكالمة عبر LiveKit: $e');
+      }
     }
 
-    await _sendCancelSignalToServer();
+    // Always disconnect the microphone and dispose room resources.
+    // Do not wait for this to finish before removing the visible screen.
+    unawaited(_releaseCallResources(room, listener));
+
+    // Server records call end; for unanswered calls it requests ring cancel.
+    // Customer-triggered ending is also recorded, without sending cancel.
+    if (!remoteEnded || wasConnected) {
+      unawaited(_sendCallStateToServer(wasConnected: wasConnected));
+    }
 
     if (mounted) {
-      Navigator.pop(context);
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+      if (remoteEnded && messenger != null) {
+        messenger.showSnackBar(SnackBar(
+          content: Text(reason.isEmpty ? 'انتهت المكالمة' : reason),
+          duration: const Duration(seconds: 3),
+        ));
+      }
     }
   }
+
+  Future<void> _endCall() => _finishCall(remoteEnded: false, reason: 'إنهاء من السائق');
 
   @override
   void dispose() {
-    _endCall();
+    _timeoutTimer?.cancel();
+    _durationTimer?.cancel();
+
+    // dispose() must NEVER call Navigator.pop() or _endCall().
+    if (!_isEnding) {
+      _isEnding = true;
+      final room = _room;
+      final listener = _listener;
+      _room = null;
+      _listener = null;
+      unawaited(_releaseCallResources(room, listener));
+    }
     super.dispose();
   }
 
   String getCallStatusText() {
+    if (_isEnding) return 'جاري إنهاء المكالمة...';
     if (_hasError) return _errorMessage;
-    if (_isCustomerConnected) return "متصل الآن 🟢";
-    if (_isConnected) return "يرن عند الزبون... 🔵";
-    return "جاري الاتصال بالسيرفر... ⏳";
+    if (_isCustomerConnected) return 'متصل الآن 🟢';
+    if (_isConnected) return 'يرن عند الزبون... 🔵';
+    return 'جاري الاتصال بالسيرفر... ⏳';
   }
 
   @override
