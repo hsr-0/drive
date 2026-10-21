@@ -879,6 +879,13 @@ class NotificationService {
       // إظهار الإشعار المحلي فوراً (لضمان سماع الصوت والاهتزاز)
       String title = notification?.title ?? data['title'] ?? "🔔 تنبيه جديد!";
       String body = notification?.body ?? data['body'] ?? "يوجد تحديث في التطبيق.";
+      // If (and only if) the server sends a note marker with the push,
+      // show a warning on the lock-screen notification too.
+      final noteFlag = (data['has_notes'] ?? data['has_customer_note'] ?? '').toString().toLowerCase();
+      if ((data['type'] == 'new_delivery' || data['type'] == 'new_order') &&
+          (noteFlag == '1' || noteFlag == 'true' || noteFlag == 'yes')) {
+        body = '⚠️ يوجد ملاحظات مهمة من الزبون. $body';
+      }
       int notifId = notification?.hashCode ?? DateTime.now().millisecond;
 
       _localParams.show(
@@ -1090,6 +1097,496 @@ class AuthResult {
     );
   }
 }
+// ============================================================================
+// Beytei V6 - Display delivery line-item choices WITHOUT recalculating prices.
+// Compatible with both the old order payload and the V5 WooCommerce payload.
+// ============================================================================
+class BeyteiDeliveryItemDetailsV6 {
+  static String _value(dynamic x) => x == null || x.toString() == 'null' ? '' : x.toString().trim();
+
+  static String _weight(dynamic source) {
+    final value = _value(source);
+    if (value.isEmpty) return '';
+    final number = double.tryParse(value);
+    if (number == null) return value;
+    if (number == 0.25) return 'ربع كيلو';
+    if (number == 0.5) return 'نصف كيلو';
+    if (number == 0.75) return 'ثلاثة أرباع كيلو';
+    if (number == 1.0) return 'كيلو';
+    if (number == 1.5) return 'كيلو ونصف';
+    if (number == 2.0) return 'كيلوين';
+    return '$value كيلو';
+  }
+
+  static String _selectedOptionNames(dynamic raw) {
+    if (raw == null) return '';
+    if (raw is String) return raw.trim();
+    if (raw is Map) {
+      return _selectedOptionNames(raw['options'] ?? raw['selected_options'] ?? raw['name'] ?? raw['label'] ?? raw['value']);
+    }
+    if (raw is! List) return '';
+    final parts = <String>[];
+    for (final entry in raw) {
+      if (entry is Map) {
+        final group = _value(entry['group_name'] ?? entry['group'] ?? entry['name']);
+        final options = entry['options'] ?? entry['selected'] ?? entry['values'];
+        if (options is List) {
+          final names = options.map((opt) => opt is Map ? _value(opt['name'] ?? opt['option_name'] ?? opt['label'] ?? opt['title'] ?? opt['value']) : _value(opt))
+              .where((name) => name.isNotEmpty).toList();
+          if (names.isNotEmpty) parts.add('${group.isEmpty ? 'الإضافات' : group}: ${names.join('، ')}');
+        } else if (entry['name'] != null && entry['group_name'] == null) {
+          final name = _value(entry['name']);
+          if (name.isNotEmpty) parts.add(name);
+        }
+      } else if (_value(entry).isNotEmpty) {
+        parts.add(_value(entry));
+      }
+    }
+    return parts.join(' | ');
+  }
+
+  static List<String> details(Map<String, dynamic> item, {bool isMarket = false}) {
+    final parts = <String>[];
+    final summary = _value(item['options_summary'] ?? item['selected_options_summary']);
+    if (summary.isNotEmpty) parts.add(summary);
+
+    final weight = _weight(item['weight_label'] ?? item['weight'] ?? item['selected_weight_kg']);
+    if (weight.isNotEmpty && !summary.contains(weight) &&
+        !summary.contains('الوزن') && !summary.contains('الحجم')) {
+      parts.add('الوزن: $weight');
+    }
+    final size = _value(item['size'] ?? item['size_label']);
+    if (size.isNotEmpty && !summary.contains(size) && !summary.contains('الحجم')) {
+      parts.add('الحجم: $size');
+    }
+    if (summary.isEmpty) {
+      final options = _selectedOptionNames(item['selected_options'] ?? item['options']);
+      if (options.isNotEmpty) parts.add(options);
+    }
+    // Old WooCommerce market orders used a fractional quantity for weight.
+    if (isMarket && weight.isEmpty) {
+      final quantity = double.tryParse(_value(item['quantity']));
+      if (quantity != null && quantity > 0 && quantity % 1 != 0) {
+        parts.add('الوزن: ${_weight(quantity)}');
+      }
+    }
+    final meta = item['meta_data'];
+    if (meta is List && summary.isEmpty && weight.isEmpty) {
+      for (final entry in meta) {
+        if (entry is! Map) continue;
+        final key = _value(entry['display_key'] ?? entry['key']);
+        final value = entry['display_value'] ?? entry['value'];
+        if (key == '_beytei_selected_weight_kg') {
+          final v = _weight(value);
+          if (v.isNotEmpty) parts.add('الوزن: $v');
+        } else if (!key.startsWith('_') && value != null && value is! Map && value is! List) {
+          final v = _value(value);
+          if (v.isNotEmpty) parts.add('$key: $v');
+        }
+      }
+    }
+    final note = _value(item['note'] ?? item['customer_note'] ?? item['notes']);
+    if (note.isNotEmpty) parts.add('📝 ملاحظة: $note');
+    else if (meta is List) {
+      for (final entry in meta) {
+        if (entry is! Map) continue;
+        if (entry['key'] == '_beytei_customer_note') {
+          final v = _value(entry['value']);
+          if (v.isNotEmpty) parts.add('📝 ملاحظة: $v');
+        }
+      }
+    }
+    return parts.toSet().toList();
+  }
+
+
+  // V8: accept the JSON list and the legacy JSON-string order-item payload.
+  static List<dynamic> orderItems(Map<String, dynamic> order) {
+    dynamic raw = order['line_items'] ?? order['items'];
+    if (raw is List && raw.isEmpty && order['items'] is List) raw = order['items'];
+    if (raw is List) return raw;
+    if (raw is String && raw.trim().isNotEmpty) {
+      try {
+        final decoded = json.decode(raw);
+        if (decoded is List) return decoded;
+      } catch (_) { /* Legacy string summary remains in items_description. */ }
+    }
+    return const [];
+  }
+
+  static String _cleanNote(dynamic raw) {
+    if (raw == null || raw is Map || raw is List) return '';
+    final result = raw.toString().trim();
+    if (result.isEmpty ||
+        ['null', 'غير محدد', 'لا يوجد', 'لا توجد ملاحظات', 'none', '-']
+            .contains(result.toLowerCase())) return '';
+    return result;
+  }
+
+  /// Real customer remarks only. Never mistake the full order-items description
+  /// for a note. Item-specific remarks are labelled with their product name.
+  static List<String> orderNotes(Map<String, dynamic> order) {
+    final result = <String>[];
+    final seen = <String>{};
+    void add(dynamic raw, {String productName = ''}) {
+      final note = _cleanNote(raw);
+      if (note.isEmpty || !seen.add(note)) return;
+      result.add(productName.isEmpty ? note : '$productName: $note');
+    }
+    add(order['notes']);
+    add(order['customer_note']);
+    add(order['order_note']);
+    add(order['delivery_notes']);
+    for (final raw in orderItems(order)) {
+      if (raw is! Map) continue;
+      final item = Map<String, dynamic>.from(raw);
+      final name = _value(item['name']);
+      add(item['note'], productName: name);
+      add(item['customer_note'], productName: name);
+      add(item['notes'], productName: name);
+      final meta = item['meta_data'];
+      if (meta is List) {
+        for (final value in meta) {
+          if (value is! Map) continue;
+          final key = _value(value['key'] ?? value['display_key']);
+          if (key == '_beytei_customer_note' || key == 'customer_note' ||
+              key == 'ملاحظة' || key == 'ملاحظات') {
+            add(value['value'] ?? value['display_value'], productName: name);
+          }
+        }
+      }
+    }
+    if (result.isEmpty) {
+      // Older orders sometimes embedded an explicitly labelled note inside
+      // the human-readable items summary. Never use the whole summary as a note.
+      final summary = _value(order['order_items'] ?? order['items_description']);
+      final pattern = RegExp(
+        r'^\s*(?:📝\s*)?(?:ملاحظات الزبون|ملاحظة الزبون|ملاحظات|ملاحظة|Notes?)\s*[:：-]\s*(.+)$',
+        caseSensitive: false,
+      );
+      for (final line in summary.split(RegExp(r'[\r\n|]+'))) {
+        final match = pattern.firstMatch(line.trim());
+        if (match != null) add(match.group(1));
+      }
+    }
+    return result;
+  }
+
+  static bool hasNotes(Map<String, dynamic> order) => orderNotes(order).isNotEmpty;
+
+  // The server provides already-calculated prices. We only display choices.
+  static List<String> choicePreview(Map<String, dynamic> order, {int maxLines = 3}) {
+    final lines = <String>[];
+    for (final raw in orderItems(order)) {
+      if (raw is! Map) continue;
+      final item = Map<String, dynamic>.from(raw);
+      final product = _value(item['name']);
+      final selections = details(item, isMarket: order['source_type'] == 'market')
+          .where((line) => !line.startsWith('📝')).toList();
+      if (selections.isNotEmpty) {
+        lines.add('${product.isEmpty ? 'الوجبة' : product}: ${selections.join(' • ')}');
+      }
+      if (lines.length >= maxLines) break;
+    }
+    return lines;
+  }
+
+  // V12 presentation only: remarks come from the same saved order fields.
+  // No new requests, no changes to notifications or order acceptance.
+  static Widget notesBanner(Map<String, dynamic> order, {VoidCallback? onTap, bool compact = false}) {
+    final notes = orderNotes(order);
+    if (notes.isEmpty) return const SizedBox.shrink();
+
+    final shown = compact ? notes.take(2).toList() : notes;
+    final hiddenCount = notes.length - shown.length;
+    const accent = Color(0xFFC45B16);
+    const inkColor = Color(0xFF422C20);
+
+    final content = Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 10, bottom: 8),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+          colors: [Color(0xFFFFF7ED), Color(0xFFFFFFFF)],
+        ),
+        borderRadius: BorderRadius.circular(19),
+        border: Border.all(color: const Color(0xFFF3D0AA), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF9B6430).withOpacity(0.08),
+            blurRadius: 15,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFE7CC),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: const Icon(Icons.sticky_note_2_outlined, color: accent, size: 23),
+              ),
+              const SizedBox(width: 11),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('ملاحظات الزبون',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: inkColor)),
+                    SizedBox(height: 2),
+                    Text('يرجى الانتباه للتفاصيل قبل تجهيز الطلب',
+                        style: TextStyle(fontSize: 11.5, color: Color(0xFF946B51), height: 1.4)),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFE7CC),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text('${notes.length}',
+                    style: const TextStyle(fontWeight: FontWeight.w800, color: accent, fontSize: 12)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          for (var index = 0; index < shown.length; index++) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.94),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFF5E5D6)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Icon(Icons.format_quote_rounded, color: accent, size: 19),
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      shown[index],
+                      textDirection: ui.TextDirection.rtl,
+                      textAlign: TextAlign.start,
+                      maxLines: compact ? 2 : null,
+                      overflow: compact ? TextOverflow.ellipsis : null,
+                      style: const TextStyle(
+                        color: inkColor,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        height: 1.55,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (index < shown.length - 1) const SizedBox(height: 7),
+          ],
+          if (hiddenCount > 0 || onTap != null) ...[
+            const SizedBox(height: 11),
+            Row(
+              children: [
+                const Icon(Icons.touch_app_outlined, color: accent, size: 17),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    hiddenCount > 0
+                        ? 'يوجد $hiddenCount ملاحظات إضافية — اضغط لعرضها'
+                        : 'اضغط لقراءة تفاصيل الطلب كاملة',
+                    style: const TextStyle(color: accent, fontSize: 11.5, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                if (onTap != null) const Icon(Icons.chevron_left_rounded, color: accent, size: 20),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+
+    if (onTap == null) return content;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(19),
+        onTap: onTap,
+        child: content,
+      ),
+    );
+  }
+
+  static Widget choicesBanner(Map<String, dynamic> order) {
+    final choices = choicePreview(order);
+    if (choices.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 7, bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3F6FF),
+        borderRadius: BorderRadius.circular(17),
+        border: Border.all(color: const Color(0xFFDAE4FA)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.tune_rounded, color: Color(0xFF3957A6), size: 20),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text('تفاصيل الوجبات والإضافات',
+                    style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF253C75), fontSize: 13)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 9),
+          for (final choice in choices)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 3),
+                    child: Icon(Icons.check_circle_rounded, size: 15, color: Color(0xFF4A69B2)),
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(choice,
+                        style: const TextStyle(fontSize: 12.5, color: Color(0xFF33415D), height: 1.55)),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Merge details omitted from the accept/status response with the original
+  // available-order snapshot (no mutation of driver balances or financial totals).
+  static Map<String, dynamic> preserveDetails(dynamic response, Map<String, dynamic> original) {
+    final result = <String, dynamic>{...original};
+    if (response is Map) result.addAll(Map<String, dynamic>.from(response));
+    for (final key in const [
+      'line_items', 'items', 'notes', 'customer_note', 'order_note',
+      'order_items', 'items_description', 'source_type',
+    ]) {
+      final value = result[key];
+      if (value == null || (value is String && value.trim().isEmpty) ||
+          (value is List && value.isEmpty)) {
+        if (original.containsKey(key)) result[key] = original[key];
+      }
+    }
+    return result;
+  }
+
+  static Widget itemTile(dynamic raw, {bool isMarket = false}) {
+    if (raw is! Map) return const SizedBox.shrink();
+    final item = Map<String, dynamic>.from(raw);
+    final qty = _value(item['quantity']).isNotEmpty ? _value(item['quantity']) : '1';
+    final total = double.tryParse(_value(item['total'] ?? item['line_total'])) ?? 0;
+    final name = _value(item['name']).isNotEmpty ? _value(item['name']) : 'وجبة';
+    final detailsList = details(item, isMarket: isMarket);
+    final itemNotes = detailsList.where((line) => line.startsWith('📝')).toList();
+    final selections = detailsList.where((line) => !line.startsWith('📝')).toList();
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border.all(color: const Color(0xFFE5EAF2)),
+        borderRadius: BorderRadius.circular(17),
+        boxShadow: [BoxShadow(color: const Color(0xFF243452).withOpacity(0.045), blurRadius: 9, offset: const Offset(0, 3))],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (!(isMarket && (double.tryParse(qty) ?? 1.0) % 1 != 0)) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEAF1FF),
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Text('${qty}x', style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF365FB8), fontSize: 12)),
+                ),
+                const SizedBox(width: 9),
+              ],
+              Expanded(
+                child: Text(name, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800, color: Color(0xFF1F2D42))),
+              ),
+              const SizedBox(width: 6),
+              Text('${NumberFormat('#,###').format(total)} د.ع',
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: Color(0xFF16805D))),
+            ],
+          ),
+          if (selections.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            for (final selection in selections)
+              Padding(
+                padding: const EdgeInsets.only(top: 5),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 3),
+                      child: Icon(Icons.check_circle_outline_rounded, size: 16, color: Color(0xFF4A69B2)),
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(child: Text(selection,
+                        style: const TextStyle(fontSize: 12.5, height: 1.45, color: Color(0xFF475569)))),
+                  ],
+                ),
+              ),
+          ],
+          for (final note in itemNotes)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(top: 10),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF6EB),
+                borderRadius: BorderRadius.circular(11),
+                border: Border.all(color: const Color(0xFFF6DFC5)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.sticky_note_2_outlined, size: 18, color: Color(0xFFB96023)),
+                  const SizedBox(width: 7),
+                  Expanded(child: Text(note.replaceFirst('📝 ملاحظة: ', ''),
+                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5, height: 1.5, color: Color(0xFF79441E)))),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class Order {
   final String id;
   final String? orderStatus;
@@ -1101,6 +1598,7 @@ class Order {
   final String? destinationLng;
   final String dateCreated;
   final String itemsDescription;
+  final List<dynamic> lineItems;
   final String? notes;
   final String? customerPhone;
   final String? pickupCode;
@@ -1129,6 +1627,7 @@ class Order {
     this.destinationLng,
     required this.dateCreated,
     required this.itemsDescription,
+    this.lineItems = const [],
     this.notes,
     this.customerPhone,
     this.pickupCode,
@@ -1154,8 +1653,9 @@ class Order {
       destinationLat: json['destination_lat']?.toString(),
       destinationLng: json['destination_lng']?.toString(),
       dateCreated: json['date_created'] ?? '',
-      itemsDescription: json['items_description'] ?? '',
-      notes: json['notes'],
+      itemsDescription: (json['items_description'] ?? json['order_items'] ?? '').toString(),
+      lineItems: json['line_items'] is List ? json['line_items'] : (json['items'] is List ? json['items'] : const []),
+      notes: json['notes']?.toString(),
       customerPhone: json['end_customer_phone']?.toString(),
       pickupCode: json['pickup_code']?.toString(),
       sourceType: json['source_type'],
@@ -2791,6 +3291,9 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
   Timer? _locationTimer;
   bool _isRefreshingOrders = false;
   bool _isViewingAvailableWhileActive = false;
+  Map<String, dynamic>? _realCompetitionSummary;
+  DateTime? _lastCompetitionRead;
+  bool _competitionLoading = false;
 
   static const _deliveriesKey = ValueKey('deliveries_screen');
   static const _earningsKey = ValueKey('earnings_screen');
@@ -2807,6 +3310,7 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
     WidgetsBinding.instance.addObserver(this);
 
     _chk();
+    _loadCompetitionSummary();
     _startLocationTracking();
     orderRefreshCounter.addListener(_handleGlobalRefresh);
 
@@ -2861,6 +3365,7 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
     if (state == AppLifecycleState.resumed) {
       print("📱 [APP] عاد التطبيق للواجهة (استيقظ)! جاري التحديث التلقائي...");
       orderRefreshCounter.value++;
+      _loadCompetitionSummary();
     }
   }
 
@@ -2929,6 +3434,7 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
           // 🔥 هنا يتم عرض مفتاح الاتصال العصري + الرصيد في الأعلى بشكل أنيق
           ModernOnlineToggle(token: widget.authResult.token),
           _buildCompactBalanceHeader(),
+          _buildCompetitionSummaryHeader(),
 
           Expanded(
             child: Stack(
@@ -3028,6 +3534,65 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
           BottomNavigationBarItem(icon: Icon(Icons.history_rounded), label: "السجل"),
           BottomNavigationBarItem(icon: Icon(Icons.person_rounded), label: "حسابي"),
         ],
+      ),
+    );
+  }
+
+  Future<void> _loadCompetitionSummary() async {
+    if (_competitionLoading) return;
+    final now = DateTime.now();
+    if (_lastCompetitionRead != null &&
+        now.difference(_lastCompetitionRead!) < const Duration(minutes: 3)) return;
+    _competitionLoading = true;
+    _lastCompetitionRead = now;
+    try {
+      final response = await http.get(
+        Uri.parse('https://de.beytei.com/api/driver/stats/performance'),
+        headers: {'Authorization': 'Bearer ${widget.authResult.token}', 'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 12));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (mounted && data is Map && data['success'] == true) {
+          setState(() => _realCompetitionSummary = Map<String,dynamic>.from(data));
+        }
+      }
+    } catch (_) {
+      // Ranking is optional; never block live delivery actions on a failed read.
+    } finally { _competitionLoading = false; }
+  }
+
+  Widget _buildCompetitionSummaryHeader() {
+    final info = _realCompetitionSummary;
+    final my = info?['my_data'] is Map ? info!['my_data'] as Map : <String,dynamic>{};
+    final ratings = info?['ratings'] is Map ? info!['ratings'] as Map : <String,dynamic>{};
+    final rank = int.tryParse('${my['current_rank'] ?? 0}') ?? 0;
+    final total = int.tryParse('${my['zone_driver_count'] ?? 0}') ?? 0;
+    final stars = double.tryParse('${ratings['average'] ?? 0}') ?? 0.0;
+    final ratedCount = int.tryParse('${ratings['total_count'] ?? 0}') ?? 0;
+    return InkWell(
+      onTap: () => Navigator.push(context,
+          MaterialPageRoute(builder: (_) => const DriverPerformanceScreen())).then((_) => _loadCompetitionSummary()),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.amber.shade300)),
+        child: Row(children: [
+          const Icon(Icons.emoji_events, color: Colors.orange, size: 27),
+          const SizedBox(width: 10),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('مركزك وتقييمك في منطقتك',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            Text(rank > 0 ? 'المركز #$rank من $total' : 'اضغط لمعرفة مركزك',
+                style: const TextStyle(color: Colors.black54, fontSize: 12)),
+          ])),
+          const Icon(Icons.star, color: Colors.amber, size: 19),
+          Text(ratedCount > 0 ? stars.toStringAsFixed(2) : '—',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          const SizedBox(width: 6),
+          const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.grey),
+        ]),
       ),
     );
   }
@@ -3339,6 +3904,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
   bool _isLoading = false;
   bool _isFirstLoad = true;
   Set<String> _newOrderIds = {};
+  final Set<String> _alertedNotesOrders = <String>{};
 
   // 🔥 مجموعة لتتبع الطلبات التي تم فك قفلها حتى لا يتكرر الاهتزاز والشعار
   final Set<String> _unlockedOrderIds = {};
@@ -3512,6 +4078,31 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
           _isFirstLoad = false;
         });
 
+        // Highlight notes once per incoming order, including on first load.
+        // No extra network request, popup spam, or change to dispatch timing.
+        final unseen = newOrders.where((raw) => raw is Map &&
+            BeyteiDeliveryItemDetailsV6.hasNotes(Map<String, dynamic>.from(raw)) &&
+            !_alertedNotesOrders.contains(raw['id'].toString())).toList();
+        if (unseen.isNotEmpty) {
+          for (final raw in unseen) _alertedNotesOrders.add(raw['id'].toString());
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 5),
+              backgroundColor: const Color(0xFFE65100),
+              content: Row(children: [
+                const Icon(Icons.warning_amber_rounded, color: Colors.white),
+                const SizedBox(width: 8),
+                Expanded(child: Text(unseen.length == 1
+                    ? 'تنبيه: الطلب الجديد يحتوي على ملاحظات من الزبون'
+                    : 'تنبيه: ${unseen.length} طلبات تحتوي على ملاحظات، راجعها قبل القبول',
+                    style: const TextStyle(fontWeight: FontWeight.bold))),
+              ]),
+            ));
+          });
+        }
+
       } else {
         if (!isSilent && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result['message'] ?? 'فشل جلب الطلبات'), backgroundColor: Colors.red));
@@ -3623,8 +4214,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     final deliveryFee = order['delivery_fee']?.toString() ?? '---';
 
     // 🔥 استخراج الملاحظات للتحقق منها
-    final String customerNotes = (order['notes'] ?? order['items_description'] ?? '').toString().trim();
-    final bool hasNotes = customerNotes.isNotEmpty && customerNotes != 'null' && customerNotes != 'غير محدد';
+    final bool hasNotes = BeyteiDeliveryItemDetailsV6.hasNotes(order);
 
     // 🔥 حساب وقت فك القفل بشكل حي ومباشر
     int remainingSeconds = _getRemainingLockSeconds(order['date_created']);
@@ -3693,34 +4283,11 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
               ],
             ),
 
-            // 🔔 شارة تنبيهية فورية على الكارد إذا كانت هناك ملاحظة
-            if (hasNotes) ...[
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFF8E1),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.amber.shade300),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.edit_note_rounded, size: 18, color: Colors.amber.shade900),
-                    const SizedBox(width: 6),
-                    Text(
-                      "يوجد ملاحظة خاصة من الزبون",
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.amber.shade900,
-                        fontFamily: 'Cairo',
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+            // Visible before the driver opens details: actual customer remarks.
+            if (hasNotes)
+              BeyteiDeliveryItemDetailsV6.notesBanner(order,
+                  compact: true, onTap: () => _showDetailsDialog(order, deliveryFee)),
+            BeyteiDeliveryItemDetailsV6.choicesBanner(order),
 
             const SizedBox(height: 16),
             Row(
@@ -3754,7 +4321,7 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                     ),
                     onPressed: (_isProcessingOrder || !canAccept || BalanceManager.current < _costInPoints)
                         ? null
-                        : () => _acceptDelivery(id),
+                        : () => _acceptDeliveryWithNotesWarning(order),
                   ),
                 ),
               ],
@@ -3786,20 +4353,9 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     final String sourceType = order['source_type']?.toString() ?? 'restaurant';
 
     // 🔥 استخراج الملاحظات بأمان
-    final String customerNotes = (order['notes'] ?? order['items_description'] ?? '').toString().trim();
-    final bool hasNotes = customerNotes.isNotEmpty && customerNotes != 'null' && customerNotes != 'غير محدد';
+    final bool hasNotes = BeyteiDeliveryItemDetailsV6.hasNotes(order);
 
-    List<dynamic> items = [];
-    dynamic rawItems = order['line_items'] ?? order['items'];
-    if (rawItems != null) {
-      if (rawItems is List) {
-        items = rawItems;
-      } else if (rawItems is String && rawItems.isNotEmpty) {
-        try {
-          items = json.decode(rawItems);
-        } catch (_) {}
-      }
-    }
+    final List<dynamic> items = BeyteiDeliveryItemDetailsV6.orderItems(order);
 
     final double deliveryFee = double.tryParse(order['delivery_fee']?.toString() ?? '0') ?? 0;
     final double orderTotal = double.tryParse(order['order_total']?.toString() ?? '0') ?? 0;
@@ -3839,122 +4395,12 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
                 ),
                 const Divider(height: 25, color: Colors.black12),
 
-                // 🔔 بطاقة ملاحظات الزبون العصرية والبارزة
-                if (hasNotes) ...[
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 16),
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF8E1),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.amber.shade400, width: 1.5),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.amber.withOpacity(0.12),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(6),
-                              decoration: BoxDecoration(
-                                color: Colors.amber.shade700,
-                                shape: BoxShape.circle,
-                              ),
-                              child: const Icon(Icons.edit_note_rounded, color: Colors.white, size: 18),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              "ملاحظات الزبون:",
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14,
-                                color: Colors.amber.shade900,
-                                fontFamily: 'Cairo',
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          customerNotes,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.black87,
-                            height: 1.4,
-                            fontFamily: 'Cairo',
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                if (hasNotes)
+                  BeyteiDeliveryItemDetailsV6.notesBanner(order),
 
                 if (items.isNotEmpty)
-                  ...items.map((item) {
-                    final String rawQty = item['quantity']?.toString() ?? '1';
-                    final double qtyDouble = double.tryParse(rawQty) ?? 1.0;
-
-                    final bool isFraction = qtyDouble % 1 != 0 && sourceType == 'market';
-
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 12.0),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(item['name'] ?? '', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
-                                    ),
-                                    if (isFraction)
-                                      Container(
-                                        margin: const EdgeInsets.only(right: 8),
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                        decoration: BoxDecoration(
-                                            color: Colors.orange.shade50,
-                                            borderRadius: BorderRadius.circular(20),
-                                            border: Border.all(color: Colors.orange.shade200)
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(Icons.scale, size: 14, color: Colors.orange.shade800),
-                                            const SizedBox(width: 4),
-                                            Text(_formatFractionWeight(rawQty), style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.orange.shade800)),
-                                          ],
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                                const SizedBox(height: 4),
-                                Text("${NumberFormat('#,###').format(double.tryParse(item['total']?.toString() ?? '0') ?? 0)} د.ع", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.green.shade700)),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 15),
-                          if (!isFraction)
-                            Container(
-                                width: 45, height: 45,
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.blue.shade100)),
-                                child: Text("${rawQty}x", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue, fontSize: 16))
-                            ),
-                        ],
-                      ),
-                    );
-                  }).toList()
+                  ...items.map((item) => BeyteiDeliveryItemDetailsV6.itemTile(item,
+                      isMarket: sourceType == 'market')).toList()
                 else
                   Center(child: Padding(padding: const EdgeInsets.all(20.0), child: Text(order['items_description'] ?? "لا توجد تفاصيل للمنتجات", style: const TextStyle(fontSize: 16, height: 1.5), textAlign: TextAlign.center))),
 
@@ -3993,6 +4439,34 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     );
   }
 
+  Future<void> _acceptDeliveryWithNotesWarning(Map<String, dynamic> order) async {
+    if (_isProcessingOrder) return;
+    final notes = BeyteiDeliveryItemDetailsV6.orderNotes(order);
+    if (notes.isNotEmpty) {
+      final approved = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.warning_amber_rounded, color: Color(0xFFE65100)),
+            SizedBox(width: 6),
+            Expanded(child: Text('انتبه لملاحظات الزبون')),
+          ]),
+          content: SingleChildScrollView(child: Text(notes.join('\n\n'),
+              style: const TextStyle(fontSize: 15, height: 1.6))),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('رجوع')),
+            ElevatedButton(onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('قرأت الملاحظات — قبول الطلب')),
+          ],
+        ),
+      );
+      if (!mounted || approved != true) return;
+    }
+    if (!_ordersList.any((item) => item['id'].toString() == order['id'].toString())) return;
+    await _acceptDelivery(order['id'].toString());
+  }
+
   Future<void> _acceptDelivery(String id) async {
     if (_isProcessingOrder) return;
     if (BalanceManager.current < _costInPoints) {
@@ -4025,6 +4499,9 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
 
       // 4. التحقق من النتيجة
       if (res['success'] == true) {
+        final acceptedSnapshot = _ordersList.where((o) => o['id'].toString() == id).isNotEmpty
+            ? Map<String, dynamic>.from(_ordersList.firstWhere((o) => o['id'].toString() == id))
+            : <String, dynamic>{};
         setState(() {
           _ordersList.removeWhere((o) => o['id'].toString() == id);
           _newOrderIds.remove(id);
@@ -4038,7 +4515,8 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
         );
 
         if (mounted && res['delivery_order'] != null) {
-          widget.onDeliveryAccepted(res['delivery_order']);
+          widget.onDeliveryAccepted(BeyteiDeliveryItemDetailsV6.preserveDetails(
+              res['delivery_order'], acceptedSnapshot));
         }
       } else {
         BalanceManager.refund(_costInPoints);
@@ -4130,6 +4608,18 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _startLiveTracking();
       _debugCoordinates();
+      if (mounted && BeyteiDeliveryItemDetailsV6.hasNotes(_currentDelivery)) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(
+          content: Row(children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.white),
+            SizedBox(width: 10),
+            Expanded(child: Text('تنبيه: هذا الطلب يحتوي على ملاحظات مهمة من الزبون')),
+          ]),
+          duration: Duration(seconds: 5),
+          backgroundColor: Color(0xFFE65100),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
     });
     Future.delayed(const Duration(minutes: 2), () {
       if (mounted) setState(() => _canShowNumber = true);
@@ -4275,15 +4765,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     final String sourceType = _currentDelivery['source_type']?.toString() ?? 'restaurant';
 
     // 🔥 قراءة ملاحظات الزبون بأمان
-    final String currentNotes = (_currentDelivery['notes'] ?? _currentDelivery['items_description'] ?? '').toString().trim();
-    final bool hasNotes = currentNotes.isNotEmpty && currentNotes != 'null' && currentNotes != 'غير محدد';
+    final bool hasNotes = BeyteiDeliveryItemDetailsV6.hasNotes(_currentDelivery);
 
-    List<dynamic> items = [];
-    if (_currentDelivery['line_items'] != null && _currentDelivery['line_items'] is List) {
-      items = _currentDelivery['line_items'];
-    } else if (_currentDelivery['items'] != null && _currentDelivery['items'] is List) {
-      items = _currentDelivery['items'];
-    }
+    final List<dynamic> items = BeyteiDeliveryItemDetailsV6.orderItems(_currentDelivery);
 
     final double orderTotal = double.tryParse(_currentDelivery['order_total']?.toString() ?? '0') ?? 0;
     final double deliveryFee = double.tryParse(_currentDelivery['delivery_fee']?.toString() ?? '0') ?? 0;
@@ -4328,80 +4812,12 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                 ),
                 const Divider(height: 25),
 
-                // 🔔 بطاقة الملاحظات العصرية داخل نافذة التفاصيل
-                if (hasNotes) ...[
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 16),
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF8E1),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.amber.shade400, width: 1.5),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.amber.withOpacity(0.12),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(6),
-                              decoration: BoxDecoration(
-                                color: Colors.amber.shade700,
-                                shape: BoxShape.circle,
-                              ),
-                              child: const Icon(Icons.edit_note_rounded, color: Colors.white, size: 18),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              "ملاحظات الزبون للطلب:",
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14,
-                                color: Colors.amber.shade900,
-                                fontFamily: 'Cairo',
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          currentNotes,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.black87,
-                            height: 1.4,
-                            fontFamily: 'Cairo',
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                if (hasNotes)
+                  BeyteiDeliveryItemDetailsV6.notesBanner(_currentDelivery),
 
                 if (items.isNotEmpty)
-                  ...items.map((item) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8.0),
-                    child: Row(
-                      children: [
-                        Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8)),
-                            child: Text("${item['quantity'] ?? '1'}x", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue))
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(child: Text(item['name'] ?? '', style: const TextStyle(fontSize: 16))),
-                        Text("${NumberFormat('#,###').format(double.tryParse(item['total']?.toString() ?? '0') ?? 0)} د.ع", style: const TextStyle(fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                  )).toList()
+                  ...items.map((item) => BeyteiDeliveryItemDetailsV6.itemTile(item,
+                      isMarket: sourceType == 'market')).toList()
                 else
                   Center(
                       child: Padding(
@@ -4582,7 +4998,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
           widget.onDeliveryFinished();
         } else {
           if (data['delivery_order'] != null) {
-            setState(() => _currentDelivery = data['delivery_order']);
+            setState(() => _currentDelivery = BeyteiDeliveryItemDetailsV6.preserveDetails(
+                data['delivery_order'], _currentDelivery));
           }
           widget.onDataChanged();
         }
@@ -5285,7 +5702,8 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
 
                     if (res['success'] == true) {
                       setState(() {
-                        _currentDelivery = res['delivery_order'];
+                        _currentDelivery = BeyteiDeliveryItemDetailsV6.preserveDetails(
+                            res['delivery_order'], _currentDelivery);
                         _isLoading = false;
                       });
                       widget.onDataChanged();
@@ -5547,8 +5965,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     final bool hasRestaurantPhone = restaurantData?['phone']?.toString().isNotEmpty ?? false;
 
     // 🔥 استخراج الملاحظة للشاشة الرئيسية
-    final String activeNotes = (_currentDelivery['notes'] ?? _currentDelivery['items_description'] ?? '').toString().trim();
-    final bool hasActiveNotes = activeNotes.isNotEmpty && activeNotes != 'null' && activeNotes != 'غير محدد';
+    final bool hasActiveNotes = BeyteiDeliveryItemDetailsV6.hasNotes(_currentDelivery);
 
     return Scaffold(
       backgroundColor: Colors.grey[100],
@@ -5577,6 +5994,10 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
         padding: const EdgeInsets.all(20.0),
         child: Column(
           children: [
+            // V8: do not hide customer remarks under the distance card.
+            if (hasActiveNotes) BeyteiDeliveryItemDetailsV6.notesBanner(_currentDelivery,
+                onTap: _showOrderDetailsDialog),
+            BeyteiDeliveryItemDetailsV6.choicesBanner(_currentDelivery),
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(30),
@@ -5627,74 +6048,6 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                 ],
               ),
             ),
-
-            // 🔔 بطاقة الملاحظات التنبيهية العصرية على الشاشة الرئيسية مباشرة
-            if (hasActiveNotes) ...[
-              const SizedBox(height: 15),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFF8E1),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.amber.shade400, width: 2),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.amber.withOpacity(0.18),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: Colors.amber.shade800,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          "ملاحظة خاصة من الزبون (يرجى الانتباه):",
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                            color: Colors.amber.shade900,
-                            fontFamily: 'Cairo',
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.amber.shade200),
-                      ),
-                      child: Text(
-                        activeNotes,
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                          height: 1.4,
-                          fontFamily: 'Cairo',
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
 
             const SizedBox(height: 20),
             Row(
@@ -5815,6 +6168,9 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
   Map<String, dynamic>? _overtakeData;
   Map<String, dynamic>? _previousChampion;
   Map<String, dynamic>? _zoneIncentives;
+  Map<String, dynamic>? _weeklyProgress;
+  Map<String, dynamic>? _customerRatings;
+  String? _loadError;
 
   @override
   void initState() {
@@ -5824,59 +6180,59 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
   }
 
   Future<String?> _getToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('token') ?? prefs.getString('api_token');
+    // The actual driver login stores the api_token in FlutterSecureStorage.
+    final auth = await ApiService.getStoredAuthData();
+    return auth?.token;
   }
 
   Future<void> _fetchAllData() async {
-    setState(() => _isLoading = true);
+    if (!mounted) return;
+    setState(() { _isLoading = true; _loadError = null; });
     try {
       final token = await _getToken();
-      final headers = {
-        'Authorization': 'Bearer $token',
-        'Accept': 'application/json',
-      };
-
-      final results = await Future.wait([
-        http.get(Uri.parse('https://de.beytei.com/api/driver/performance'),
-            headers: headers),
-        http.get(Uri.parse('https://de.beytei.com/api/driver/stats/leaderboard'),
-            headers: headers),
-        http.get(
-            Uri.parse('https://de.beytei.com/api/driver/stats/my-stats'),
-            headers: headers),
+      if (token == null || token.isEmpty) {
+        throw StateError('جلسة الدخول منتهية. يرجى تسجيل الدخول مجدداً.');
+      }
+      final headers = {'Authorization': 'Bearer $token', 'Accept': 'application/json'};
+      // Just two reads, on page open or explicit refresh. No periodic polling.
+      final responses = await Future.wait([
+        http.get(Uri.parse('https://de.beytei.com/api/driver/stats/performance'), headers: headers)
+            .timeout(const Duration(seconds: 20)),
+        http.get(Uri.parse('https://de.beytei.com/api/driver/stats/leaderboard'), headers: headers)
+            .timeout(const Duration(seconds: 20)),
       ]);
-
-      if (results[0].statusCode == 200) {
-        final perf = json.decode(results[0].body);
-        setState(() {
-          _overtakeData = perf['overtake'];
-          _previousChampion = perf['previous_week_champion'];
-          _zoneIncentives = perf['zone_incentives'];
-          _myStats = perf['my_data'];
-        });
+      final perfResponse = responses[0];
+      if (perfResponse.statusCode != 200) {
+        throw StateError('تعذر جلب المنافسة: HTTP ${perfResponse.statusCode}');
       }
-
-      if (results[1].statusCode == 200) {
-        setState(() => _leaderboard = json.decode(results[1].body));
+      final perf = json.decode(perfResponse.body);
+      if (perf is! Map || perf['success'] != true) {
+        throw StateError('بيانات المنافسة غير صالحة');
       }
-
-      if (results[2].statusCode == 200 && _myStats != null) {
-        final stats = json.decode(results[2].body);
-        setState(() {
-          _myStats = {
-            ..._myStats!,
-            'detailed': stats,
-          };
-        });
+      Map<String, dynamic>? leaders;
+      if (responses[1].statusCode == 200) {
+        final result = json.decode(responses[1].body);
+        if (result is Map && result['success'] == true) {
+          leaders = Map<String, dynamic>.from(result);
+        }
       }
+      if (!mounted) return;
+      setState(() {
+        _myStats = Map<String, dynamic>.from(perf['my_data'] ?? {});
+        _customerRatings = Map<String, dynamic>.from(perf['ratings'] ?? {});
+        _weeklyProgress = Map<String, dynamic>.from(perf['weekly_progress'] ?? {});
+        _overtakeData = perf['overtake'] is Map ? Map<String,dynamic>.from(perf['overtake']) : null;
+        _previousChampion = perf['previous_week_champion'] is Map ? Map<String,dynamic>.from(perf['previous_week_champion']) : null;
+        _zoneIncentives = perf['zone_incentives'] is Map ? Map<String,dynamic>.from(perf['zone_incentives']) : null;
+        _leaderboard = leaders;
+      });
     } catch (e) {
-      print('خطأ: $e');
+      if (mounted) setState(() => _loadError = e.toString());
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
-    setState(() => _isLoading = false);
   }
 
-  @override
   @override
   Widget build(BuildContext context) {
     return Directionality(
@@ -5884,17 +6240,24 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
       child: Scaffold(
         backgroundColor: const Color(0xFF0F1729),
         body: _isLoading
-            ? const Center(
-          child: CircularProgressIndicator(
-            color: Color(0xFFFFD700),
-          ),
-        )
+            ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFD700)))
+            : _loadError != null
+            ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.orangeAccent, size: 44),
+            const SizedBox(height: 12),
+            Text(_loadError!, style: const TextStyle(color: Colors.white), textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            ElevatedButton(onPressed: _fetchAllData, child: const Text('إعادة المحاولة')),
+          ],
+        )))
             : CustomScrollView(
           slivers: [
             _buildAppBar(),
             SliverToBoxAdapter(child: _buildHeroStatsCard()),
-            if (_overtakeData != null)
-              SliverToBoxAdapter(child: _buildOvertakeChallengeCard()),
+            SliverToBoxAdapter(child: _buildWeeklyProgressCard()),
+            SliverToBoxAdapter(child: _buildOvertakeChallengeCard()),
             if (_previousChampion != null)
               SliverToBoxAdapter(child: _buildChampionCard()),
             SliverToBoxAdapter(child: _buildTabsHeader()),
@@ -5985,10 +6348,14 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
   // البطاقة الرئيسية (Hero Stats)
   // ═══════════════════════════════════════════════════════
   Widget _buildHeroStatsCard() {
-    final rank = _myStats?['current_rank'] ?? 0;
-    final score = _myStats?['current_score'] ?? 0.0;
-    final highest = _myStats?['highest_rank_achieved'] ?? 0;
-    final consecutive = _myStats?['consecutive_perfect_orders'] ?? 0;
+    final rank = int.tryParse('${_myStats?['current_rank'] ?? 0}') ?? 0;
+    final score = double.tryParse('${_myStats?['current_score'] ?? 0}') ?? 0.0;
+    final highest = int.tryParse('${_myStats?['highest_rank_achieved'] ?? 0}') ?? 0;
+    final consecutive = int.tryParse('${_myStats?['consecutive_perfect_orders'] ?? 0}') ?? 0;
+    final ratingAverage = double.tryParse('${_customerRatings?['average'] ?? 0}') ?? 0.0;
+    final ratingCount = int.tryParse('${_customerRatings?['total_count'] ?? 0}') ?? 0;
+    final zoneName = _myStats?['zone_name']?.toString() ?? '';
+    final zoneCount = _myStats?['zone_driver_count']?.toString() ?? '-';
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -6040,7 +6407,7 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
                       ),
                     ),
                     Text(
-                      '#$rank',
+                      rank > 0 ? '#$rank' : '—',
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 42,
@@ -6051,6 +6418,17 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
                 ),
               ],
             ),
+            const SizedBox(height: 12),
+            Text('من $zoneCount سائق • $zoneName',
+                style: const TextStyle(color: Colors.white, fontSize: 13)),
+            const SizedBox(height: 12),
+            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              const Icon(Icons.star, color: Colors.white, size: 24),
+              const SizedBox(width: 8),
+              Text(ratingCount == 0 ? 'لا توجد تقييمات بعد'
+                  : '${ratingAverage.toStringAsFixed(2)} / 5  •  $ratingCount تقييم',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 17)),
+            ]),
             const SizedBox(height: 20),
             const Divider(color: Colors.white24, thickness: 1),
             const SizedBox(height: 20),
@@ -6106,176 +6484,226 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
   // ═══════════════════════════════════════════════════════
   // بطاقة التحدي (Overtake Challenge) - لحظية
   // ═══════════════════════════════════════════════════════
+  Widget _buildWeeklyProgressCard() {
+    final completed = int.tryParse('${_weeklyProgress?['completed'] ?? 0}') ?? 0;
+    final target = int.tryParse('${_weeklyProgress?['target'] ?? 50}') ?? 50;
+    final double fraction = target > 0 ? (completed / target).clamp(0.0, 1.0).toDouble() : 0.0;
+    return Card(
+      color: const Color(0xFF1E293B),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Padding(padding: const EdgeInsets.all(16), child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('طلباتك المكتملة خلال آخر 7 أيام',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 9),
+        LinearProgressIndicator(value: fraction, minHeight: 10,
+            backgroundColor: Colors.white24, color: Colors.tealAccent),
+        const SizedBox(height: 8),
+        Text('$completed / $target طلب — حصة الطلبات في نقاط المنافسة',
+            style: const TextStyle(color: Colors.white70)),
+        const SizedBox(height: 5),
+        const Text('هذا شريط طلبات حقيقي من السيرفر، وليس عدد الطلبات التي تضمن تجاوز المنافس.',
+            style: TextStyle(color: Colors.white54, fontSize: 11)),
+      ],
+      )),
+    );
+  }
+
+  // V12: only show the driver directly AHEAD. Counts come from Laravel's
+  // simulated 4.5+ average reviews and fast completed deliveries, never locally.
   Widget _buildOvertakeChallengeCard() {
-    final action = _overtakeData!['action_required'];
-    final progress = _overtakeData!['progress'];
-    final targetName = _overtakeData!['target_driver_name'];
-    final targetRank = _overtakeData!['target_rank'];
-    final scoreGap = _overtakeData!['score_gap'];
+    final myRank = int.tryParse('${_myStats?['current_rank'] ?? 0}') ?? 0;
+    final myScore = double.tryParse('${_myStats?['current_score'] ?? 0}') ?? 0.0;
+    final data = _overtakeData;
+    final isLeader = myRank == 1 && data == null;
 
-    final completed = action['completed_orders'] ?? 0;
-    final needed = action['needed_orders'] ?? 1;
-    final remaining = action['remaining_orders'] ?? needed;
-    final percentage = (progress?['percentage'] ?? 0.0).toDouble();
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Container(
+    if (data == null) {
+      return Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            begin: Alignment.topRight,
-            end: Alignment.bottomLeft,
-            colors: [
-              Color(0xFF1E3A8A),
-              Color(0xFF3B82F6),
+          gradient: const LinearGradient(colors: [Color(0xFF192F60), Color(0xFF29498D)]),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: const Color(0xFF4567A8)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 52, height: 52,
+              decoration: BoxDecoration(color: const Color(0x33F8C85D), borderRadius: BorderRadius.circular(16)),
+              child: Icon(isLeader ? Icons.emoji_events_rounded : Icons.query_stats_rounded,
+                  color: const Color(0xFFFFD36A), size: 29),
+            ),
+            const SizedBox(width: 14),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(isLeader ? 'أنت متصدر منطقتك!' : 'تحدي المركز القادم',
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: Colors.white)),
+              const SizedBox(height: 5),
+              Text(isLeader
+                  ? 'حافظ على المركز الأول بإكمال الطلبات وتقديم خدمة ممتازة.'
+                  : 'ستظهر الطلبات المطلوبة عندما يكتمل تحديث الترتيب في منطقتك.',
+                  style: const TextStyle(fontSize: 12.5, color: Color(0xFFCDD9F1), height: 1.5)),
+            ])),
+          ],
+        ),
+      );
+    }
+
+    final action = data['action_required'] is Map
+        ? Map<String, dynamic>.from(data['action_required'])
+        : <String, dynamic>{};
+    final nextRank = int.tryParse('${data['target_rank'] ?? 0}') ?? 0;
+    final targetName = '${data['target_driver_name'] ?? 'السائق المنافس'}';
+    final needed = int.tryParse('${action['needed_orders']}');
+    final targetScore = double.tryParse('${data['target_score'] ?? 0}') ?? 0.0;
+    final ratingLabel = '${action['required_rating'] ?? 'متوسط تقييم 4.5 نجوم أو أعلى'}';
+    final prizeKey = nextRank == 1 ? 'prize_1st' : nextRank == 2 ? 'prize_2nd' : 'prize_3rd';
+    final rawPrize = nextRank >= 1 && nextRank <= 3
+        ? (_zoneIncentives?[prizeKey]?.toString().trim() ?? '') : '';
+    final hasPrize = rawPrize.isNotEmpty && rawPrize != '0';
+    final prizeText = rawPrize.contains('نقطة') || rawPrize.contains('نقاط')
+        ? rawPrize : '$rawPrize نقطة';
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+          colors: [Color(0xFF152A5B), Color(0xFF21478E), Color(0xFF3266C4)],
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFF6289CC).withOpacity(0.65)),
+        boxShadow: [BoxShadow(color: const Color(0xFF1D4A96).withOpacity(0.28), blurRadius: 18, offset: const Offset(0, 8))],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 42, height: 42,
+                decoration: BoxDecoration(color: Colors.white.withOpacity(0.12), borderRadius: BorderRadius.circular(13)),
+                child: const Icon(Icons.emoji_events_rounded, color: Color(0xFFFFD369), size: 24),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('تحدي المركز القادم',
+                    style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w800)),
+                SizedBox(height: 3),
+                Text('خطوتك التالية نحو الصدارة',
+                    style: TextStyle(color: Color(0xFFBFD1F4), fontSize: 11.5)),
+              ])),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(color: const Color(0xFF24417A), borderRadius: BorderRadius.circular(11),
+                    border: Border.all(color: Colors.white24)),
+                child: Text('المركز #$nextRank',
+                    style: const TextStyle(fontWeight: FontWeight.w800, color: Color(0xFFFFD369), fontSize: 12)),
+              ),
             ],
           ),
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF3B82F6).withOpacity(0.3),
-              blurRadius: 15,
-              offset: const Offset(0, 8),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.095),
+              borderRadius: BorderRadius.circular(15),
+              border: Border.all(color: Colors.white.withOpacity(0.13)),
+            ),
+            child: Row(
+              children: [
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('مركزك الحالي', style: TextStyle(color: Color(0xFFBFCEE9), fontSize: 11)),
+                  const SizedBox(height: 3),
+                  Text('#$myRank', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 25)),
+                  Text('${myScore.toStringAsFixed(2)} نقطة',
+                      style: const TextStyle(color: Color(0xFFE2ECFF), fontSize: 11.5)),
+                ])),
+                const Icon(Icons.arrow_back_rounded, color: Color(0xFFFFD369), size: 29),
+                const SizedBox(width: 9),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('المركز الأعلى', style: TextStyle(color: Color(0xFFBFCEE9), fontSize: 11)),
+                  const SizedBox(height: 3),
+                  Text('#$nextRank', style: const TextStyle(color: Color(0xFFFFD369), fontWeight: FontWeight.w900, fontSize: 25)),
+                  Text('$targetName · ${targetScore.toStringAsFixed(2)} نقطة',
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 2,
+                      style: const TextStyle(color: Color(0xFFE2ECFF), fontSize: 11.5)),
+                ])),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          Center(child: Column(children: [
+            if (needed != null) ...[
+              Text('$needed',
+                  style: const TextStyle(fontSize: 57, fontWeight: FontWeight.w900, color: Colors.white, height: 1.05)),
+              const SizedBox(height: 4),
+              const Text('طلبات مكتملة تقريباً لتجاوز المركز الأعلى',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontWeight: FontWeight.w800, color: Colors.white, fontSize: 13.5)),
+            ] else ...[
+              const Icon(Icons.insights_rounded, color: Color(0xFFFFD369), size: 40),
+              const SizedBox(height: 8),
+              const Text('الهدف يحتاج أداءً أعلى',
+                  style: TextStyle(fontWeight: FontWeight.w800, color: Colors.white, fontSize: 16)),
+              const SizedBox(height: 3),
+              const Text('لم يتوفر تقدير كافٍ ضمن نطاق المحاكاة الحالي.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Color(0xFFDFE9FF), fontSize: 12)),
+            ],
+          ])),
+          const SizedBox(height: 15),
+          Wrap(
+            spacing: 8, runSpacing: 8,
+            children: [
+              _buildChallengeTag(Icons.star_rounded, ratingLabel),
+              _buildChallengeTag(Icons.delivery_dining_rounded, 'توصيل مكتمل'),
+              _buildChallengeTag(Icons.schedule_rounded, 'وصول سريع للمطعم'),
+            ],
+          ),
+          if (hasPrize) ...[
+            const SizedBox(height: 14),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+              decoration: BoxDecoration(color: const Color(0xFF112651).withOpacity(0.75),
+                  borderRadius: BorderRadius.circular(13)),
+              child: Row(children: [
+                const Icon(Icons.redeem_rounded, color: Color(0xFFFFD369), size: 20),
+                const SizedBox(width: 8),
+                Expanded(child: Text('جائزة المركز #$nextRank: $prizeText — بعد اعتماد الإدارة',
+                    style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFFFE5A2), fontSize: 12.5))),
+              ]),
             ),
           ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // العنوان
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(Icons.flag, color: Colors.amber, size: 24),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'هدفك القادم',
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: 12,
-                        ),
-                      ),
-                      Text(
-                        'تجاوز المركز #$targetRank',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-
-            // المقارنة
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  _buildCompareItem('أنت', progress['current_score'], true),
-                  const Icon(Icons.arrow_back, color: Colors.white54, size: 20),
-                  _buildCompareItem(targetName, progress['target_score'], false),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // شريط التقدم
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'التقدم: $completed / $needed',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Text(
-                  '${percentage.toStringAsFixed(0)}%',
-                  style: const TextStyle(
-                    color: Colors.amber,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: LinearProgressIndicator(
-                value: percentage / 100,
-                minHeight: 10,
-                backgroundColor: Colors.white.withOpacity(0.2),
-                valueColor: const AlwaysStoppedAnimation<Color>(Colors.amber),
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // الرسالة
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.info_outline, color: Colors.amber, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      remaining == 0
-                          ? '🎉 مبروك! انتظر التحديث القادم (3 فجراً)'
-                          : '🎯 متبقي $remaining طلبات مثالية (5 نجوم + وصول سريع)',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // معلومات التحديث
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                const Icon(Icons.update, color: Colors.white54, size: 16),
-                const SizedBox(width: 6),
-                Text(
-                  'التحديث الرسمي: يومياً الساعة 3:00 فجراً',
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.7),
-                    fontSize: 11,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
+          const SizedBox(height: 14),
+          const Text('تقدير من بيانات السيرفر الحالية، وليس وعداً بالتجاوز؛ يتغيّر مع طلبات وتقييمات المنافس.',
+              textAlign: TextAlign.start,
+              style: TextStyle(fontSize: 11.3, color: Color(0xFFC4D6F7), height: 1.5)),
+        ],
       ),
+    );
+  }
+
+  Widget _buildChallengeTag(IconData icon, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.11),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white.withOpacity(0.11)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 15, color: const Color(0xFFFFD369)),
+        const SizedBox(width: 5),
+        Flexible(child: Text(label,
+            style: const TextStyle(fontSize: 11.3, color: Colors.white, fontWeight: FontWeight.w600))),
+      ]),
     );
   }
 
@@ -6292,7 +6720,7 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
         ),
         const SizedBox(height: 4),
         Text(
-          '${(score ?? 0).toStringAsFixed(1)} نقطة',
+          '${(double.tryParse('$score') ?? 0).toStringAsFixed(1)} نقطة',
           style: const TextStyle(
             color: Colors.white,
             fontSize: 16,
@@ -6436,7 +6864,7 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
 
     final leaders = _leaderboard!['leaders'] as List;
     final myDriverId = _myStats != null
-        ? (_myStats!['detailed']?['driver']?['id'] ?? -1)
+        ? (_myStats!['driver_id'] ?? -1)
         : -1;
 
     return ListView.builder(
@@ -6872,7 +7300,17 @@ class HistoryTabV3 extends StatelessWidget {
                 'order_status': o['status'],
                 'delivery_fee': o['delivery_fee'],
                 'pickup_location_name': o['pickup_location'],
-                'items_description': o['items_description'] ?? 'تفاصيل الطلب',
+                'items_description': o['items_description'] ?? o['order_items'] ?? 'تفاصيل الطلب',
+                'order_items': o['order_items'] ?? o['items_description'] ?? '',
+                'line_items': o['line_items'] ?? o['items'] ?? [],
+                'items': o['items'] ?? o['line_items'] ?? [],
+                'notes': o['notes'] ?? '',
+                'order_total': o['order_total'] ?? 0,
+                'final_order_total': o['final_order_total'] ?? 0,
+                'discount_amount': o['discount_amount'] ?? 0,
+                'platform_markup': o['platform_markup'] ?? 0,
+                'total_to_collect': o['total_to_collect'] ?? 0,
+                'source_type': o['source_type'] ?? 'restaurant',
                 'destination_address': o['destination_address'] ?? 'العنوان',
                 'destination_lat': o['destination_lat'],
                 'destination_lng': o['destination_lng'],
@@ -9234,4 +9672,3 @@ class _DriverCallPageState extends State<DriverCallPage> {
     );
   }
 }
-
