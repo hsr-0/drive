@@ -160,12 +160,15 @@ class FoodItem {
   final int id; final String name; final String description;
   final double price; final double? salePrice; final String imageUrl;
   int quantity; final int categoryId; final String status;
+  final String availabilityStart;
+  final String availabilityEnd;
   bool get isHidden => status != 'publish';
 
   FoodItem({
     required this.id, required this.name, required this.description,
     required this.price, this.salePrice, required this.imageUrl,
     this.quantity = 1, required this.categoryId, this.status = 'publish',
+    this.availabilityStart = '', this.availabilityEnd = '',
   });
 
   factory FoodItem.fromJson(Map<String, dynamic> json) {
@@ -197,6 +200,8 @@ class FoodItem {
       price: safeParseDouble(json['regular_price']),
       salePrice: (json['sale_price'] != '' && json['sale_price'] != null) ? safeParseDouble(json['sale_price'], -1.0) : null,
       imageUrl: extractImageUrl(json['images']), categoryId: extractRestaurantId(json), status: json['status']?.toString() ?? 'publish',
+      availabilityStart:(json['availability_start']??'').toString(),
+      availabilityEnd:(json['availability_end']??'').toString(),
     );
   }
 }
@@ -205,6 +210,8 @@ class Order {
   final int id;
   final String status;
   final DateTime dateCreated;
+  final DateTime? dateCompleted;
+  final bool isPickupOnly;
   final String total;
   final String customerName;
   final String address;
@@ -217,6 +224,8 @@ class Order {
     required this.id,
     required this.status,
     required this.dateCreated,
+    this.dateCompleted,
+    this.isPickupOnly = false,
     required this.total,
     required this.customerName,
     required this.address,
@@ -257,6 +266,8 @@ class Order {
       // لا تستخدم وقت الجهاز عند غياب تاريخ الطلب، وإلا ستظهر مبيعات وهمية اليوم.
       dateCreated: DateTime.tryParse(json['date_created']?.toString() ?? '')
           ?? DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+      dateCompleted: DateTime.tryParse(json['date_completed']?.toString() ?? ''),
+      isPickupOnly: json['is_pickup_only'] == true,
       total: json['total']?.toString() ?? 'غير متاح',
       customerName: finalCustomerName, // ✅ استخدام الاسم المعالج نهائياً
       address: json['address'] ?? json['shipping']?['address_1'] ?? billing?['address_1'] ?? 'عنوان غير محدد',
@@ -277,14 +288,18 @@ class LineItem {
   final String name;
   final int quantity;
   final String total;
+  final String note;
+  final String optionsSummary;
 
-  LineItem({required this.name, required this.quantity, required this.total});
+  LineItem({required this.name, required this.quantity, required this.total, this.note='',this.optionsSummary=''});
 
   factory LineItem.fromJson(Map<String, dynamic> json) {
     return LineItem(
       name: json['name'] ?? 'منتج غير معروف',
       quantity: json['quantity'] is int ? json['quantity'] : int.tryParse(json['quantity'].toString()) ?? 1,
       total: json['total']?.toString() ?? '0',
+      note:json['note']?.toString() ?? '',
+      optionsSummary:json['options_summary']?.toString() ?? '',
     );
   }
 }
@@ -357,12 +372,13 @@ class AuthService {
       }
       String platform = Platform.isAndroid ? 'android' : 'ios';
       Map<String, dynamic> bodyData = {'token': fcmToken, 'platform': platform};
-      await http.post(
+      final response = await http.post(
         Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/register-device'),
         headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'},
         body: json.encode(bodyData),
       ).timeout(const Duration(seconds: 10));
-      print("✅ [FCM] تم تسجيل التوكن بنجاح");
+      if (response.statusCode != 200) throw Exception('رفض السيرفر حفظ توكن الإشعارات: ${response.statusCode}');
+      print('✅ [FCM] تم تسجيل الجهاز في السيرفر');
     } catch (e) {
       print("⚠️ [FCM] خطأ في التسجيل (يمكن تجاهله): $e");
     }
@@ -511,30 +527,34 @@ class MenuChoice {
   String id;
   String name;
   double extraPrice;
-  MenuChoice({required this.id, required this.name, this.extraPrice = 0});
+  double? weightKg;
+  MenuChoice({required this.id, required this.name, this.extraPrice = 0,this.weightKg});
   Map<String, dynamic> toJson() => {
     'id': id, 'name': name, 'price_delta': extraPrice,
+    if(weightKg!=null)'weight_kg':weightKg,
   };
   factory MenuChoice.fromJson(Map<String, dynamic> map) => MenuChoice(
     id: (map['id'] ?? newMenuId()).toString(),
     name: (map['name'] ?? '').toString(),
     extraPrice: double.tryParse((map['price_delta'] ?? 0).toString()) ?? 0,
+    weightKg:double.tryParse((map['weight_kg'] ?? '').toString()),
   );
 }
 
 class MenuOptionGroup {
   String id;
   String name;
+  String kind;
   bool multiSelect;
   bool requiredChoice;
   int maxSelections;
   List<MenuChoice> choices;
-  MenuOptionGroup({required this.id, required this.name, this.multiSelect = false,
+  MenuOptionGroup({required this.id, required this.name, this.kind='addon',this.multiSelect = false,
     this.requiredChoice = false, this.maxSelections = 1, required this.choices});
   int get minimum => requiredChoice ? 1 : 0;
   int get maximum => multiSelect ? maxSelections : 1;
   Map<String, dynamic> toJson() => {
-    'id': id, 'name': name, 'type': multiSelect ? 'multiple' : 'single',
+    'id': id, 'name': name, 'kind':kind, 'type': multiSelect ? 'multiple' : 'single',
     'required': requiredChoice, 'min_select': minimum, 'max_select': maximum,
     'options': choices.map((c) => c.toJson()).toList(),
   };
@@ -543,6 +563,7 @@ class MenuOptionGroup {
     return MenuOptionGroup(
       id: (map['id'] ?? newMenuId()).toString(),
       name: (map['name'] ?? '').toString(),
+      kind:(map['kind']??'addon').toString(),
       multiSelect: (map['type'] ?? 'single') == 'multiple',
       requiredChoice: map['required'] == true || map['required'] == 1,
       maxSelections: int.tryParse((map['max_select'] ?? 1).toString()) ?? 1,
@@ -598,7 +619,8 @@ class _MenuOptionGroupEditorState extends State<MenuOptionGroupEditor> {
     _limit = TextEditingController(text: (old?.maxSelections ?? 1).toString());
     _multiple = old?.multiSelect ?? false;
     _required = old?.requiredChoice ?? false;
-    _choices = old == null ? [] : old.choices.map((e) => MenuChoice(id: e.id, name: e.name, extraPrice: e.extraPrice)).toList();
+    _choices = old == null ? [] : old.choices.map((e) => MenuChoice(
+        id:e.id,name:e.name,extraPrice:e.extraPrice,weightKg:e.weightKg)).toList();
   }
   @override
   void dispose() { _name.dispose(); _limit.dispose(); super.dispose(); }
@@ -607,6 +629,8 @@ class _MenuOptionGroupEditorState extends State<MenuOptionGroupEditor> {
     final existing = index == null ? null : _choices[index];
     final name = TextEditingController(text: existing?.name ?? '');
     final fee = TextEditingController(text: (existing?.extraPrice ?? 0).toStringAsFixed(0));
+    final kg = TextEditingController(text: existing?.weightKg?.toString() ?? '');
+    final isWeight=widget.initial?.kind=='weight';
     final key = GlobalKey<FormState>();
     final choice = await showDialog<MenuChoice>(context: context, builder: (ctx) => AlertDialog(
       title: Text(index == null ? 'إضافة خيار' : 'تعديل الخيار'),
@@ -614,6 +638,9 @@ class _MenuOptionGroupEditorState extends State<MenuOptionGroupEditor> {
         TextFormField(controller: name, decoration: const InputDecoration(labelText: 'اسم الخيار (مثال: 500 غرام)'),
             validator: (v) => (v ?? '').trim().isEmpty ? 'اكتب الاسم' : null),
         const SizedBox(height: 10),
+        if(isWeight) TextFormField(controller:kg,keyboardType:const TextInputType.numberWithOptions(decimal:true),
+            decoration:const InputDecoration(labelText:'الوزن بالكيلو مثل 0.25'),
+            validator:(v){final w=double.tryParse(v??'');return w==null||w<=0?'أدخل وزناً بالكيلو':null;}),
         TextFormField(controller: fee, keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: const InputDecoration(labelText: 'الزيادة على السعر الأساسي (د.ع)'),
             validator: (v) { final n = double.tryParse(v ?? ''); return n == null || n < 0 ? 'أدخل رقماً لا يقل عن صفر' : null; }),
@@ -623,11 +650,12 @@ class _MenuOptionGroupEditorState extends State<MenuOptionGroupEditor> {
         ElevatedButton(onPressed: () {
           if (!key.currentState!.validate()) return;
           Navigator.pop(ctx, MenuChoice(id: existing?.id ?? newMenuId(), name: name.text.trim(),
-              extraPrice: double.parse(fee.text.trim())));
+              extraPrice: double.parse(fee.text.trim()),
+              weightKg:isWeight?double.tryParse(kg.text.trim()):existing?.weightKg));
         }, child: const Text('حفظ')),
       ],
     ));
-    name.dispose(); fee.dispose();
+    name.dispose(); fee.dispose(); kg.dispose();
     if (choice != null && mounted) setState(() {
       if (index == null) { _choices.add(choice); } else { _choices[index] = choice; }
     });
@@ -650,6 +678,7 @@ class _MenuOptionGroupEditorState extends State<MenuOptionGroupEditor> {
       return;
     }
     Navigator.pop(context, MenuOptionGroup(id: widget.initial?.id ?? newMenuId(), name: _name.text.trim(),
+        kind:widget.initial?.kind??'addon',
         multiSelect: _multiple, requiredChoice: _required, maxSelections: limit, choices: _choices));
   }
 
@@ -683,15 +712,15 @@ class _MenuOptionGroupEditorState extends State<MenuOptionGroupEditor> {
 }
 
 MenuOptionGroup menuPresetWeights() => MenuOptionGroup(
-  id: newMenuId(), name: 'الوزن', requiredChoice: true,
-  // Prices are set by the restaurant manager; never ship fictional price gaps.
-  // Base product price corresponds to the smallest size unless configured otherwise.
+  id: newMenuId(), name: 'الوزن', kind:'weight', requiredChoice: true,
+  // Base product price = one kilogram. Select weight multiplied once.
+  // price_delta is only an additional charge on that weight if configured.
   choices: [
-    MenuChoice(id: newMenuId(), name: 'ربع كيلو (250 غرام)', extraPrice: 0),
-    MenuChoice(id: newMenuId(), name: 'نصف كيلو (500 غرام)', extraPrice: 0),
-    MenuChoice(id: newMenuId(), name: 'ثلاثة أرباع كيلو (750 غرام)', extraPrice: 0),
-    MenuChoice(id: newMenuId(), name: '1 كيلوغرام', extraPrice: 0),
-    MenuChoice(id: newMenuId(), name: 'كيلو ونصف (1.5 كيلوغرام)', extraPrice: 0),
+    MenuChoice(id: newMenuId(), name: 'ربع كيلو (250 غرام)', extraPrice: 0, weightKg:0.25),
+    MenuChoice(id: newMenuId(), name: 'نصف كيلو (500 غرام)', extraPrice: 0, weightKg:0.5),
+    MenuChoice(id: newMenuId(), name: 'ثلاثة أرباع كيلو (750 غرام)', extraPrice: 0, weightKg:0.75),
+    MenuChoice(id: newMenuId(), name: '1 كيلوغرام', extraPrice: 0, weightKg:1.0),
+    MenuChoice(id: newMenuId(), name: 'كيلو ونصف (1.5 كيلوغرام)', extraPrice: 0, weightKg:1.5),
   ],
 );
 MenuOptionGroup menuPresetSauces() => MenuOptionGroup(
@@ -831,15 +860,32 @@ class ApiService {
     return true;
   }
 
+  Future<ManagerOrdersPage> getManagerOrdersPage({required String status,
+    required String token, int page = 1, int perPage = 20}) async {
+    final uri = Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/manager-orders-v22')
+        .replace(queryParameters: {'status': status, 'page': '$page', 'per_page': '$perPage'});
+    final response = await http.get(uri, headers: {'Authorization': 'Bearer $token'})
+        .timeout(const Duration(seconds: 40));
+    if (response.statusCode != 200) throw Exception(_apiError(response));
+    final decoded = json.decode(response.body);
+    if (decoded is! Map || decoded['orders'] is! List) throw Exception('صيغة الطلبات غير صحيحة من السيرفر');
+    final orders = (decoded['orders'] as List)
+        .whereType<Map>().map((e) => Order.fromJson(Map<String, dynamic>.from(e))).toList();
+    return ManagerOrdersPage(orders: orders, hasMore: decoded['has_more'] == true);
+  }
+
   Future<List<Order>> getRestaurantOrders({required String status, required String token}) async {
-    return _executeWithRetry(() async {
-      final uri = Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/get-orders?status=$status');
-      final response = await http.get(uri, headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'});
-      if (response.statusCode == 200) {
-        return (json.decode(response.body) as List).map((jsonObj) => Order.fromJson(jsonObj)).toList();
-      }
-      throw Exception('Failed to load orders: ${response.body}');
-    });
+    return (await getManagerOrdersPage(status: status, token: token, perPage: 30)).orders;
+  }
+
+  Future<bool> testManagerPush(String token) async {
+    final response = await http.post(
+      Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/manager-test-push-v22'),
+      headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+    ).timeout(AppConstants.API_TIMEOUT);
+    if (response.statusCode != 200) throw Exception(_apiError(response));
+    final decoded = json.decode(response.body);
+    return decoded is Map && decoded['fcm_accepted'] == true;
   }
 
   Future<RestaurantRatingsDashboard> getDashboardRatings(String token) async {
@@ -940,19 +986,70 @@ class ApiService {
     try{return json.decode(response.body)['message']?.toString() ?? 'HTTP ${response.statusCode}';}
     catch(_){return 'HTTP ${response.statusCode}';}
   }
+  Future<Map<String,dynamic>> fetchWeeklySchedule(String token) async {
+    final response=await http.get(
+        Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/weekly-schedule'),
+        headers:{'Authorization':'Bearer $token'}).timeout(AppConstants.API_TIMEOUT);
+    if(response.statusCode!=200)throw Exception(_apiError(response));
+    return Map<String,dynamic>.from(json.decode(response.body));
+  }
+  Future<void> saveWeeklySchedule(String token, Map<String,List<Map<String,String>>> days) async {
+    final response=await http.post(
+        Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/weekly-schedule'),
+        headers:{'Authorization':'Bearer $token','Content-Type':'application/json'},
+        body:json.encode({'days':days})).timeout(AppConstants.API_TIMEOUT);
+    if(response.statusCode!=200)throw Exception(_apiError(response));
+  }
+
   Future<Map<String,dynamic>> getManagerContext(String token) async {
     final r=await http.get(Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/manager-context'),headers:{'Authorization':'Bearer $token'}).timeout(AppConstants.API_TIMEOUT);
     if(r.statusCode!=200) throw Exception(_apiError(r));
     return Map<String,dynamic>.from(json.decode(r.body));
   }
   Future<void> productAction(String token,String operation,int id,{bool hidden=false}) async {
-    final route={'hide':'toggle-product-visibility','delete':'delete-product','delete-category':'delete-subcategory'}[operation];
+    final route={'hide':'toggle-product-visibility','delete':'delete-product',
+      'delete-forever':'delete-product-permanent','delete-category':'delete-subcategory'}[operation];
     if(route==null) throw ArgumentError('Invalid action');
     final r=await http.post(Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/$route'),
         headers:{'Authorization':'Bearer $token','Content-Type':'application/json'},
-        body:json.encode(operation=='delete-category'?{'term_id':id}:{'product_id':id,'is_hidden':hidden})).timeout(AppConstants.API_TIMEOUT);
+        body:json.encode(operation=='delete-category'?{'term_id':id}:
+        {'product_id':id,'is_hidden':hidden,if(operation=='delete-forever') 'confirm':'DELETE_FOREVER'})).timeout(AppConstants.API_TIMEOUT);
     if(r.statusCode!=200) throw Exception(_apiError(r));
   }
+  // V21: pickup-only urgent call. No customer data, destination, or invented fee.
+  Future<Map<String, dynamic>> requestUrgentPickup(String token, String requestId) async {
+    final response = await http.post(
+      Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/manager-urgent-pickup'),
+      headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+      body: json.encode({'request_id': requestId}),
+    ).timeout(const Duration(seconds: 35));
+    Map<String, dynamic> body;
+    try {
+      body = Map<String, dynamic>.from(json.decode(response.body) as Map);
+    } catch (_) {
+      throw Exception('رد السيرفر غير واضح (HTTP ${response.statusCode}). لا تكرر الطلب قبل التأكد من حالة الطلبات.');
+    }
+    if (response.statusCode != 200 && response.statusCode != 201 && response.statusCode != 202) {
+      if (body['order_id'] != null) return body; // Preserve uncertain saved order ID.
+      throw Exception(body['message'] ?? 'فشل استدعاء المندوب: HTTP ${response.statusCode}');
+    }
+    return body;
+  }
+
+  // Explicit, manager-confirmed restaurant location. Never update implicitly at login.
+  Future<Map<String, dynamic>> savePickupLocation(String token, double lat, double lng,
+      {int? zoneId}) async {
+    final response = await http.post(
+      Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/manager-save-pickup-location'),
+      headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+      body: json.encode({'lat': lat, 'lng': lng, if (zoneId != null) 'zone_id': zoneId}),
+    ).timeout(AppConstants.API_TIMEOUT);
+    if (response.statusCode != 200) throw Exception(_apiError(response));
+    final decoded = json.decode(response.body);
+    if (decoded is! Map || decoded['success'] != true) throw Exception('لم يؤكد السيرفر حفظ الموقع');
+    return Map<String, dynamic>.from(decoded);
+  }
+
   Future<Map<String,dynamic>> requestManualDriver(String token, Map<String,dynamic> payload) async {
     final r=await http.post(Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/manager-request-driver'),
         headers:{'Authorization':'Bearer $token','Content-Type':'application/json'},body:json.encode(payload)).timeout(const Duration(seconds:45));
@@ -964,6 +1061,7 @@ class ApiService {
     required String token, required int productId, required String name,
     required String price, required String salePrice, required String description,
     File? image, required int categoryId,
+    String availabilityStart = '', String availabilityEnd = '',
   }) async {
     final img = image == null ? null : base64Encode(await image.readAsBytes());
     final response = await http.post(
@@ -973,6 +1071,7 @@ class ApiService {
         'product_id': productId, 'name': name, 'regular_price': price,
         'sale_price': salePrice, 'description': description,
         'image_base64': img, 'category_id': categoryId,
+        'availability_start': availabilityStart,'availability_end':availabilityEnd,
       }),
     ).timeout(AppConstants.API_TIMEOUT);
     if (response.statusCode != 200) throw Exception(_apiError(response));
@@ -983,6 +1082,7 @@ class ApiService {
     required String token, required String name, required String price,
     String? salePrice, required String description, File? image,
     required int categoryId,
+    String availabilityStart = '', String availabilityEnd = '',
   }) async {
     final imageBase64 = image == null ? null : base64Encode(await image.readAsBytes());
     final response = await http.post(
@@ -992,6 +1092,7 @@ class ApiService {
         'name': name, 'regular_price': price, 'sale_price': salePrice,
         'description': description, 'image_base64': imageBase64,
         'category_id': categoryId,
+        'availability_start':availabilityStart,'availability_end':availabilityEnd,
       }),
     ).timeout(AppConstants.API_TIMEOUT);
     if (response.statusCode != 201 && response.statusCode != 200) {
@@ -1115,6 +1216,89 @@ class ApiService {
 // =======================================================================
 // 🔷 القسم 5: مزود المصادقة (Auth Provider)
 // =======================================================================
+
+// V22: Foreground alerts + Firebase background/system delivery + token renewal.
+// Native Android notification sound resource: android/app/src/main/res/raw/woo_sound.mp3
+// iOS uses the system default alert sound: no bundled woo.wav is required.
+class RestaurantNotificationService {
+  static final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin();
+  static StreamSubscription<String>? _refreshSub;
+  static bool _initialized = false;
+  static bool _permissionAsked = false;
+
+  static Future<void> initialize() async {
+    if (_initialized) return;
+    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const ios = DarwinInitializationSettings(
+        requestAlertPermission: false, requestBadgePermission: false,
+        requestSoundPermission: false);
+    await _local.initialize(const InitializationSettings(android: android, iOS: ios));
+    const channel = AndroidNotificationChannel(
+        'high_importance_channel', 'طلبات المطعم',
+        description: 'إشعارات طلبات منصة بيتي الجديدة',
+        importance: Importance.max, playSound: true,
+        sound: RawResourceAndroidNotificationSound('woo_sound'));
+    await _local.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+    await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
+        alert: false, badge: true, sound: false);
+    FirebaseMessaging.onMessage.listen((message) async {
+      if (message.data['type'] != 'new_order') return;
+      final id = int.tryParse('${message.data['order_id']}') ?? 0;
+      try {
+        await _local.show(
+          id > 0 ? id : DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          message.notification?.title ?? message.data['title'] ?? 'طلب جديد',
+          message.notification?.body ?? message.data['body'] ?? 'وصل طلب جديد إلى المطعم',
+          const NotificationDetails(
+              android: AndroidNotificationDetails('high_importance_channel', 'طلبات المطعم',
+                  channelDescription: 'إشعارات طلبات منصة بيتي الجديدة',
+                  importance: Importance.max, priority: Priority.high,
+                  sound: RawResourceAndroidNotificationSound('woo_sound')),
+              iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true,
+                  presentSound: true)),
+          payload: '$id',
+        );
+      } catch (e) {
+        debugPrint('تعذر عرض تنبيه الطلب أثناء فتح التطبيق: $e');
+      }
+    });
+    _initialized = true;
+  }
+
+  static Future<void> start(String token) async {
+    if (!_permissionAsked) {
+      _permissionAsked = true;
+      try {
+        await FirebaseMessaging.instance.requestPermission(
+            alert: true, badge: true, sound: true);
+      } catch (e) { debugPrint('تعذر طلب إذن الإشعارات: $e'); }
+    }
+    await AuthService().registerDeviceToken(token);
+    await _refreshSub?.cancel();
+    _refreshSub = FirebaseMessaging.instance.onTokenRefresh.listen((value) async {
+      if (value.isEmpty) return;
+      final prefs = await SharedPreferences.getInstance();
+      final activeToken = prefs.getString('jwt_token');
+      if (activeToken != null) await AuthService().registerDeviceToken(activeToken);
+    });
+  }
+  static void stop() { _refreshSub?.cancel(); _refreshSub = null; }
+}
+
+@pragma('vm:entry-point')
+Future<void> restaurantFirebaseBackground(RemoteMessage message) async {
+  await Firebase.initializeApp();
+  // FCM notification payload is displayed by Android/iOS in the background.
+  // Avoid duplicate local alerts here.
+}
+
+class ManagerOrdersPage {
+  final List<Order> orders;
+  final bool hasMore;
+  const ManagerOrdersPage({required this.orders, required this.hasMore});
+}
+
 class AuthProvider with ChangeNotifier {
   String? _token;
   String? _userRole;
@@ -1133,6 +1317,10 @@ class AuthProvider with ChangeNotifier {
     _userRole = prefs.getString('user_role');
     _isLoading = false;
     notifyListeners();
+    if (_token != null && _userRole == 'owner') {
+      RestaurantNotificationService.start(_token!).catchError(
+              (e) => debugPrint('فشل تجديد تسجيل الإشعارات: $e'));
+    }
   }
 
   Future<bool> login(String username, String password, String role, {String? restaurantLat, String? restaurantLng}) async {
@@ -1151,8 +1339,8 @@ class AuthProvider with ChangeNotifier {
       }
 
       // تسجيل FCM Token في الخلفية (لا ننتظر النتيجة)
-      authService.registerDeviceToken(_token).catchError((e) {
-        print("⚠️ [Auth] فشل تسجيل FCM في الخلفية: $e");
+      RestaurantNotificationService.start(_token!).catchError((e) {
+        debugPrint('⚠️ [Auth] فشل تسجيل FCM: $e');
       });
 
       _userRole = role;
@@ -1164,6 +1352,7 @@ class AuthProvider with ChangeNotifier {
 
   Future<void> logout(BuildContext context) async {
     final authService = AuthService();
+    RestaurantNotificationService.stop();
     await authService.logout();
     _token = null;
     _userRole = null;
@@ -1183,6 +1372,15 @@ class AuthProvider with ChangeNotifier {
 // =======================================================================
 // 🔷 القسم 6: مزودي البيانات (Providers)
 // =======================================================================
+
+// Always store HH:mm in server; display 12-hour times in manager.
+String beyteiManagerTime12(String raw) {
+  final match=RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(raw);
+  if(match==null)return raw;
+  final hour=int.tryParse(match.group(1)!)??0;
+  if(hour>23)return raw;
+  return '${hour%12==0?12:hour%12}:${match.group(2)} ${hour<12?'صباحاً':'مساءً'}';
+}
 
 class RestaurantSettingsProvider with ChangeNotifier {
   final ApiService _apiService = ApiService();
@@ -1416,154 +1614,235 @@ class UnifiedOrdersScreen extends StatefulWidget {
 }
 
 class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
+  Map<String, dynamic>? _today;
+  Map<String, dynamic>? _month;
+  Map<String, dynamic>? _all;
+  String? _financialError;
+  bool _financialLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadFinancialSummary());
+  }
+
+  Future<void> _loadFinancialSummary() async {
+    if (!mounted) return;
+    setState(() { _financialLoading = true; _financialError = null; });
+    try {
+      final token = Provider.of<AuthProvider>(context, listen: false).token;
+      if (token == null) throw Exception('يرجى تسجيل الدخول');
+      final results = await Future.wait([
+        ApiService().fetchManagerAnalytics(token, 'today'),
+        ApiService().fetchManagerAnalytics(token, 'month'),
+        ApiService().fetchManagerAnalytics(token, 'all'),
+      ]);
+      if (!mounted) return;
+      if (results.any((x) => x == null || x['complete'] != true)) {
+        throw Exception('سيرفر الإحصائيات غير محدّث أو التقرير غير مكتمل');
+      }
+      setState(() { _today = results[0]; _month = results[1]; _all = results[2]; });
+    } catch (e) {
+      if (mounted) setState(() { _financialError = '$e'; _today = null; _month = null; _all = null; });
+    } finally {
+      if (mounted) setState(() => _financialLoading = false);
+    }
+  }
+
+  String _num(Map<String, dynamic>? data, String key, {bool money = false}) {
+    if (data == null || data[key] == null) return '—';
+    final n = num.tryParse(data[key].toString());
+    if (n == null) return '—';
+    return '${NumberFormat('#,##0.##').format(n)}${money ? ' د.ع' : ''}';
+  }
+
+  Future<void> _reload() async {
+    final token = Provider.of<AuthProvider>(context, listen: false).token;
+    await Future.wait([
+      Provider.of<DashboardProvider>(context, listen: false).fetchDashboardData(token),
+      _loadFinancialSummary(),
+    ]);
+  }
+
+  void _viewOrders([String status = 'completed']) {
+    Navigator.push(context, MaterialPageRoute(
+        builder: (_) => ManagerOrdersHistoryScreen(initialStatus: status)));
+  }
+
   @override
   Widget build(BuildContext context) {
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-
-    return Consumer<DashboardProvider>(
-      builder: (context, dashboard, child) {
-        if (dashboard.isLoading && (dashboard.orders['active'] == null && dashboard.orders['completed'] == null)) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final activeOrders = dashboard.orders['active'] ?? [];
-        final completedOrders = dashboard.orders['completed'] ?? [];
-        final settledSales = completedOrders.where((o) =>
-        const ['completed', 'delivered'].contains(o.status.toLowerCase()) && double.tryParse(o.total) != null).toList();
-        final allOrders = [...activeOrders, ...completedOrders];
-
-        // 🔥 حساب الإحصائيات
-        final now = DateTime.now();
-        final todayStart = DateTime(now.year, now.month, now.day);
-        final monthStart = DateTime(now.year, now.month, 1);
-
-        int todayCount = 0, monthCount = 0, totalCount = settledSales.length;
-        double todayEarnings = 0.0, monthEarnings = 0.0, totalEarnings = 0.0;
-
-        for (var order in settledSales) {
-          double amount = order.totalAmount;
-          totalEarnings += amount;
-
-          if (order.dateCreated.isAfter(todayStart) || order.dateCreated.isAtSameMomentAs(todayStart)) {
-            todayCount++;
-            todayEarnings += amount;
-          }
-          if (order.dateCreated.isAfter(monthStart) || order.dateCreated.isAtSameMomentAs(monthStart)) {
-            monthCount++;
-            monthEarnings += amount;
-          }
-        }
-
-        return RefreshIndicator(
-          onRefresh: () => dashboard.fetchDashboardData(authProvider.token),
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              const RestaurantQuickPanel(),
-              const SizedBox(height: 20),
-              // إحصائيات مشتقة من الطلبات المكتملة المحمّلة، وليست صافي الربح.
-              const Text("📊 ملخص الطلبات المحمّلة", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal)),
-              const SizedBox(height: 4),
-              const Text('هذه أرقام الطلبات المحمّلة فقط. صافي الربح الدقيق في شاشة الإحصائيات المالية بعد ربطها بالسيرفر.',
-                  style: TextStyle(color: Colors.grey, fontSize: 12)),
-              const SizedBox(height: 12),
-              GridView.count(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisCount: 2,
-                childAspectRatio: 1.5,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                children: [
-                  _buildStatCard("مكتملة اليوم", todayCount.toString(), Icons.today, Colors.blue),
-                  _buildStatCard("مبيعات اليوم", "${todayEarnings.toStringAsFixed(0)} د.ع", Icons.attach_money, Colors.green),
-                  _buildStatCard("مكتملة الشهر", monthCount.toString(), Icons.calendar_month, Colors.orange),
-                  _buildStatCard("مبيعات الشهر", "${monthEarnings.toStringAsFixed(0)} د.ع", Icons.trending_up, Colors.purple),
-                  _buildStatCard("مكتملة محمّلة", totalCount.toString(), Icons.receipt_long, Colors.grey.shade700),
-                  _buildStatCard("المبيعات المحمّلة", "${totalEarnings.toStringAsFixed(0)} د.ع", Icons.account_balance_wallet, Colors.teal),
-                ],
-              ),
-
-              const SizedBox(height: 24),
-
-              // 🔥 قسم الطلبات النشطة
-              if (activeOrders.isNotEmpty) ...[
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text("🔔 الطلبات الجارية", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: Colors.red.shade100, borderRadius: BorderRadius.circular(12)), child: Text(activeOrders.length.toString(), style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold))),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                ...activeOrders.map((order) => OrderCard(
-                    order: order,
-                    onStatusChanged: () => dashboard.fetchDashboardData(authProvider.token),
-                    isCompleted: false,
-                    pickupCode: dashboard.pickupCodes[order.id]
-                )),
-                const SizedBox(height: 24),
-              ],
-
-              // 🔥 قسم الطلبات المكتملة
-              const Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text("✅ الطلبات المنتهية مؤخراً", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                ],
-              ),
-              const SizedBox(height: 12),
-              if (completedOrders.isEmpty)
-                const Center(child: Padding(padding: EdgeInsets.all(20), child: Text("لا توجد طلبات منتهية بعد", style: TextStyle(color: Colors.grey))))
-              else
-                ...completedOrders.take(10).map((order) => OrderCard( // عرض آخر 10 طلبات مكتملة لتوفير الأداء
-                  order: order,
-                  onStatusChanged: () => dashboard.fetchDashboardData(authProvider.token),
-                  isCompleted: true,
-                )),
-
-              if (completedOrders.length > 10)
-                TextButton(
-                    onPressed: () {
-                      // يمكن إضافة شاشة منفصلة لعرض كل الطلبات المكتملة لاحقاً إذا لزم الأمر
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("يتم عرض آخر 10 طلبات منتهية في هذه الشاشة")));
-                    },
-                    child: const Text("عرض المزيد من الطلبات المنتهية...")
-                ),
-            ],
-          ),
-        );
-      },
-    );
+    final token = Provider.of<AuthProvider>(context, listen: false).token;
+    return Consumer<DashboardProvider>(builder: (context, dashboard, _) {
+      final active = dashboard.orders['active'] ?? [];
+      final finished = dashboard.orders['completed'] ?? [];
+      if (dashboard.isLoading && dashboard.orders.isEmpty) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      return RefreshIndicator(
+        onRefresh: _reload,
+        child: ListView(padding: const EdgeInsets.all(16), children: [
+          const RestaurantQuickPanel(),
+          if (dashboard.orderLoadError != null) Card(child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text('تعذر تحديث قائمة الطلبات من السيرفر: ${dashboard.orderLoadError}. آخر بيانات محفوظة ما زالت معروضة.',
+                  style: const TextStyle(color: Colors.deepOrange)))),
+          const SizedBox(height: 18),
+          Row(children: [
+            const Expanded(child: Text('📊 ملخص المبيعات الفعلي',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal))),
+            TextButton.icon(onPressed: () => _viewOrders(),
+                icon: const Icon(Icons.receipt_long), label: const Text('مشاهدة الطلبات')),
+          ]),
+          const Text('الأرقام من السيرفر بحسب تاريخ اكتمال الطلب، دون أجور التوصيل. صافي المبيعات بعد الاسترجاع.',
+              style: TextStyle(fontSize: 12, color: Colors.black54)),
+          if (_financialLoading) const LinearProgressIndicator(),
+          if (_financialError != null) Padding(padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text('تعذر تحميل الملخص الدقيق: $_financialError',
+                  style: const TextStyle(color: Colors.deepOrange))),
+          const SizedBox(height: 12),
+          GridView.count(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+              crossAxisCount: 2, childAspectRatio: 1.4,
+              crossAxisSpacing: 10, mainAxisSpacing: 10, children: [
+                _stat('مكتملة اليوم', _num(_today, 'completed_orders'), Icons.today, Colors.blue),
+                _stat('صافي مبيعات اليوم', _num(_today, 'net_sales', money: true), Icons.attach_money, Colors.green),
+                _stat('مكتملة الشهر', _num(_month, 'completed_orders'), Icons.calendar_month, Colors.orange),
+                _stat('صافي مبيعات الشهر', _num(_month, 'net_sales', money: true), Icons.trending_up, Colors.purple),
+                _stat('جميع المكتملة', _num(_all, 'completed_orders'), Icons.receipt_long, Colors.blueGrey),
+                _stat('جميع المبيعات الصافية', _num(_all, 'net_sales', money: true), Icons.account_balance_wallet, Colors.teal),
+              ]),
+          const SizedBox(height: 8),
+          TextButton.icon(onPressed: _financialLoading ? null : _loadFinancialSummary,
+              icon: const Icon(Icons.refresh), label: const Text('تحديث ملخص المبيعات')),
+          const SizedBox(height: 16),
+          Row(children: [
+            Expanded(child: Text('🔔 الطلبات الجارية (${active.length})',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+            TextButton(onPressed: () => _viewOrders('active'), child: const Text('عرض الكل')),
+          ]),
+          if (active.isEmpty) const Padding(padding: EdgeInsets.all(16),
+              child: Text('لا توجد طلبات جارية حالياً')),
+          ...active.take(8).map((order) => OrderCard(order: order,
+              onStatusChanged: () => dashboard.fetchDashboardData(token),
+              pickupCode: dashboard.pickupCodes[order.id])),
+          const SizedBox(height: 18),
+          Row(children: [
+            const Expanded(child: Text('✅ الطلبات المنتهية مؤخراً',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+            TextButton(onPressed: () => _viewOrders(), child: const Text('مشاهدة جميع الطلبات')),
+          ]),
+          if (finished.isEmpty) const Padding(padding: EdgeInsets.all(16),
+              child: Text('لم تُرجع قاعدة البيانات طلبات منتهية حديثاً')),
+          ...finished.take(10).map((order) => OrderCard(order: order,
+              isCompleted: true,
+              onStatusChanged: () => dashboard.fetchDashboardData(token))),
+        ]),
+      );
+    });
   }
 
-  Widget _buildStatCard(String title, String value, IconData icon, Color color) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(icon, color: color, size: 24),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(title, style: const TextStyle(fontSize: 13, color: Colors.grey, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget _stat(String title, String value, IconData icon, Color color) => Card(
+    child: Padding(padding: const EdgeInsets.all(10), child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center, children: [
+      Row(children: [Icon(icon, size: 20, color: color), const SizedBox(width: 5),
+        Expanded(child: Text(title, style: const TextStyle(fontSize: 12), maxLines: 2))]),
+      const SizedBox(height: 7),
+      Text(value, maxLines: 2, overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color)),
+    ])),
+  );
 }
+
+// Independently paginated list: shows both current and completed orders as cards.
+class ManagerOrdersHistoryScreen extends StatefulWidget {
+  final String initialStatus;
+  const ManagerOrdersHistoryScreen({super.key, this.initialStatus = 'completed'});
+  @override
+  State<ManagerOrdersHistoryScreen> createState() => _ManagerOrdersHistoryScreenState();
+}
+class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen> {
+  late String _status;
+  List<Order> _items = [];
+  int _nextPage = 1;
+  bool _hasMore = true;
+  bool _loading = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _status = widget.initialStatus;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load(reset: true));
+  }
+  Future<void> _load({bool reset = false}) async {
+    if (_loading || !mounted) return;
+    if (!reset && !_hasMore) return;
+    final selected = _status;
+    setState(() {
+      _loading = true; _error = null;
+      if (reset) { _nextPage = 1; _items = []; _hasMore = true; }
+    });
+    try {
+      final token = Provider.of<AuthProvider>(context, listen: false).token;
+      if (token == null) throw Exception('يرجى تسجيل الدخول');
+      final result = await ApiService().getManagerOrdersPage(
+          status: selected, token: token, page: _nextPage, perPage: 20);
+      if (!mounted || _status != selected) return;
+      final seen = _items.map((e) => e.id).toSet();
+      setState(() {
+        _items.addAll(result.orders.where((e) => seen.add(e.id)));
+        _hasMore = result.hasMore;
+        _nextPage++;
+      });
+    } catch (e) {
+      if (mounted && _status == selected) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+  void _select(String value) {
+    if (_status == value || _loading) return;
+    setState(() => _status = value);
+    _load(reset: true);
+  }
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('مشاهدة طلبات المطعم'),
+        actions: [IconButton(onPressed: _loading ? null : () => _load(reset: true),
+            icon: const Icon(Icons.refresh), tooltip: 'تحديث')]),
+    body: Column(children: [
+      Padding(padding: const EdgeInsets.all(12), child: Wrap(spacing: 8, runSpacing: 8, children: [
+        ChoiceChip(label: const Text('الطلبات الجارية'),
+            selected: _status == 'active', onSelected: (_) => _select('active')),
+        const SizedBox(width: 10),
+        ChoiceChip(label: const Text('المكتملة والمنتهية'),
+            selected: _status == 'completed', onSelected: (_) => _select('completed')),
+      ])),
+      Expanded(child: RefreshIndicator(
+        onRefresh: () => _load(reset: true),
+        child: ListView(padding: const EdgeInsets.fromLTRB(12, 4, 12, 32), children: [
+          if (_loading && _items.isEmpty) const Center(child: CircularProgressIndicator()),
+          if (_error != null) Padding(padding: const EdgeInsets.all(12),
+              child: Text('تعذر تحميل الطلبات: $_error',
+                  style: const TextStyle(color: Colors.deepOrange))),
+          if (!_loading && _items.isEmpty && _error == null)
+            const Padding(padding: EdgeInsets.all(30),
+                child: Center(child: Text('لا توجد طلبات في هذا القسم'))),
+          ..._items.map((order) => OrderCard(order: order,
+              isCompleted: _status == 'completed',
+              onStatusChanged: () => _load(reset: true))),
+          if (_loading && _items.isNotEmpty) const Center(child: CircularProgressIndicator()),
+          if (!_loading && _hasMore) OutlinedButton.icon(
+              onPressed: () => _load(), icon: const Icon(Icons.expand_more),
+              label: const Text('تحميل المزيد من الطلبات')),
+          if (!_loading && _error != null) TextButton(
+              onPressed: () => _load(), child: const Text('إعادة المحاولة')),
+        ]),
+      )),
+    ]),
+  );
+}
+
 class DashboardProvider with ChangeNotifier {
   Map<String, List<Order>> _orders = {};
   RestaurantRatingsDashboard? _ratingsDashboard;
@@ -1572,7 +1851,9 @@ class DashboardProvider with ChangeNotifier {
   Timer? _timer;
   Timer? _debounceTimer;
   bool _fetching = false;
+  String? _orderLoadError;
 
+  String? get orderLoadError => _orderLoadError;
   Map<String, List<Order>> get orders => _orders;
   RestaurantRatingsDashboard? get ratingsDashboard => _ratingsDashboard;
   Map<int, String> get pickupCodes => _pickupCodes;
@@ -1588,7 +1869,7 @@ class DashboardProvider with ChangeNotifier {
   void startAutoRefresh(String token) {
     _timer?.cancel();
     fetchDashboardData(token, silent: true);
-    _timer = Timer.periodic(const Duration(seconds: 15), (_) {
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) {
       fetchDashboardData(token, silent: true);
     });
   }
@@ -1607,7 +1888,7 @@ class DashboardProvider with ChangeNotifier {
     if (token == null || _fetching) return;
     _fetching = true;
 
-    if (!silent) {
+    if (!silent || _orders.isEmpty) {
       _isLoading = true;
       notifyListeners();
     }
@@ -1627,7 +1908,7 @@ class DashboardProvider with ChangeNotifier {
 
       List<Order> finalActive = [];
       List<Order> finalCompleted = [];
-      final List<String> archiveStatuses = ['completed', 'cancelled', 'refunded', 'failed', 'trash', 'picked_up', 'out-for-delivery', 'delivered'];
+      final List<String> archiveStatuses = ['completed', 'cancelled', 'refunded', 'failed', 'delivered'];
 
       for (var order in allOrders) {
         if (!archiveStatuses.contains(order.status.toLowerCase())) {
@@ -1638,11 +1919,15 @@ class DashboardProvider with ChangeNotifier {
       }
 
       // ترتيب الطلبات من الأحدث للأقدم
-      finalCompleted.sort((a, b) => b.dateCreated.compareTo(a.dateCreated));
+      finalCompleted.sort((a, b) => (b.dateCompleted ?? b.dateCreated)
+          .compareTo(a.dateCompleted ?? a.dateCreated));
       finalActive.sort((a, b) => b.dateCreated.compareTo(a.dateCreated));
 
       _orders['active'] = finalActive;
       _orders['completed'] = finalCompleted;
+      _orderLoadError = null;
+      // Update order cards immediately; a slow ratings API must not hide them.
+      notifyListeners();
 
       try {
         _ratingsDashboard = await api.getDashboardRatings(token);
@@ -1651,6 +1936,7 @@ class DashboardProvider with ChangeNotifier {
       }
 
     } catch (e, stackTrace) {
+      _orderLoadError = '$e';
       print("🔥🔥🔥 خطأ في جلب بيانات لوحة التحكم: $e");
       print("🔥🔥🔥 تفاصيل الخطأ: $stackTrace");
     } finally {
@@ -1866,9 +2152,10 @@ class RestaurantQuickPanel extends StatelessWidget {
             icon: const Icon(Icons.add_circle_outline), label: const Text('وجبة جديدة')),
         FilledButton.tonalIcon(onPressed: () => RestaurantManagerNavigation.categories(context),
             icon: const Icon(Icons.category_outlined), label: const Text('إدارة الأقسام')),
+        const RestaurantUrgentPickupQuickButton(),
         FilledButton.tonalIcon(onPressed: () => Navigator.push(context,
-            MaterialPageRoute(builder: (_) => const ManagerCourierScreen())),
-            icon: const Icon(Icons.delivery_dining), label: const Text('طلب مندوب')),
+            MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen())),
+            icon: const Icon(Icons.my_location_outlined), label: const Text('موقع المطعم')),
         FilledButton.tonalIcon(onPressed: () => Navigator.push(context,
             MaterialPageRoute(builder: (_) => const ManagerAnalyticsScreen())),
             icon: const Icon(Icons.insights), label: const Text('المبيعات والأرباح')),
@@ -1967,6 +2254,7 @@ class RestaurantDashboardScreen extends StatefulWidget {
 }
 
 class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> with SingleTickerProviderStateMixin {
+  StreamSubscription<RemoteMessage>? _orderMessageSub;
   late TabController _tabController;
   final ApiService _apiService = ApiService();
   DashboardProvider? _liveDashboard;
@@ -1974,6 +2262,13 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
   @override
   void initState() {
     super.initState();
+    _orderMessageSub=FirebaseMessaging.onMessage.listen((message){
+      final type=message.data['type']?.toString() ?? '';
+      if(type=='new_order' && mounted){
+        final token=Provider.of<AuthProvider>(context,listen:false).token;
+        if(token!=null)Provider.of<DashboardProvider>(context,listen:false).triggerSmartRefresh(token);
+      }
+    });
     // 🔥 تم تقليل عدد التبويبات إلى 4 (حذفنا تبويب المكتملة المنفصل)
     _tabController = TabController(length: 4, vsync: this);
 
@@ -2006,8 +2301,24 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
   void dispose() {
     // إيقاف التحديث التلقائي عند الخروج من الشاشة لتوفير موارد الجهاز والذاكرة
     _liveDashboard?.stopAutoRefresh();
+    _orderMessageSub?.cancel();
     _tabController.dispose();
     super.dispose();
+  }
+
+  Future<void> _testNotifications() async {
+    try {
+      final token = Provider.of<AuthProvider>(context, listen: false).token;
+      if (token == null) throw Exception('يرجى تسجيل الدخول');
+      final accepted = await _apiService.testManagerPush(token);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(accepted
+          ? 'Firebase قبل إرسال إشعار تجريبي؛ تحقق من ظهوره وصوته على الهاتف.'
+          : 'لم يؤكد Firebase قبول الإشعار. راجع تسجيل الجهاز وأذونات الإشعارات.')));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تعذر إرسال إشعار الاختبار: $e')));
+    }
   }
 
   @override
@@ -2023,7 +2334,15 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
             onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen())),
             tooltip: 'المحفظة والأرباح',
           ),
-          IconButton(icon: const Icon(Icons.delivery_dining),tooltip:'طلب مندوب',onPressed:()=>Navigator.push(context,MaterialPageRoute(builder:(_)=>const ManagerCourierScreen()))),
+          IconButton(icon: const Icon(Icons.location_on_outlined, color: Colors.blue),
+              tooltip: 'تحديد موقع المطعم وإرساله للسيرفر',
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen()))),
+          IconButton(icon: const Icon(Icons.delivery_dining), tooltip: 'طلب مندوب مستعجل',
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const ManagerCourierScreen()))),
+          IconButton(icon: const Icon(Icons.notifications_active_outlined),
+              tooltip: 'اختبار إشعار الطلبات', onPressed: _testNotifications),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.red),
             onPressed: () => auth.logout(context),
@@ -2143,72 +2462,321 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
   }
 
 }
+// Direct one-tap dispatch from restaurant dashboard; no customer information form.
+class RestaurantUrgentPickupQuickButton extends StatefulWidget {
+  const RestaurantUrgentPickupQuickButton({super.key});
+  @override
+  State<RestaurantUrgentPickupQuickButton> createState() => _RestaurantUrgentPickupQuickButtonState();
+}
+class _RestaurantUrgentPickupQuickButtonState extends State<RestaurantUrgentPickupQuickButton> {
+  bool _busy = false;
+  int? _submittedOrder;
+  late final String _requestId =
+      '${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1 << 31)}';
+
+  Future<void> _call() async {
+    if (_busy || _submittedOrder != null) return;
+    setState(() => _busy = true);
+    try {
+      final token = Provider.of<AuthProvider>(context, listen: false).token;
+      if (token == null) throw Exception('يرجى تسجيل الدخول');
+      final contextData = await ApiService().getManagerContext(token);
+      final lat = double.tryParse('${contextData['latitude']}');
+      final lng = double.tryParse('${contextData['longitude']}');
+      if (!mounted) return;
+      if (lat == null || lng == null || lat.abs() < 0.000001 || lng.abs() < 0.000001) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('حدد موقع المطعم أولاً، ثم أعد الضغط على طلب المندوب')));
+        await Navigator.push<void>(context,
+            MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen()));
+        return;
+      }
+      final result = await ApiService().requestUrgentPickup(token, _requestId);
+      if (!mounted) return;
+      final orderId = int.tryParse('${result['order_id']}');
+      if (orderId != null) setState(() => _submittedOrder = orderId);
+      final success = result['success'] == true && result['dispatch_confirmed'] == true;
+      final message = success
+          ? 'تم تسجيل استدعاء المندوب المستعجل، رقم الطلب #$orderId'
+          : (result['message'] ?? 'الاستدعاء غير مؤكد. افحص الطلبات قبل تكراره.').toString();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: success ? Colors.green.shade700 : Colors.orange.shade800,
+          content: Text(message), duration: const Duration(seconds: 6)));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('تعذّر تأكيد الطلب: $e. تأكد من الطلبات قبل إعادة المحاولة.'),
+          duration: const Duration(seconds: 6)));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+  @override
+  Widget build(BuildContext context) => FilledButton.tonalIcon(
+    onPressed: (_busy || _submittedOrder != null) ? null : _call,
+    icon: Icon(_busy ? Icons.hourglass_top : Icons.delivery_dining),
+    label: Text(_busy ? 'جارٍ الطلب...' : _submittedOrder != null
+        ? 'استدعاء #$_submittedOrder' : 'طلب مندوب مستعجل'),
+  );
+}
+
+// V21: The manager calls a courier to the restaurant with ONE tap.
+// Customer details are handed over after the courier arrives; none are fabricated.
 class ManagerCourierScreen extends StatefulWidget {
   const ManagerCourierScreen({super.key});
-  @override State<ManagerCourierScreen> createState()=>_ManagerCourierScreenState();
+  @override
+  State<ManagerCourierScreen> createState() => _ManagerCourierScreenState();
 }
+
 class _ManagerCourierScreenState extends State<ManagerCourierScreen> {
-  final _api=ApiService();
-  final _form=GlobalKey<FormState>();
-  final _phone=TextEditingController(), _address=TextEditingController();
-  final _lat=TextEditingController(), _lng=TextEditingController();
-  List<Map<String,dynamic>> _areas=[];
-  int? _zone;
-  bool _busy=false, _loading=true;
-  String? _loadError;
-  @override void initState(){super.initState();_load();}
+  final ApiService _api = ApiService();
+  bool _loading = true;
+  bool _busy = false;
+  String? _error;
+  String _restaurantName = '';
+  double? _lat;
+  double? _lng;
+  int? _orderId;
+  String? _notice;
+  late final String _requestId;
+
+  @override
+  void initState() {
+    super.initState();
+    _requestId = '${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1 << 31)}';
+    _load();
+  }
+
   Future<void> _load() async {
-    try{
-      final token=Provider.of<AuthProvider>(context,listen:false).token!;
-      final info=await _api.getManagerContext(token);
-      if(!mounted)return;
-      setState((){
-        _areas=(info['areas'] as List? ?? []).map((x)=>Map<String,dynamic>.from(x)).toList();
-        _zone=null; _loading=false;
+    setState(() { _loading = true; _error = null; });
+    try {
+      final token = Provider.of<AuthProvider>(context, listen: false).token;
+      if (token == null) throw Exception('يرجى تسجيل الدخول');
+      final info = await _api.getManagerContext(token);
+      if (!mounted) return;
+      setState(() {
+        _restaurantName = (info['name'] ?? '').toString();
+        _lat = double.tryParse('${info['latitude']}');
+        _lng = double.tryParse('${info['longitude']}');
       });
-    }catch(e){if(mounted)setState((){_loading=false;_loadError='$e';});}
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
-  @override void dispose(){_phone.dispose();_address.dispose();_lat.dispose();_lng.dispose();super.dispose();}
-  Future<void> _submit() async {
-    if(!_form.currentState!.validate()||_zone==null){ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('اختر منطقة التوصيل')));return;}
-    setState(()=>_busy=true);
-    try{
-      final token=Provider.of<AuthProvider>(context,listen:false).token!;
-      final result=await _api.requestManualDriver(token,{
-        'phone':_phone.text.trim(),'address':_address.text.trim(),'zone_id':_zone,
-        'destination_lat':double.parse(_lat.text.trim()),'destination_lng':double.parse(_lng.text.trim())
+
+  bool get _hasLocation => _lat != null && _lng != null &&
+      _lat!.abs() > 0.000001 && _lng!.abs() > 0.000001 &&
+      _lat!.abs() <= 90 && _lng!.abs() <= 180;
+
+  Future<void> _request() async {
+    if (_busy || _orderId != null || !_hasLocation) return;
+    setState(() { _busy = true; _error = null; });
+    try {
+      final token = Provider.of<AuthProvider>(context, listen: false).token;
+      if (token == null) throw Exception('يرجى تسجيل الدخول');
+      final data = await _api.requestUrgentPickup(token, _requestId);
+      if (!mounted) return;
+      final id = int.tryParse('${data['order_id']}');
+      final succeeded = data['success'] == true && data['dispatch_confirmed'] == true;
+      setState(() {
+        _orderId = id; // Do not duplicate a saved order even if dispatch is uncertain.
+        _notice = succeeded
+            ? 'تم إرسال استدعاء مندوب مستعجل. رقم الطلب: #$id'
+            : (data['message'] ?? 'تم تسجيل الطلب، لكن وصوله للمندوب لم يتأكد. راجع الطلب رقم #$id ولا تعِد الإرسال.').toString();
       });
-      if(!mounted)return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('تم إرسال الطلب #${result['order_id']} - أجرة التوصيل ${result['delivery_fee']} د.ع')));
-    }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('$e')));}
-    finally{if(mounted)setState(()=>_busy=false);}
+    } catch (e) {
+      if (mounted) setState(() => _error = 'تعذر تأكيد الطلب: $e. إذا انقطع الاتصال بعد الضغط، افحص الطلبات قبل إعادة المحاولة.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
-  @override Widget build(BuildContext context) {
-    return Scaffold(appBar:AppBar(title:const Text('طلب مندوب توصيل')),
-        body:_loading?const Center(child:CircularProgressIndicator()):_loadError!=null
-            ?Center(child:Text('فشل تحميل معلومات المطعم: $_loadError'))
-            :Form(key:_form,child:ListView(padding:const EdgeInsets.all(16),children:[
-          const Text('خدمة توصيل فقط - ستُحسب الأجرة على السيرفر، ولن يتم إرسال الطلب بلا موقع الزبون الحقيقي.'),
-          const SizedBox(height:16),
-          TextFormField(controller:_phone,keyboardType:TextInputType.phone,
-              decoration:const InputDecoration(labelText:'رقم هاتف الزبون'),
-              validator:(v)=>(v??'').trim().length<10?'رقم الهاتف غير مكتمل':null),
-          TextFormField(controller:_address,decoration:const InputDecoration(labelText:'عنوان الزبون بالتفصيل'),
-              validator:(v)=>(v??'').trim().isEmpty?'العنوان مطلوب':null),
-          DropdownButtonFormField<int>(value:_zone,decoration:const InputDecoration(labelText:'منطقة التوصيل'),
-              items:_areas.map((a)=>DropdownMenuItem<int>(value:int.tryParse(a['id'].toString()),child:Text(a['name'].toString()))).toList(),
-              onChanged:(v)=>setState(()=>_zone=v),validator:(v)=>v==null?'اختر منطقة':null),
-          TextFormField(controller:_lat,keyboardType:const TextInputType.numberWithOptions(decimal:true,signed:true),
-              decoration:const InputDecoration(labelText:'خط عرض موقع الزبون (Latitude)'),
-              validator:(v)=>double.tryParse(v??'')==null?'أدخل إحداثياً صحيحاً':null),
-          TextFormField(controller:_lng,keyboardType:const TextInputType.numberWithOptions(decimal:true,signed:true),
-              decoration:const InputDecoration(labelText:'خط طول موقع الزبون (Longitude)'),
-              validator:(v)=>double.tryParse(v??'')==null?'أدخل إحداثياً صحيحاً':null),
-          const SizedBox(height:24),
-          ElevatedButton.icon(onPressed:_busy?null:_submit,icon:const Icon(Icons.delivery_dining),
-              label:Text(_busy?'جاري الإرسال':'طلب مندوب')),
-        ])));
+
+  Future<void> _openLocation() async {
+    await Navigator.push<void>(context,
+        MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen()));
+    if (mounted) await _load();
   }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('طلب مندوب مستعجل')),
+    body: _loading ? const Center(child: CircularProgressIndicator())
+        : ListView(padding: const EdgeInsets.all(20), children: [
+      const SizedBox(height: 18),
+      const Center(child: Icon(Icons.delivery_dining, color: Colors.deepOrange, size: 72)),
+      const SizedBox(height: 14),
+      const Text('استدعاء مندوب للمطعم', textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      const Text('ضغطة واحدة فقط. يصل المندوب إلى موقع المطعم المحفوظ، وتعطيه تفاصيل الزبون والعنوان يدوياً عندما يحضر.',
+          textAlign: TextAlign.center),
+      const SizedBox(height: 20),
+      Card(child: ListTile(
+        leading: Icon(_hasLocation ? Icons.location_on : Icons.location_off,
+            color: _hasLocation ? Colors.green : Colors.red),
+        title: Text(_restaurantName.isNotEmpty ? _restaurantName : 'المطعم'),
+        subtitle: Text(_hasLocation
+            ? 'موقع الاستلام محفوظ (${_lat!.toStringAsFixed(5)}, ${_lng!.toStringAsFixed(5)})'
+            : 'يجب تحديد موقع المطعم قبل طلب مندوب'),
+        trailing: IconButton(onPressed: _openLocation,
+            icon: const Icon(Icons.edit_location_alt_outlined), tooltip: 'تحديد موقع المطعم'),
+        onTap: _openLocation,
+      )),
+      const SizedBox(height: 12),
+      if (_error != null) Padding(padding: const EdgeInsets.only(bottom: 12),
+          child: Text(_error!, style: const TextStyle(color: Colors.red))),
+      if (_notice != null) Padding(padding: const EdgeInsets.only(bottom: 12),
+          child: Text(_notice!, style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold))),
+      SizedBox(height: 54, child: FilledButton.icon(
+        onPressed: (_busy || _orderId != null || !_hasLocation) ? null : _request,
+        icon: const Icon(Icons.campaign_outlined),
+        label: Text(_busy ? 'جارٍ استدعاء المندوب...' : _orderId != null ? 'تم تسجيل الاستدعاء' : 'طلب مندوب مستعجل'),
+      )),
+      const SizedBox(height: 14),
+      const Text('استدعاء استلام فقط: لا يُدخل رقم زبون أو تفاصيل أو أجرة توصيل، ولا تُنشأ فاتورة تحصيل بقيمة افتراضية. التوزيع يتم وفق آلية السائقين الحالية.',
+          textAlign: TextAlign.center, style: TextStyle(color: Colors.black54, fontSize: 12)),
+    ]),
+  );
+}
+
+// Restaurant location is set intentionally, never silently from the manager phone.
+class ManagerPickupLocationScreen extends StatefulWidget {
+  const ManagerPickupLocationScreen({super.key});
+  @override
+  State<ManagerPickupLocationScreen> createState() => _ManagerPickupLocationScreenState();
+}
+class _ManagerPickupLocationScreenState extends State<ManagerPickupLocationScreen> {
+  final _api = ApiService();
+  final _lat = TextEditingController();
+  final _lng = TextEditingController();
+  List<Map<String, dynamic>> _areas = [];
+  int? _zone;
+  bool _loading = true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() { super.initState(); _load(); }
+  @override
+  void dispose() { _lat.dispose(); _lng.dispose(); super.dispose(); }
+
+  Future<void> _load() async {
+    try {
+      final token = Provider.of<AuthProvider>(context, listen: false).token;
+      if (token == null) throw Exception('يرجى تسجيل الدخول');
+      final info = await _api.getManagerContext(token);
+      if (!mounted) return;
+      final areas = (info['areas'] as List? ?? [])
+          .whereType<Map>()
+          .map((x) => Map<String, dynamic>.from(x)).toList();
+      final savedZone = int.tryParse('${info['pickup_zone_id']}');
+      setState(() {
+        _lat.text = info['latitude'] == null ? '' : info['latitude'].toString();
+        _lng.text = info['longitude'] == null ? '' : info['longitude'].toString();
+        _areas = areas;
+        _zone = areas.any((a) => int.tryParse('${a['id']}') == savedZone)
+            ? savedZone : areas.length == 1 ? int.tryParse('${areas.first['id']}') : null;
+        _loading = false;
+      });
+    } catch (e) {
+      if (mounted) setState(() { _error = '$e'; _loading = false; });
+    }
+  }
+
+  Future<void> _usePhoneLocation() async {
+    setState(() { _busy = true; _error = null; });
+    try {
+      final allowed = await PermissionService.handleLocationPermission(context);
+      if (!allowed) return;
+      final position = await geolocator.Geolocator.getCurrentPosition(
+          desiredAccuracy: geolocator.LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 20));
+      if (!mounted) return;
+      _lat.text = position.latitude.toStringAsFixed(7);
+      _lng.text = position.longitude.toStringAsFixed(7);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('أُخذ موقع الهاتف فقط. تأكد أنك داخل المطعم قبل الضغط على حفظ.')));
+    } catch (e) {
+      if (mounted) setState(() => _error = 'تعذر تحديد موقع الهاتف: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _viewMap() async {
+    final lat = double.tryParse(_lat.text.trim());
+    final lng = double.tryParse(_lng.text.trim());
+    if (lat == null || lng == null) return;
+    final link = Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lng');
+    if (await canLaunchUrl(link)) await launchUrl(link, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _save() async {
+    final lat = double.tryParse(_lat.text.trim());
+    final lng = double.tryParse(_lng.text.trim());
+    if (lat == null || lng == null || lat.abs() < 0.000001 || lng.abs() < 0.000001 ||
+        lat.abs() > 90 || lng.abs() > 180) {
+      setState(() => _error = 'إحداثيات المطعم غير صحيحة');
+      return;
+    }
+    if (_zone == null) {
+      setState(() => _error = 'حدد منطقة المندوبين الخاصة بموقع المطعم');
+      return;
+    }
+    final confirmed = await showDialog<bool>(context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('تأكيد موقع المطعم'),
+          content: Text('هل الموقع $lat, $lng هو موقع المطعم الفعلي؟ سيتوجه إليه المندوبون.'),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('رجوع')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('حفظ الموقع'))],
+        ));
+    if (confirmed != true || !mounted) return;
+    setState(() { _busy = true; _error = null; });
+    try {
+      final token = Provider.of<AuthProvider>(context, listen: false).token;
+      if (token == null) throw Exception('يرجى تسجيل الدخول');
+      await _api.savePickupLocation(token, lat, lng, zoneId: _zone);
+      if (!mounted) return;
+      Navigator.pop(context);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'فشل حفظ الموقع: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('تحديد موقع المطعم')),
+    body: _loading ? const Center(child: CircularProgressIndicator())
+        : ListView(padding: const EdgeInsets.all(18), children: [
+      const Text('حدد موقع الاستلام الحقيقي. يمكنك أخذ موقع الهاتف إذا كنت داخل المطعم، أو كتابة الإحداثيات يدوياً.'),
+      const SizedBox(height: 14),
+      OutlinedButton.icon(onPressed: _busy ? null : _usePhoneLocation,
+          icon: const Icon(Icons.my_location), label: const Text('استخدام موقع الهاتف الآن')),
+      const SizedBox(height: 12),
+      TextField(controller: _lat, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+          decoration: const InputDecoration(labelText: 'خط العرض Latitude', border: OutlineInputBorder())),
+      const SizedBox(height: 12),
+      TextField(controller: _lng, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+          decoration: const InputDecoration(labelText: 'خط الطول Longitude', border: OutlineInputBorder())),
+      const SizedBox(height: 12),
+      OutlinedButton.icon(onPressed: _viewMap,
+          icon: const Icon(Icons.map_outlined), label: const Text('معاينة الموقع على الخريطة')),
+      const SizedBox(height: 12),
+      DropdownButtonFormField<int>(value: _zone,
+          decoration: const InputDecoration(labelText: 'منطقة المندوبين / الاستلام', border: OutlineInputBorder()),
+          items: _areas.map((a) => DropdownMenuItem<int>(
+              value: int.tryParse('${a['id']}'), child: Text('${a['name']}'))).toList(),
+          onChanged: _busy ? null : (v) => setState(() => _zone = v)),
+      const SizedBox(height: 12),
+      if (_error != null) Text(_error!, style: const TextStyle(color: Colors.red)),
+      const SizedBox(height: 14),
+      FilledButton.icon(onPressed: _busy ? null : _save, icon: const Icon(Icons.save_outlined),
+          label: Text(_busy ? 'جارٍ الحفظ...' : 'حفظ الموقع للمندوبين')),
+    ]),
+  );
 }
 
 class ProductManagementTab extends StatefulWidget {
@@ -2399,9 +2967,11 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
                       trailing: PopupMenuButton<String>(
                         onSelected:(action) async {
                           if(action=='edit'){_navigateToEditScreen(product);return;}
-                          if(action=='delete'){
+                          if(action=='delete' || action=='delete-forever'){
+                            final permanent=action=='delete-forever';
                             final accepted=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(
-                                title:const Text('حذف الوجبة'),content:const Text('سيتم نقل الوجبة إلى سلة المحذوفات'),
+                                title:Text(permanent?'حذف الوجبة نهائياً':'حذف الوجبة'),
+                                content:Text(permanent?'سيتم حذف الوجبة نهائياً ولا يمكن استرجاعها. قد تبقى تفاصيلها في الطلبات القديمة. هل أنت متأكد؟':'سيتم نقل الوجبة إلى سلة المحذوفات'),
                                 actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
                                   TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('حذف'))]));
                             if(accepted!=true)return;
@@ -2416,14 +2986,15 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
                               }
                             }
                             await _apiService.productAction(auth.token!,action,product.id,hidden:!product.isHidden);
-                            if (action == 'delete') await ProductOptionsLocalDrafts.remove(product.id);
+                            if (action == 'delete'||action == 'delete-forever') await ProductOptionsLocalDrafts.remove(product.id);
                             await provider.fetchProducts(auth.token);
                           }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('$e')));}
                         },
                         itemBuilder:(_)=>[
                           const PopupMenuItem(value:'edit',child:Text('تعديل')),
                           PopupMenuItem(value:'hide',child:Text(product.isHidden?'إظهار للزبائن':'إخفاء مؤقتاً')),
-                          const PopupMenuItem(value:'delete',child:Text('حذف')),
+                          const PopupMenuItem(value:'delete',child:Text('نقل للمحذوفات')),
+                          const PopupMenuItem(value:'delete-forever',child:Text('حذف نهائي',style:TextStyle(color:Colors.red))),
                         ],
                       ),
                     ),
@@ -2480,6 +3051,15 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
   late final TextEditingController _description;
   late final TextEditingController _price;
   late final TextEditingController _salePrice;
+  bool _hoursEnabled = false;
+  TimeOfDay _productOpen = const TimeOfDay(hour: 7, minute: 0);
+  TimeOfDay _productClose = const TimeOfDay(hour: 12, minute: 0);
+  String _timeCode(TimeOfDay t) => '${t.hour.toString().padLeft(2,'0')}:${t.minute.toString().padLeft(2,'0')}';
+  Future<void> _editProductHour(bool start) async {
+    final t=await showTimePicker(context:context,initialTime:start?_productOpen:_productClose,
+        builder:(ctx,child)=>MediaQuery(data:MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat:false), child:child!));
+    if(t!=null && mounted)setState((){if(start){_productOpen=t;}else{_productClose=t;}});
+  }
   int? _category;
   File? _image;
   bool _saving = false;
@@ -2499,6 +3079,17 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
     _description = TextEditingController(text: p?.description ?? '');
     _price = TextEditingController(text: p == null ? '' : p.price.toStringAsFixed(0));
     _salePrice = TextEditingController(text: p?.salePrice?.toStringAsFixed(0) ?? '');
+    if(p!=null && p.availabilityStart.isNotEmpty && p.availabilityEnd.isNotEmpty){
+      _hoursEnabled=true;
+      TimeOfDay parseHour(String x, TimeOfDay fallback){
+        final parts=x.split(':'); if(parts.length!=2)return fallback;
+        final h=int.tryParse(parts[0]);final m=int.tryParse(parts[1]);
+        if(h==null||m==null||h<0||h>23||m<0||m>59)return fallback;
+        return TimeOfDay(hour:h,minute:m);
+      }
+      _productOpen=parseHour(p.availabilityStart,_productOpen);
+      _productClose=parseHour(p.availabilityEnd,_productClose);
+    }
     _category = widget.sections.any((s) => int.tryParse('${s['id']}') == p?.categoryId)
         ? p!.categoryId : null;
     if (p != null) _loadOptions(p.id);
@@ -2585,6 +3176,9 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('سعر الخصم يجب أن يكون أقل من السعر الأصلي')));
       return;
     }
+    if(_hoursEnabled && _timeCode(_productOpen)==_timeCode(_productClose)){
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('وقت بداية ونهاية توفر الوجبة لا يمكن أن يتساويا')));return;
+    }
     // لا تُعرض خيارات غير مدعومة في التطبيق كأنها منشورة للزبائن.
     final token = widget.authProvider.token;
     if (token == null) {
@@ -2600,7 +3194,9 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
         id = await _api.createProductWithId(token: token, name: _name.text.trim(),
             price: _price.text.trim(), salePrice: sale.isEmpty ? null : sale,
             description: _description.text.trim(), image: _image,
-            categoryId: _category!);
+            categoryId: _category!,
+            availabilityStart:_hoursEnabled?_timeCode(_productOpen):'',
+            availabilityEnd:_hoursEnabled?_timeCode(_productClose):'');
         _createdId = id; // يمنع تكرار الوجبة عند إعادة محاولة حفظ الخيارات.
         _creationUncertain = false;
       } else {
@@ -2608,7 +3204,9 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
         await _api.updateProductFull(token: token, productId: id,
             name: _name.text.trim(), price: _price.text.trim(),
             salePrice: sale, description: _description.text.trim(),
-            image: _image, categoryId: _category!);
+            image: _image, categoryId: _category!,
+            availabilityStart:_hoursEnabled?_timeCode(_productOpen):'',
+            availabilityEnd:_hoursEnabled?_timeCode(_productClose):'');
       }
 
       bool optionsOnline = true;
@@ -2700,10 +3298,22 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
             decoration: const InputDecoration(labelText: 'سعر الخصم'),
             validator: (v) => _validateMoney(v, allowEmpty: true))),
       ]),
+      const SizedBox(height: 20),
+      SwitchListTile(
+          title:const Text('وقت محدد لتوفر الوجبة'),
+          subtitle:const Text('مثلاً من 7:00 صباحاً إلى 12:00 ظهراً؛ يتوقف طلبها تلقائياً خارج الوقت'),
+          value:_hoursEnabled,onChanged:_saving?null:(v)=>setState(()=>_hoursEnabled=v)),
+      if(_hoursEnabled)Row(children:[
+        Expanded(child:OutlinedButton.icon(onPressed:()=>_editProductHour(true),
+            icon:const Icon(Icons.schedule),label:Text('من ${beyteiManagerTime12(_timeCode(_productOpen))}'))),
+        const SizedBox(width:8),
+        Expanded(child:OutlinedButton.icon(onPressed:()=>_editProductHour(false),
+            icon:const Icon(Icons.schedule),label:Text('إلى ${beyteiManagerTime12(_timeCode(_productClose))}'))),
+      ]),
       const SizedBox(height: 28),
       const Text('الخيارات والأوزان والإضافات', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
       const SizedBox(height: 4),
-      const Text('يمكنك إعداد ربع أو نصف أو كيلو أو غيرها، مع صلصات وبصل. عدّل زيادة السعر لكل وزن قبل نشر الوجبة: جميع فروقات الأسعار في قالب الوزن تبدأ بصفر.'),
+      const Text('عند تفعيل مجموعة الأوزان يصبح السعر الأساسي هو سعر الكيلو، وتُحسب الربع والنصف تلقائياً مرة واحدة. أي زيادة تضعها على الخيار تُضاف بعد حساب الوزن. الصلصات تُضاف منفصلة.'),
       const SizedBox(height: 12),
       Wrap(spacing: 8, runSpacing: 6, children: [
         ActionChip(avatar: const Icon(Icons.scale), label: const Text('أوزان'), onPressed: () => _addPreset('weight')),
@@ -2822,6 +3432,101 @@ class _RatingsDashboardScreenState extends State<RatingsDashboardScreen> {
   }
 }
 
+// BEYTEI V20: per-weekday windows. Saves 24-hour values, displays 12-hour Arabic.
+class BeyteiWeeklyHoursScreen extends StatefulWidget {
+  final String fallbackStart, fallbackEnd;
+  const BeyteiWeeklyHoursScreen({super.key,required this.fallbackStart,required this.fallbackEnd});
+  @override State<BeyteiWeeklyHoursScreen> createState()=>_BeyteiWeeklyHoursScreenState();
+}
+class _BeyteiWeeklyHoursScreenState extends State<BeyteiWeeklyHoursScreen> {
+  static const _keys=['sun','mon','tue','wed','thu','fri','sat'];
+  static const _names=['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+  Map<String,List<Map<String,String>>> _days={};
+  bool _busy=false,_loading=true;
+  String? _error;
+  @override void initState(){super.initState();_load();}
+  String _time(TimeOfDay t)=>'${t.hour.toString().padLeft(2,'0')}:${t.minute.toString().padLeft(2,'0')}';
+  TimeOfDay _decode(String s){
+    final p=s.split(':');
+    final h=p.isNotEmpty?int.tryParse(p[0]):null;
+    final m=p.length>1?int.tryParse(p[1]):null;
+    return TimeOfDay(hour:h!=null&&h>=0&&h<24?h:8,minute:m!=null&&m>=0&&m<60?m:0);
+  }
+  Future<void> _load() async {
+    try{
+      final token=Provider.of<AuthProvider>(context,listen:false).token!;
+      final r=await ApiService().fetchWeeklySchedule(token);
+      final saved=r['days'];
+      final days=<String,List<Map<String,String>>>{};
+      for(final day in _keys){
+        final raw=saved is Map?saved[day]:null;
+        days[day]=raw is List?raw.whereType<Map>().map((w)=>{
+          'start':(w['start']??'08:00').toString(),
+          'end':(w['end']??'13:00').toString()}).toList():[
+          {'start':widget.fallbackStart,'end':widget.fallbackEnd}];
+      }
+      if(mounted)setState((){_days=days;_loading=false;});
+    }catch(e){if(mounted)setState((){_error='$e';_loading=false;});}
+  }
+  Future<void> _pick(String day,int index,String field) async {
+    final current=_decode(_days[day]![index][field]!);
+    final picked=await showTimePicker(context:context,initialTime:current,
+        helpText:'اختر الوقت',
+        builder:(ctx,child)=>MediaQuery(data:MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat:false),child:child!));
+    if(picked!=null && mounted)setState(()=>_days[day]![index][field]=_time(picked));
+  }
+  Future<void> _save() async {
+    for(final day in _keys){
+      for(final span in _days[day]??[]){
+        if(span['start']==span['end']){
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('وقت الفتح لا يمكن أن يساوي وقت الإغلاق')));return;
+        }
+      }
+    }
+    setState(()=>_busy=true);
+    try{
+      final token=Provider.of<AuthProvider>(context,listen:false).token!;
+      await ApiService().saveWeeklySchedule(token,_days);
+      if(!mounted)return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('تم حفظ جدول الأسبوع. يعمل عند تفعيل الفتح التلقائي.')));
+      Navigator.pop(context,true);
+    }catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text('فشل الحفظ: $e')));}
+    finally{if(mounted)setState(()=>_busy=false);}
+  }
+  @override Widget build(BuildContext context)=>Scaffold(
+      appBar:AppBar(title:const Text('جدول عمل المطعم الأسبوعي')),
+      body:_loading?const Center(child:CircularProgressIndicator()):_error!=null
+          ?Center(child:Text('تعذر تحميل الجدول: $_error'))
+          :ListView(padding:const EdgeInsets.all(12),children:[
+        const Text('اختر أيام العمل. لكل يوم يمكنك إضافة فترتين أو ثلاث فترات، وتدعم الأوقات حتى بعد منتصف الليل.',
+            style:TextStyle(fontWeight:FontWeight.w500)),
+        const SizedBox(height:10),
+        for(var i=0;i<_keys.length;i++) Card(child:Padding(padding:const EdgeInsets.all(12),child:Column(children:[
+          SwitchListTile(title:Text(_names[i],style:const TextStyle(fontWeight:FontWeight.bold)),
+              subtitle:Text((_days[_keys[i]]??[]).isEmpty?'مغلق طوال اليوم':'${_days[_keys[i]]!.length} فترة'),
+              value:(_days[_keys[i]]??[]).isNotEmpty,
+              onChanged:_busy?null:(v)=>setState(()=>_days[_keys[i]]=v
+                  ?[{'start':'08:00','end':'13:00'}]:[])),
+          for(var n=0;n<(_days[_keys[i]]??[]).length;n++)
+            Row(children:[
+              Expanded(child:TextButton(onPressed:_busy?null:()=>_pick(_keys[i],n,'start'),
+                  child:Text('من ${beyteiManagerTime12(_days[_keys[i]]![n]['start']!)}'))),
+              Expanded(child:TextButton(onPressed:_busy?null:()=>_pick(_keys[i],n,'end'),
+                  child:Text('إلى ${beyteiManagerTime12(_days[_keys[i]]![n]['end']!)}'))),
+              IconButton(onPressed:_busy?null:()=>setState(()=>_days[_keys[i]]!.removeAt(n)),
+                  icon:const Icon(Icons.remove_circle_outline,color:Colors.red)),
+            ]),
+          if((_days[_keys[i]]??[]).isNotEmpty&&_days[_keys[i]]!.length<3)
+            TextButton.icon(onPressed:_busy?null:()=>setState(()=>_days[_keys[i]]!.add(
+                {'start':'16:00','end':'01:00'})),icon:const Icon(Icons.add),label:const Text('إضافة فترة أخرى')),
+        ]))),
+        const SizedBox(height:12),
+        FilledButton.icon(onPressed:_busy?null:_save,icon:const Icon(Icons.save),
+            label:Text(_busy?'جارٍ الحفظ...':'حفظ جدول الأسبوع')),
+        const SizedBox(height:30),
+      ]));
+}
+
 class RestaurantSettingsScreen extends StatefulWidget {
   const RestaurantSettingsScreen({super.key});
   @override
@@ -2842,10 +3547,12 @@ class _RestaurantSettingsScreenState extends State<RestaurantSettingsScreen> {
 
   Future<void> _setHours(RestaurantSettingsProvider settings) async {
     final open = await showTimePicker(context: context, initialTime: _parse(settings.openTime),
-        helpText: 'وقت افتتاح المطعم');
+        helpText: 'وقت افتتاح المطعم',
+        builder:(ctx,child)=>MediaQuery(data:MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat:false),child:child!));
     if (open == null || !mounted) return;
     final close = await showTimePicker(context: context, initialTime: _parse(settings.closeTime),
-        helpText: 'وقت إغلاق المطعم');
+        helpText: 'وقت إغلاق المطعم',
+        builder:(ctx,child)=>MediaQuery(data:MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat:false),child:child!));
     if (close == null || !mounted) return;
     if (open.hour == close.hour && open.minute == close.minute) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('وقت الفتح والإغلاق لا يمكن أن يكونا متساويين')));
@@ -2888,14 +3595,27 @@ class _RestaurantSettingsScreenState extends State<RestaurantSettingsScreen> {
             value: settings.isRestaurantOpen, onChanged: (v) => _setStatus(settings, 'manual', v)),
       ]))),
       const SizedBox(height: 14),
+      Card(child: ListTile(
+        leading: const Icon(Icons.location_on_outlined),
+        title: const Text('موقع المطعم للمندوبين'),
+        subtitle: const Text('تحديد موقع الاستلام والمنطقة بدقة مرة واحدة'),
+        trailing: const Icon(Icons.chevron_left),
+        onTap: () => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen())),
+      )),
+      const SizedBox(height: 14),
       Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(children: [
         const ListTile(title: Text('أوقات العمل اليومية'), leading: Icon(Icons.access_time)),
-        ListTile(title: const Text('وقت الفتح'), trailing: Text(settings.openTime)),
-        ListTile(title: const Text('وقت الإغلاق'), trailing: Text(settings.closeTime)),
+        ListTile(title: const Text('وقت الفتح'), trailing: Text(beyteiManagerTime12(settings.openTime))),
+        ListTile(title: const Text('وقت الإغلاق'), trailing: Text(beyteiManagerTime12(settings.closeTime))),
         const SizedBox(height: 8),
         SizedBox(width: double.infinity, child: OutlinedButton.icon(
             onPressed: _savingHours ? null : () => _setHours(settings),
-            icon: const Icon(Icons.edit_calendar), label: Text(_savingHours ? 'جارٍ الحفظ...' : 'تعديل أوقات العمل'))),
+            icon: const Icon(Icons.edit_calendar), label: Text(_savingHours ? 'جارٍ الحفظ...' : 'تعديل أوقات العمل القديمة'))),
+        const SizedBox(height:10),
+        FilledButton.icon(onPressed:()=>Navigator.push(context,MaterialPageRoute(
+            builder:(_)=>BeyteiWeeklyHoursScreen(fallbackStart:settings.openTime, fallbackEnd:settings.closeTime))),
+            icon:const Icon(Icons.calendar_month),label:const Text('جدول أسبوعي: فترتان أو أكثر لكل يوم')),
       ]))),
       const SizedBox(height: 10),
       const Padding(padding: EdgeInsets.all(10), child: Text(
@@ -3007,9 +3727,12 @@ class _OrderCardState extends State<OrderCard> {
   @override
   Widget build(BuildContext context) {
     final formatter = DateFormat('yyyy-MM-dd – hh:mm a', 'ar');
-    final formattedDate = widget.order.dateCreated.year >= 2000
-        ? formatter.format(widget.order.dateCreated.toLocal()) : 'تاريخ غير متاح';
-    bool isFinished = ['completed', 'cancelled', 'refunded', 'failed', 'trash', 'picked_up', 'out-for-delivery', 'delivered'].contains(widget.order.status.toLowerCase());
+    final orderDate = widget.isCompleted
+        ? (widget.order.dateCompleted ?? widget.order.dateCreated)
+        : widget.order.dateCreated;
+    final formattedDate = orderDate.year >= 2000
+        ? formatter.format(orderDate.toLocal()) : 'تاريخ غير متاح';
+    bool isFinished = ['completed', 'cancelled', 'refunded', 'failed', 'delivered'].contains(widget.order.status.toLowerCase());
     bool hasDriver = widget.order.driverName != null && widget.order.driverName!.isNotEmpty;
 
     return Card(
@@ -3034,6 +3757,8 @@ class _OrderCardState extends State<OrderCard> {
                 const SizedBox(height: 8),
                 Text('حالة الطلب: ${restaurantOrderStatusLabel(widget.order.status)}',
                     style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.teal)),
+                if (widget.isCompleted && widget.order.dateCompleted != null)
+                  Text('تاريخ الإنهاء: $formattedDate', style: const TextStyle(fontSize: 12, color: Colors.grey)),
                 const Divider(height: 25),
                 Text("الزبون: ${widget.order.customerName}", style: const TextStyle(fontWeight: FontWeight.bold)),
                 Text("العنوان: ${widget.order.address}", style: TextStyle(color: Colors.grey.shade700)),
@@ -3043,7 +3768,15 @@ class _OrderCardState extends State<OrderCard> {
                     decoration: BoxDecoration(color: Colors.grey.shade50, borderRadius: BorderRadius.circular(8)),
                     child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
-                        children: widget.order.lineItems.map((item) => Text("• ${item.quantity} x ${item.name}")).toList()
+                        children: widget.order.lineItems.map((item) => Padding(
+                            padding:const EdgeInsets.symmetric(vertical:4),
+                            child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+                              Text('• ${item.quantity} × ${item.name}',style:const TextStyle(fontWeight:FontWeight.w600)),
+                              if(item.optionsSummary.isNotEmpty)Text(item.optionsSummary,
+                                  style:const TextStyle(fontSize:12,color:Colors.blueGrey)),
+                              if(item.note.isNotEmpty && item.note!=item.optionsSummary)Text('ملاحظة: ${item.note}',
+                                  style:const TextStyle(fontSize:12,color:Colors.deepOrange)),
+                            ]))).toList()
                     )
                 ),
                 const SizedBox(height: 10),
@@ -3116,7 +3849,9 @@ void main() async {
 
   try {
     await Firebase.initializeApp();
-    print("✅ Firebase initialized successfully");
+    FirebaseMessaging.onBackgroundMessage(restaurantFirebaseBackground);
+    await RestaurantNotificationService.initialize();
+    print('✅ Firebase والإشعارات مهيأة');
   } catch (e) {
     print("⚠️ Firebase initialization failed: $e");
     // Continue without Firebase if it fails
@@ -3179,3 +3914,4 @@ class AuthWrapper extends StatelessWidget {
     );
   }
 }
+
