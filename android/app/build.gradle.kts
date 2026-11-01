@@ -1,3 +1,4 @@
+
 import java.util.Properties
 import java.io.FileInputStream
 
@@ -51,9 +52,14 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        // 3. تمرير مفتاح Mapbox إلى التطبيق ليتم استخدامه داخلياً
-        val mapboxToken = localProperties.getProperty("MAPBOX_DOWNLOADS_TOKEN") ?: ""
-        resValue("string", "MAPBOX_DOWNLOADS_TOKEN", mapboxToken)
+        val mapboxToken =
+            localProperties.getProperty("MAPBOX_DOWNLOADS_TOKEN") ?: ""
+
+        resValue(
+            "string",
+            "MAPBOX_DOWNLOADS_TOKEN",
+            mapboxToken
+        )
     }
 
     buildTypes {
@@ -66,7 +72,20 @@ android {
 }
 
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    coreLibraryDesugaring(
+        "com.android.tools:desugar_jdk_libs:2.1.5"
+    )
+
+    // Fix 16KB alignment for CameraX native libraries
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+
+    // ML Kit barcode model delivered by Google Play services
+    implementation(
+        "com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.1"
+    )
 }
 
 flutter {

@@ -955,15 +955,19 @@ class NotificationService {
         }
       }
       // 2. التحديث العادي للطلبات الجديدة أو طلب التحديث من السيرفر
-      else if (data['force_refresh'] == 'true' || data['type'] == 'new_delivery') {
+      else if (data['type'] != 'driver_rank_changed' &&
+          (data['force_refresh'] == 'true' || data['type'] == 'new_delivery')) {
         print("🔥 [SERVICE] السيرفر يطلب تحديث الشاشة الآن! جاري التحديث التلقائي...");
         orderRefreshCounter.value++;
       }
 
       // ========================================================================
 
-      // معالجة الرصيد وعمليات السيرفر في الخلفية (كما كان سابقاً تماماً)
-      _handleBackgroundData(data);
+      // Ranking push is informational; do not trigger a balance refresh or
+      // zero-balance navigation when a driver gains or loses a rank.
+      if (data['type'] != 'driver_rank_changed') {
+        _handleBackgroundData(data);
+      }
     });
 
     // 5️⃣ الاستماع عند فتح التطبيق من الإشعار (Background/Terminated)
@@ -3565,7 +3569,9 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
     final info = _realCompetitionSummary;
     final my = info?['my_data'] is Map ? info!['my_data'] as Map : <String,dynamic>{};
     final ratings = info?['ratings'] is Map ? info!['ratings'] as Map : <String,dynamic>{};
-    final rank = int.tryParse('${my['current_rank'] ?? 0}') ?? 0;
+    final rank = (double.tryParse('${my['current_score'] ?? 0}') ?? 0) > 0
+        ? (int.tryParse('${my['current_rank'] ?? 0}') ?? 0)
+        : 0;
     final total = int.tryParse('${my['zone_driver_count'] ?? 0}') ?? 0;
     final stars = double.tryParse('${ratings['average'] ?? 0}') ?? 0.0;
     final ratedCount = int.tryParse('${ratings['total_count'] ?? 0}') ?? 0;
@@ -6348,8 +6354,10 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
   // البطاقة الرئيسية (Hero Stats)
   // ═══════════════════════════════════════════════════════
   Widget _buildHeroStatsCard() {
-    final rank = int.tryParse('${_myStats?['current_rank'] ?? 0}') ?? 0;
     final score = double.tryParse('${_myStats?['current_score'] ?? 0}') ?? 0.0;
+    final rank = score > 0
+        ? (int.tryParse('${_myStats?['current_rank'] ?? 0}') ?? 0)
+        : 0;
     final highest = int.tryParse('${_myStats?['highest_rank_achieved'] ?? 0}') ?? 0;
     final consecutive = int.tryParse('${_myStats?['consecutive_perfect_orders'] ?? 0}') ?? 0;
     final ratingAverage = double.tryParse('${_customerRatings?['average'] ?? 0}') ?? 0.0;
@@ -6512,8 +6520,10 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
   // V12: only show the driver directly AHEAD. Counts come from Laravel's
   // simulated 4.5+ average reviews and fast completed deliveries, never locally.
   Widget _buildOvertakeChallengeCard() {
-    final myRank = int.tryParse('${_myStats?['current_rank'] ?? 0}') ?? 0;
     final myScore = double.tryParse('${_myStats?['current_score'] ?? 0}') ?? 0.0;
+    final myRank = myScore > 0
+        ? (int.tryParse('${_myStats?['current_rank'] ?? 0}') ?? 0)
+        : 0;
     final data = _overtakeData;
     final isLeader = myRank == 1 && data == null;
 
@@ -6852,51 +6862,66 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
   // ═══════════════════════════════════════════════════════
   // Tab 1: لوحة المتصدرين
   // ═══════════════════════════════════════════════════════
+  // V13: The server provides only the top three drivers in this zone.
+  // The client also filters zero scores and truncates to three as a safe
+  // display fallback for older server versions.
   Widget _buildLeaderboardTab() {
-    if (_leaderboard == null || _leaderboard!['leaders'] == null) {
+    final raw = _leaderboard?['leaders'];
+    final candidates = raw is List ? raw : const [];
+    final leaders = candidates
+        .whereType<Map>()
+        .map((entry) => Map<String, dynamic>.from(entry))
+        .where((entry) => (double.tryParse('${entry['score'] ?? 0}') ?? 0) > 0)
+        .toList();
+
+    leaders.sort((a, b) {
+      final scoreA = double.tryParse('${a['score'] ?? 0}') ?? 0;
+      final scoreB = double.tryParse('${b['score'] ?? 0}') ?? 0;
+      final byScore = scoreB.compareTo(scoreA);
+      if (byScore != 0) return byScore;
+      final idA = int.tryParse('${a['driver_id'] ?? 0}') ?? 0;
+      final idB = int.tryParse('${b['driver_id'] ?? 0}') ?? 0;
+      return idA.compareTo(idB);
+    });
+
+    final topThree = leaders.take(3).toList();
+    if (topThree.isEmpty) {
       return const Center(
-        child: Text(
-          'لا توجد بيانات',
-          style: TextStyle(color: Colors.white54),
+        child: Padding(
+          padding: EdgeInsets.all(20),
+          child: Text('لا يوجد متصدرون بنقاط موجبة حالياً',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white70)),
         ),
       );
     }
 
-    final leaders = _leaderboard!['leaders'] as List;
-    final myDriverId = _myStats != null
-        ? (_myStats!['driver_id'] ?? -1)
-        : -1;
-
+    final myDriverId = _myStats?['driver_id']?.toString();
     return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: leaders.length,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      itemCount: topThree.length,
       itemBuilder: (context, index) {
-        final leader = leaders[index];
-        final isMe = leader['driver_id'] == myDriverId;
-        final rank = index + 1;
-
-        return _buildLeaderItem(leader, rank, isMe);
+        final leader = topThree[index];
+        final isMe = myDriverId != null &&
+            leader['driver_id']?.toString() == myDriverId;
+        return _buildLeaderItem(leader, index + 1, isMe);
       },
     );
   }
 
   Widget _buildLeaderItem(Map<String, dynamic> leader, int rank, bool isMe) {
-    Color rankColor;
-    IconData rankIcon;
-
-    if (rank == 1) {
-      rankColor = const Color(0xFFFFD700);
-      rankIcon = Icons.looks_one;
-    } else if (rank == 2) {
-      rankColor = const Color(0xFFC0C0C0);
-      rankIcon = Icons.looks_two;
-    } else if (rank == 3) {
-      rankColor = const Color(0xFFCD7F32);
-      rankIcon = Icons.looks_3;
-    } else {
-      rankColor = const Color(0xFF3B82F6);
-      rankIcon = Icons.format_list_numbered;
-    }
+    final rankColor = rank == 1
+        ? const Color(0xFFFFD700)
+        : rank == 2
+        ? const Color(0xFFC0C0C0)
+        : const Color(0xFFCD7F32);
+    final rankIcon = rank == 1
+        ? Icons.looks_one
+        : rank == 2
+        ? Icons.looks_two
+        : Icons.looks_3;
+    final score = double.tryParse('${leader['score'] ?? 0}') ?? 0;
+    final name = (leader['name'] ?? 'سائق').toString();
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -6904,123 +6929,47 @@ class _DriverPerformanceScreenState extends State<DriverPerformanceScreen>
       decoration: BoxDecoration(
         color: isMe ? const Color(0xFF1E3A8A) : const Color(0xFF1E293B),
         borderRadius: BorderRadius.circular(16),
-        border: isMe
-            ? Border.all(color: const Color(0xFFFFD700), width: 2)
-            : Border.all(color: Colors.white.withOpacity(0.05)),
-        boxShadow: isMe
-            ? [
-          BoxShadow(
-            color: const Color(0xFFFFD700).withOpacity(0.2),
-            blurRadius: 10,
-          ),
-        ]
-            : null,
+        border: Border.all(
+            color: isMe ? const Color(0xFFFFD700) : Colors.white12,
+            width: isMe ? 2 : 1),
       ),
       child: Row(
         children: [
-          // الترتيب
           Container(
             width: 50,
             height: 50,
             decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [rankColor, rankColor.withOpacity(0.7)],
-              ),
+              color: rankColor.withOpacity(0.22),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(rankIcon, color: Colors.white, size: 28),
+            child: Icon(rankIcon, color: rankColor, size: 30),
           ),
           const SizedBox(width: 12),
-
-          // الاسم والبيانات
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        isMe ? '${leader['name']} (أنت)' : leader['name'],
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (isMe) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFFFD700),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Text(
-                          'أنت',
-                          style: TextStyle(
-                            color: Colors.black,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Icon(Icons.stars, size: 14, color: Colors.amber),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${leader['score']} نقطة',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Icon(Icons.shopping_bag,
-                        size: 14, color: Colors.blue.shade300),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${leader['completed_orders']} طلب',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
+                Text(isMe ? '$name (أنت)' : name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 15,
+                        fontWeight: FontWeight.bold)),
+                const SizedBox(height: 5),
+                Text('المركز $rank',
+                    style: const TextStyle(color: Colors.white70,
+                        fontSize: 12)),
               ],
             ),
           ),
-
-          // نسبة القبول
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                '${leader['acceptance_rate']}%',
-                style: const TextStyle(
-                  color: Colors.green,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                ),
-              ),
-              const Text(
-                'قبول',
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontSize: 10,
-                ),
-              ),
-            ],
-          ),
+          const SizedBox(width: 8),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(score.toStringAsFixed(2),
+                style: TextStyle(color: rankColor,
+                    fontSize: 19, fontWeight: FontWeight.w900)),
+            const Text('نقطة',
+                style: TextStyle(color: Colors.white70, fontSize: 11)),
+          ]),
         ],
       ),
     );

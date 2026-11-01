@@ -1119,6 +1119,79 @@ class ApiService {
     return Map<String, dynamic>.from(data);
   }
 
+  // Merchant-scope token from WordPress after the normal JWT login.
+  // Laravel finance reports are requested DIRECTLY from de.beytei.com.
+  // The signing secret stays on servers; the app stores only a short-lived token in RAM.
+  static String? _financeScopeToken;
+  static DateTime? _financeScopeExpiry;
+  static String? _financeWpSession;
+
+  Future<String> _merchantFinanceScope(String wpToken, {bool forceRenew = false}) async {
+    if (_financeWpSession != wpToken) {
+      _financeScopeToken = null;
+      _financeScopeExpiry = null;
+      _financeWpSession = wpToken;
+    }
+    final now = DateTime.now().toUtc();
+    if (!forceRenew && _financeScopeToken != null && _financeScopeExpiry != null &&
+        now.isBefore(_financeScopeExpiry!.subtract(const Duration(seconds: 60)))) {
+      return _financeScopeToken!;
+    }
+    final response = await http.get(
+      Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/finance-session-v27'),
+      headers: {'Authorization': 'Bearer $wpToken', 'Accept': 'application/json'},
+    ).timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw Exception('تعذّر التحقق من صلاحية حساب المطعم: ${_apiError(response)}');
+    }
+    final data = json.decode(response.body);
+    if (data is! Map || data['success'] != true || data['token'] is! String ||
+        (data['token'] as String).isEmpty) {
+      throw Exception('رمز ربط سيرفر السائقين غير صالح');
+    }
+    final seconds = int.tryParse('${data['expires_at']}') ?? 0;
+    final expiry = DateTime.fromMillisecondsSinceEpoch(seconds * 1000, isUtc: true);
+    if (!expiry.isAfter(now.add(const Duration(seconds: 60)))) {
+      throw Exception('انتهت صلاحية رمز الإحصائيات');
+    }
+    _financeScopeToken = data['token'] as String;
+    _financeScopeExpiry = expiry;
+    return _financeScopeToken!;
+  }
+
+  /// Six counters and a paginated list directly from Laravel.
+  Future<Map<String, dynamic>> getDriverFinanceSnapshot(String token, {
+    String? from, String? to, int page = 1,
+  }) async {
+    final query = <String, String>{'page': '$page', 'per_page': '30'};
+    if (from != null && to != null) { query['from'] = from; query['to'] = to; }
+    final uri = Uri.parse('https://de.beytei.com/api/beytei/finance/v1/report')
+        .replace(queryParameters: query);
+    http.Response response;
+    String scope = await _merchantFinanceScope(token);
+    response = await http.get(uri, headers: {
+      'Authorization': 'Bearer $scope', 'Accept': 'application/json',
+    }).timeout(const Duration(seconds: 30));
+    if (response.statusCode == 401) {
+      // Once only: renew an expired bridge token and retry the same report.
+      scope = await _merchantFinanceScope(token, forceRenew: true);
+      response = await http.get(uri, headers: {
+        'Authorization': 'Bearer $scope', 'Accept': 'application/json',
+      }).timeout(const Duration(seconds: 30));
+    }
+    if (response.statusCode != 200) {
+      throw Exception('لم تُحمّل إحصائيات سيرفر السائقين: ${_apiError(response)}');
+    }
+    final decoded = json.decode(response.body);
+    if (decoded is! Map || decoded['success'] != true ||
+        decoded['source'] != 'laravel.delivery_orders.order_total' ||
+        decoded['today'] is! Map || decoded['selected'] is! Map ||
+        decoded['lifetime'] is! Map) {
+      throw Exception('استجابة الإحصائيات غير مكتملة');
+    }
+    return Map<String, dynamic>.from(decoded);
+  }
+
   Future<Map<String, dynamic>> pauseIncomingOrders(String token, int minutes) async {
     final response = await http.post(
       Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/pause-orders'),
@@ -1617,6 +1690,9 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
   Map<String, dynamic>? _today;
   Map<String, dynamic>? _month;
   Map<String, dynamic>? _all;
+  DateTimeRange? _customFinancialRange;
+  int _unknownDeliveryDates = 0;
+  List<Map<String, dynamic>> _recentLaravelOrders = [];
   String? _financialError;
   bool _financialLoading = true;
 
@@ -1632,21 +1708,45 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
     try {
       final token = Provider.of<AuthProvider>(context, listen: false).token;
       if (token == null) throw Exception('يرجى تسجيل الدخول');
-      final results = await Future.wait([
-        ApiService().fetchManagerAnalytics(token, 'today'),
-        ApiService().fetchManagerAnalytics(token, 'month'),
-        ApiService().fetchManagerAnalytics(token, 'all'),
-      ]);
+      final from = _customFinancialRange == null ? null :
+      DateFormat('yyyy-MM-dd').format(_customFinancialRange!.start);
+      final to = _customFinancialRange == null ? null :
+      DateFormat('yyyy-MM-dd').format(_customFinancialRange!.end);
+      final result = await ApiService().getDriverFinanceSnapshot(token, from: from, to: to);
       if (!mounted) return;
-      if (results.any((x) => x == null || x['complete'] != true)) {
-        throw Exception('سيرفر الإحصائيات غير محدّث أو التقرير غير مكتمل');
-      }
-      setState(() { _today = results[0]; _month = results[1]; _all = results[2]; });
+      setState(() {
+        _today = Map<String, dynamic>.from(result['today'] as Map);
+        _month = Map<String, dynamic>.from(result['selected'] as Map);
+        _all = Map<String, dynamic>.from(result['lifetime'] as Map);
+        _unknownDeliveryDates = int.tryParse('${result['missing_delivery_dates']}') ?? 0;
+        _recentLaravelOrders = (result['orders'] is List)
+            ? (result['orders'] as List).whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e)).take(10).toList()
+            : [];
+      });
     } catch (e) {
-      if (mounted) setState(() { _financialError = '$e'; _today = null; _month = null; _all = null; });
+      if (mounted) setState(() {
+        _financialError = '$e'; _today = null; _month = null; _all = null;
+        _unknownDeliveryDates = 0;
+        _recentLaravelOrders = [];
+      });
     } finally {
       if (mounted) setState(() => _financialLoading = false);
     }
+  }
+
+  Future<void> _chooseFinancialRange() async {
+    final today = DateTime.now();
+    final choice = await showDateRangePicker(
+      context: context, firstDate: DateTime(2020),
+      lastDate: DateTime(today.year + 1, 12, 31),
+      initialDateRange: _customFinancialRange ?? DateTimeRange(
+          start: today.subtract(const Duration(days: 29)), end: today),
+      helpText: 'اختر فترة المبيعات',
+    );
+    if (choice == null || !mounted) return;
+    setState(() => _customFinancialRange = choice);
+    await _loadFinancialSummary();
   }
 
   String _num(Map<String, dynamic>? data, String key, {bool money = false}) {
@@ -1674,7 +1774,7 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
     final token = Provider.of<AuthProvider>(context, listen: false).token;
     return Consumer<DashboardProvider>(builder: (context, dashboard, _) {
       final active = dashboard.orders['active'] ?? [];
-      final finished = dashboard.orders['completed'] ?? [];
+      // Recent completed orders now come from Laravel, not WooCommerce.
       if (dashboard.isLoading && dashboard.orders.isEmpty) {
         return const Center(child: CircularProgressIndicator());
       }
@@ -1693,8 +1793,20 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
             TextButton.icon(onPressed: () => _viewOrders(),
                 icon: const Icon(Icons.receipt_long), label: const Text('مشاهدة الطلبات')),
           ]),
-          const Text('الأرقام من السيرفر بحسب تاريخ اكتمال الطلب، دون أجور التوصيل. صافي المبيعات بعد الاسترجاع.',
+          const Text('الإحصائيات من سيرفر السائقين: السعر المعتمد بعد التعديل، دون أجرة التوصيل. يبدأ اليوم 3:00 فجراً بتوقيت بغداد.',
               style: TextStyle(fontSize: 12, color: Colors.black54)),
+          Wrap(spacing: 8, children: [
+            TextButton.icon(onPressed: _chooseFinancialRange,
+                icon: const Icon(Icons.date_range),
+                label: Text(_customFinancialRange == null ? 'آخر 30 يوماً (يمكن تحديد فترة)' :
+                '${DateFormat('yyyy-MM-dd').format(_customFinancialRange!.start)} إلى ${DateFormat('yyyy-MM-dd').format(_customFinancialRange!.end)}')),
+            if (_customFinancialRange != null) TextButton(
+                onPressed: () { setState(() => _customFinancialRange = null); _loadFinancialSummary(); },
+                child: const Text('عودة لآخر 30 يوماً')),
+          ]),
+          if (_unknownDeliveryDates > 0) Text(
+              'تنبيه: $_unknownDeliveryDates طلب مكتمل بلا تاريخ تسليم. يظهر في إحصائية منذ البداية، ولا يمكن نسبته لفترة معينة.',
+              style: const TextStyle(color: Colors.deepOrange, fontSize: 12)),
           if (_financialLoading) const LinearProgressIndicator(),
           if (_financialError != null) Padding(padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text('تعذر تحميل الملخص الدقيق: $_financialError',
@@ -1704,11 +1816,13 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
               crossAxisCount: 2, childAspectRatio: 1.4,
               crossAxisSpacing: 10, mainAxisSpacing: 10, children: [
                 _stat('مكتملة اليوم', _num(_today, 'completed_orders'), Icons.today, Colors.blue),
-                _stat('صافي مبيعات اليوم', _num(_today, 'net_sales', money: true), Icons.attach_money, Colors.green),
-                _stat('مكتملة الشهر', _num(_month, 'completed_orders'), Icons.calendar_month, Colors.orange),
-                _stat('صافي مبيعات الشهر', _num(_month, 'net_sales', money: true), Icons.trending_up, Colors.purple),
-                _stat('جميع المكتملة', _num(_all, 'completed_orders'), Icons.receipt_long, Colors.blueGrey),
-                _stat('جميع المبيعات الصافية', _num(_all, 'net_sales', money: true), Icons.account_balance_wallet, Colors.teal),
+                _stat('مبيعات اليوم', _num(_today, 'net_sales', money: true), Icons.attach_money, Colors.green),
+                _stat(_customFinancialRange == null ? 'مكتملة آخر 30 يوماً' : 'مكتملة الفترة',
+                    _num(_month, 'completed_orders'), Icons.calendar_month, Colors.orange),
+                _stat(_customFinancialRange == null ? 'مبيعات آخر 30 يوماً' : 'مبيعات الفترة',
+                    _num(_month, 'net_sales', money: true), Icons.trending_up, Colors.purple),
+                _stat('مكتملة منذ البداية', _num(_all, 'completed_orders'), Icons.receipt_long, Colors.blueGrey),
+                _stat('مبيعات منذ البداية', _num(_all, 'net_sales', money: true), Icons.account_balance_wallet, Colors.teal),
               ]),
           const SizedBox(height: 8),
           TextButton.icon(onPressed: _financialLoading ? null : _loadFinancialSummary,
@@ -1730,11 +1844,18 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
             TextButton(onPressed: () => _viewOrders(), child: const Text('مشاهدة جميع الطلبات')),
           ]),
-          if (finished.isEmpty) const Padding(padding: EdgeInsets.all(16),
-              child: Text('لم تُرجع قاعدة البيانات طلبات منتهية حديثاً')),
-          ...finished.take(10).map((order) => OrderCard(order: order,
-              isCompleted: true,
-              onStatusChanged: () => dashboard.fetchDashboardData(token))),
+          if (_financialLoading && _recentLaravelOrders.isEmpty)
+            const Center(child: CircularProgressIndicator()),
+          if (!_financialLoading && _financialError == null && _recentLaravelOrders.isEmpty)
+            const Padding(padding: EdgeInsets.all(16),
+                child: Text('لا توجد طلبات مكتملة في الفترة المحددة على سيرفر السائقين')),
+          ..._recentLaravelOrders.map((o) => Card(child: ListTile(
+            leading: const Icon(Icons.check_circle, color: Colors.green),
+            title: Text('طلب #${o['id'] ?? '-'} — مكتمل'),
+            subtitle: Text('التسليم: ${o['delivered_at'] ?? '-'}'),
+            trailing: Text('${NumberFormat('#,##0').format(num.tryParse('${o['order_total']}') ?? 0)} د.ع',
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+          ))),
         ]),
       );
     });
@@ -1763,6 +1884,7 @@ class ManagerOrdersHistoryScreen extends StatefulWidget {
 class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen> {
   late String _status;
   List<Order> _items = [];
+  List<Map<String, dynamic>> _completedDriverOrders = [];
   int _nextPage = 1;
   bool _hasMore = true;
   bool _loading = false;
@@ -1780,20 +1902,35 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
     final selected = _status;
     setState(() {
       _loading = true; _error = null;
-      if (reset) { _nextPage = 1; _items = []; _hasMore = true; }
+      if (reset) { _nextPage = 1; _items = []; _completedDriverOrders = []; _hasMore = true; }
     });
     try {
       final token = Provider.of<AuthProvider>(context, listen: false).token;
       if (token == null) throw Exception('يرجى تسجيل الدخول');
-      final result = await ApiService().getManagerOrdersPage(
-          status: selected, token: token, page: _nextPage, perPage: 20);
-      if (!mounted || _status != selected) return;
-      final seen = _items.map((e) => e.id).toSet();
-      setState(() {
-        _items.addAll(result.orders.where((e) => seen.add(e.id)));
-        _hasMore = result.hasMore;
-        _nextPage++;
-      });
+      if (selected == 'completed') {
+        final result = await ApiService().getDriverFinanceSnapshot(token, page: _nextPage);
+        if (!mounted || _status != selected) return;
+        final rows = (result['orders'] is List)
+            ? (result['orders'] as List).whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e)).toList()
+            : <Map<String, dynamic>>[];
+        final existing = _completedDriverOrders.map((e) => '${e['id']}').toSet();
+        setState(() {
+          _completedDriverOrders.addAll(rows.where((e) => existing.add('${e['id']}')));
+          _hasMore = result['has_more'] == true;
+          _nextPage++;
+        });
+      } else {
+        final result = await ApiService().getManagerOrdersPage(
+            status: selected, token: token, page: _nextPage, perPage: 20);
+        if (!mounted || _status != selected) return;
+        final seen = _items.map((e) => e.id).toSet();
+        setState(() {
+          _items.addAll(result.orders.where((e) => seen.add(e.id)));
+          _hasMore = result.hasMore;
+          _nextPage++;
+        });
+      }
     } catch (e) {
       if (mounted && _status == selected) setState(() => _error = '$e');
     } finally {
@@ -1815,23 +1952,35 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
         ChoiceChip(label: const Text('الطلبات الجارية'),
             selected: _status == 'active', onSelected: (_) => _select('active')),
         const SizedBox(width: 10),
-        ChoiceChip(label: const Text('المكتملة والمنتهية'),
+        ChoiceChip(label: const Text('المكتملة (آخر 30 يوماً)'),
             selected: _status == 'completed', onSelected: (_) => _select('completed')),
       ])),
       Expanded(child: RefreshIndicator(
         onRefresh: () => _load(reset: true),
         child: ListView(padding: const EdgeInsets.fromLTRB(12, 4, 12, 32), children: [
-          if (_loading && _items.isEmpty) const Center(child: CircularProgressIndicator()),
+          if (_loading && _items.isEmpty && _completedDriverOrders.isEmpty)
+            const Center(child: CircularProgressIndicator()),
           if (_error != null) Padding(padding: const EdgeInsets.all(12),
               child: Text('تعذر تحميل الطلبات: $_error',
                   style: const TextStyle(color: Colors.deepOrange))),
-          if (!_loading && _items.isEmpty && _error == null)
+          if (!_loading && (_status == 'completed' ? _completedDriverOrders.isEmpty : _items.isEmpty)
+              && _error == null)
             const Padding(padding: EdgeInsets.all(30),
                 child: Center(child: Text('لا توجد طلبات في هذا القسم'))),
-          ..._items.map((order) => OrderCard(order: order,
-              isCompleted: _status == 'completed',
-              onStatusChanged: () => _load(reset: true))),
-          if (_loading && _items.isNotEmpty) const Center(child: CircularProgressIndicator()),
+          if (_status == 'completed')
+            ..._completedDriverOrders.map((o) => Card(child: ListTile(
+              leading: const Icon(Icons.check_circle, color: Colors.green),
+              title: Text('طلب #${o['id'] ?? '-'}  (الأصلي ${o['source_order_id'] ?? '-'})'),
+              subtitle: Text('مكتمل — ${o['delivered_at'] ?? '-'}'),
+              trailing: Text('${NumberFormat('#,##0').format(num.tryParse('${o['order_total']}') ?? 0)} د.ع',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            )))
+          else
+            ..._items.map((order) => OrderCard(order: order,
+                isCompleted: false,
+                onStatusChanged: () => _load(reset: true))),
+          if (_loading && (_items.isNotEmpty || _completedDriverOrders.isNotEmpty))
+            const Center(child: CircularProgressIndicator()),
           if (!_loading && _hasMore) OutlinedButton.icon(
               onPressed: () => _load(), icon: const Icon(Icons.expand_more),
               label: const Text('تحميل المزيد من الطلبات')),
@@ -2179,72 +2328,123 @@ class ManagerAnalyticsScreen extends StatefulWidget {
   State<ManagerAnalyticsScreen> createState() => _ManagerAnalyticsScreenState();
 }
 class _ManagerAnalyticsScreenState extends State<ManagerAnalyticsScreen> {
-  String _period = 'today';
-  bool _loading = false;
   Map<String, dynamic>? _data;
+  DateTimeRange? _range;
+  bool _loading = false;
+  bool _loadingMore = false;
   String? _error;
+  final List<Map<String, dynamic>> _orders = [];
+  int _page = 1;
+  bool _hasMore = false;
+
   @override
   void initState() { super.initState(); _load(); }
-  Future<void> _load() async {
-    if (!mounted) return;
-    setState(() { _loading = true; _error = null; _data = null; });
+
+  Future<void> _load({bool loadMore = false}) async {
+    if (!mounted || (loadMore && (_loadingMore || !_hasMore))) return;
+    setState(() {
+      if (loadMore) { _loadingMore = true; }
+      else { _loading = true; _error = null; }
+    });
     try {
       final token = Provider.of<AuthProvider>(context, listen: false).token;
       if (token == null) throw Exception('يرجى تسجيل الدخول');
-      final result = await ApiService().fetchManagerAnalytics(token, _period);
-      if (mounted) setState(() => _data = result);
+      final from = _range == null ? null : DateFormat('yyyy-MM-dd').format(_range!.start);
+      final to = _range == null ? null : DateFormat('yyyy-MM-dd').format(_range!.end);
+      final next = loadMore ? _page + 1 : 1;
+      final result = await ApiService().getDriverFinanceSnapshot(token,
+          from: from, to: to, page: next);
+      if (!mounted) return;
+      setState(() {
+        _data = result;
+        if (!loadMore) _orders.clear();
+        if (result['orders'] is List) {
+          for (final raw in (result['orders'] as List)) {
+            if (raw is Map) _orders.add(Map<String, dynamic>.from(raw));
+          }
+        }
+        _page = next;
+        _hasMore = result['has_more'] == true;
+      });
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() { _loading = false; _loadingMore = false; });
     }
   }
-  String _value(String key, {bool money = false}) {
-    if (_data == null || _data![key] == null) return '—';
-    final value = _data![key];
-    final n = double.tryParse(value.toString());
-    return n == null ? value.toString() :
-    '${NumberFormat('#,##0.##').format(n)}${money ? ' د.ع' : ''}';
+
+  Future<void> _pickRange() async {
+    final now = DateTime.now();
+    final chosen = await showDateRangePicker(
+      context: context, firstDate: DateTime(2020),
+      lastDate: DateTime(now.year + 1, 12, 31),
+      initialDateRange: _range ?? DateTimeRange(
+          start: now.subtract(const Duration(days: 29)), end: now),
+      helpText: 'حدد تاريخ البداية والنهاية',
+    );
+    if (chosen == null || !mounted) return;
+    setState(() => _range = chosen);
+    await _load();
   }
-  Widget _stat(String label, String value, IconData icon) => Card(
-      child: Padding(padding: const EdgeInsets.all(16), child: Row(children: [
-        Icon(icon, color: Colors.teal), const SizedBox(width: 10),
-        Expanded(child: Text(label)), Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
-      ])));
+
+  String _money(dynamic value) {
+    final amount = num.tryParse('$value') ?? 0;
+    return '${NumberFormat('#,##0').format(amount)} د.ع';
+  }
+  String _count(dynamic value) => NumberFormat('#,##0').format(num.tryParse('$value') ?? 0);
+  Widget _tile(String label, dynamic value, {bool money = false}) => Card(
+      child: ListTile(title: Text(label), trailing: Text(money ? _money(value) : _count(value),
+          style: const TextStyle(fontWeight: FontWeight.bold))));
+
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('إحصائيات المبيعات والأرباح'),
-        actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))]),
+    appBar: AppBar(title: const Text('مبيعات المطعم من سيرفر السائقين'),
+        actions: [IconButton(onPressed: _loading ? null : () => _load(),
+            icon: const Icon(Icons.refresh))]),
     body: ListView(padding: const EdgeInsets.all(16), children: [
-      Wrap(spacing: 8, children: {
-        'today': 'اليوم', 'week': 'الأسبوع', 'month': 'الشهر', 'all': 'الكل'
-      }.entries.map((e) => ChoiceChip(label: Text(e.value), selected: _period == e.key,
-          onSelected: (_) { setState(() => _period = e.key); _load(); })).toList()),
-      const SizedBox(height: 16),
-      if (_loading) const Center(child: CircularProgressIndicator()),
-      if (!_loading && _data == null) Card(child: Padding(padding: const EdgeInsets.all(16),
-          child: Column(children: [
-            const Icon(Icons.cloud_off_outlined, size: 40, color: Colors.orange),
-            const SizedBox(height: 12),
-            Text(_error == null
-                ? 'السيرفر الحالي لا يوفر إحصائيات مالية مؤكدة للفترة المختارة بعد.'
-                : 'تعذّر جلب الإحصائيات: $_error', textAlign: TextAlign.center),
-            const SizedBox(height: 8),
-            const Text('لا يتم اختراع رقم صافي الربح؛ يحتاج حسابه إلى الخصومات والعمولات والمبالغ المستردة.'),
-          ]))),
-      if (!_loading && _data != null) ...[
-        _stat('عدد الطلبات المكتملة', _value('completed_orders'), Icons.receipt_long),
-        _stat('إجمالي المبيعات', _value('gross_sales', money: true), Icons.attach_money),
-        _stat('الخصومات والاسترجاعات', _value('refunds', money: true), Icons.money_off),
-        _stat('عمولة المنصة', _value('platform_commission', money: true), Icons.account_balance),
-        _stat('صافي الربح', _value('net_profit', money: true), Icons.trending_up),
-        const SizedBox(height: 8),
-        const Text('المبالغ مستخرجة من السيرفر فقط. أي قيمة غير متوفرة تظهر —.'),
+      Wrap(spacing: 8, children: [
+        OutlinedButton.icon(icon: const Icon(Icons.date_range),
+            onPressed: _pickRange,
+            label: Text(_range == null ? 'آخر 30 يوماً (اختر الفترة)' :
+            '${DateFormat('yyyy-MM-dd').format(_range!.start)} إلى ${DateFormat('yyyy-MM-dd').format(_range!.end)}')),
+        if (_range != null) TextButton(onPressed: () {
+          setState(() => _range = null); _load();
+        }, child: const Text('آخر 30 يوماً')),
+      ]),
+      const Text('بداية اليوم المحاسبي 3:00 فجراً بتوقيت بغداد. الأسعار من order_total بعد اعتماد تعديل الإدارة، ولا تشمل أجرة التوصيل.',
+          style: TextStyle(fontSize: 12, color: Colors.black54)),
+      if (_loading) const LinearProgressIndicator(),
+      if (_error != null) Padding(padding: const EdgeInsets.all(10),
+          child: Text('تعذر تحميل الإحصائيات: $_error',
+              style: const TextStyle(color: Colors.deepOrange))),
+      if (_data != null && !_loading) ...[
+        _tile('مكتملة اليوم', (_data!['today'] as Map)['completed_orders']),
+        _tile('مبيعات اليوم', (_data!['today'] as Map)['net_sales'], money: true),
+        _tile(_range == null ? 'مكتملة آخر 30 يوماً' : 'مكتملة الفترة',
+            (_data!['selected'] as Map)['completed_orders']),
+        _tile(_range == null ? 'مبيعات آخر 30 يوماً' : 'مبيعات الفترة',
+            (_data!['selected'] as Map)['net_sales'], money: true),
+        _tile('مكتملة منذ البداية', (_data!['lifetime'] as Map)['completed_orders']),
+        _tile('مبيعات منذ البداية', (_data!['lifetime'] as Map)['net_sales'], money: true),
+        if ((int.tryParse('${_data!['missing_delivery_dates']}') ?? 0) > 0)
+          Padding(padding: const EdgeInsets.all(8), child: Text(
+              'بعض الطلبات المكتملة بلا تاريخ تسليم؛ تظهر فقط في إجمالي منذ البداية.',
+              style: const TextStyle(color: Colors.deepOrange))),
+        const SizedBox(height: 16),
+        const Text('الطلبات المكتملة خلال الفترة',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        ..._orders.map((o) => Card(child: ListTile(
+          leading: const Icon(Icons.receipt_long),
+          title: Text('طلب #${o['id']} — ${_money(o['order_total'])}'),
+          subtitle: Text('الحالة: ${o['status']} | التسليم: ${o['delivered_at'] ?? 'غير متاح'} (UTC)'),
+        ))),
+        if (_hasMore) TextButton.icon(onPressed: _loadingMore ? null : () => _load(loadMore: true),
+            icon: const Icon(Icons.expand_more), label: const Text('عرض المزيد')),
+        if (_loadingMore) const Center(child: CircularProgressIndicator()),
       ],
     ]),
   );
 }
-
 
 class RestaurantDashboardScreen extends StatefulWidget {
   const RestaurantDashboardScreen({super.key});
