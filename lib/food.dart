@@ -28,6 +28,29 @@ class AppConstants {
   static const Duration API_TIMEOUT = Duration(seconds: 30);
 }
 
+// Display names are read from the restaurant's authenticated manager-context.
+// This fallback is only for old responses missing the localized label.
+String beyteiZoneName(int? id, [List<Map<String, dynamic>> areas = const []]) {
+  if (id == null || id <= 0) return 'غير محددة';
+  for (final area in areas) {
+    if (int.tryParse('${area['id']}') == id) {
+      final name = (area['name'] ?? '').toString().trim();
+      if (name.isNotEmpty) return name;
+    }
+  }
+  const familiar = <int, String>{
+    42: 'النعمانية',
+    36: 'العزيزية',
+    84: 'الكوت',
+    85: 'الصويرة',
+  };
+  return familiar[id] ?? 'منطقة $id';
+}
+String beyteiZoneDescription(int? id, [List<Map<String, dynamic>> areas = const []]) {
+  if (id == null || id <= 0) return 'المنطقة غير محددة';
+  return '${beyteiZoneName(id, areas)} — منطقة $id';
+}
+
 // =======================================================================
 // 🔷 القسم 2: خدمة الصلاحيات (Permission Service) - 🔥 إصلاح رئيسي
 // =======================================================================
@@ -217,8 +240,11 @@ class Order {
   final String address;
   final String phone;
   final List<LineItem> lineItems;
+  final String notes;
   final String? driverName;
   final String? driverPhone;
+  // Actual Laravel delivery_orders.id; Woo ID stays in `id` for readiness/actions.
+  final int? driverOrderId;
 
   Order({
     required this.id,
@@ -231,8 +257,10 @@ class Order {
     required this.address,
     required this.phone,
     required this.lineItems,
+    this.notes = '',
     this.driverName,
     this.driverPhone,
+    this.driverOrderId,
   });
 
   // 🔥 الإضافة الجديدة: لتسهيل حساب الأرباح والمبالغ في الإحصائيات
@@ -273,8 +301,10 @@ class Order {
       address: json['address'] ?? json['shipping']?['address_1'] ?? billing?['address_1'] ?? 'عنوان غير محدد',
       phone: json['phone'] ?? billing?['phone'] ?? 'لا يوجد رقم',
       lineItems: safeLineItems,
+      notes: (json['notes'] ?? '').toString(),
       driverName: json['driver_name']?.toString(),
       driverPhone: json['driver_phone']?.toString(),
+      driverOrderId: int.tryParse('${json['driver_order_id'] ?? ''}'),
     );
   }
 
@@ -878,6 +908,58 @@ class ApiService {
     return (await getManagerOrdersPage(status: status, token: token, perPage: 30)).orders;
   }
 
+  // V31: live AND completed orders read directly from Laravel; same scoped token as finance.
+  Future<Map<String, dynamic>> getLaravelManagerOrders(String wpToken, {
+    required String status, int page = 1, int perPage = 20,
+    String? from, String? to,
+  }) async {
+    if (status != 'active' && status != 'completed') throw ArgumentError('Unsupported status');
+    final uri = Uri.parse('https://de.beytei.com/api/beytei/finance/v1/orders')
+        .replace(queryParameters: {
+      'status': status, 'page': '$page', 'per_page': '$perPage',
+      if (from != null && to != null) 'from': from,
+      if (from != null && to != null) 'to': to,
+    });
+    String scope = await _merchantFinanceScope(wpToken);
+    Future<http.Response> get() => http.get(uri, headers: {
+      'Authorization': 'Bearer $scope', 'Accept': 'application/json',
+    }).timeout(const Duration(seconds: 20));
+    var response = await get();
+    if (response.statusCode == 401) {
+      scope = await _merchantFinanceScope(wpToken, forceRenew: true);
+      response = await get();
+    }
+    debugPrint('[ORDERS] LARAVEL_${status.toUpperCase()}_HTTP=${response.statusCode}');
+    if (response.statusCode != 200) throw Exception('تعذر تحميل الطلبات من سيرفر السائقين: ${_apiError(response)}');
+    final value = json.decode(response.body);
+    if (value is! Map || value['success'] != true || value['orders'] is! List) {
+      throw Exception('صيغة طلبات Laravel غير صحيحة');
+    }
+    return Map<String, dynamic>.from(value);
+  }
+
+  // Preserve WooCommerce order IDs for existing "order ready" actions.
+  static Order mapDriverOrderToCard(Map<String, dynamic> row) {
+    final wpId = int.tryParse('${row['source_order_id'] ?? ''}') ??
+        -(int.tryParse('${row['id'] ?? 0}') ?? 0);
+    final rawItems = row['line_items'];
+    final list = rawItems is List ? rawItems : <dynamic>[];
+    return Order.fromJson(<String, dynamic>{
+      'id': wpId, 'driver_order_id': row['id'],
+      'status': (row['status'] ?? 'pending').toString(),
+      'date_created': row['created_at']?.toString(),
+      'date_completed': row['delivered_at']?.toString(),
+      'total': (row['order_total'] ?? 0).toString(),
+      'customerName': (row['customer_name'] ?? '').toString(),
+      'phone': (row['customer_phone'] ?? '').toString(),
+      'address': (row['destination_address'] ?? '').toString(),
+      'line_items': list.whereType<Map>().map((x) => Map<String, dynamic>.from(x)).toList(),
+      'notes': (row['notes'] ?? '').toString(),
+      'driver_name': row['driver_assigned'] == true ? 'مندوب معيّن' : null,
+      'is_pickup_only': (row['order_items'] ?? '').toString().contains('طلب مندوب مستعجل'),
+    });
+  }
+
   Future<bool> testManagerPush(String token) async {
     final response = await http.post(
       Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/manager-test-push-v22'),
@@ -889,14 +971,15 @@ class ApiService {
   }
 
   Future<RestaurantRatingsDashboard> getDashboardRatings(String token) async {
-    return _executeWithRetry(() async {
-      final response = await http.get(
-        Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/dashboard-ratings'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-      if (response.statusCode == 200) return RestaurantRatingsDashboard.fromJson(json.decode(response.body));
-      throw Exception('Failed to load dashboard ratings');
-    });
+    // A ratings failure must not keep the whole manager home screen loading.
+    final response = await http.get(
+      Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/dashboard-ratings'),
+      headers: {'Authorization': 'Bearer $token'},
+    ).timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) {
+      throw Exception('تعذر تحميل التقييمات: ${_apiError(response)}');
+    }
+    return RestaurantRatingsDashboard.fromJson(json.decode(response.body));
   }
 
   Future<Map<String, dynamic>> getWalletData(String token) async {
@@ -1050,11 +1133,52 @@ class ApiService {
     return Map<String, dynamic>.from(decoded);
   }
 
-  Future<Map<String,dynamic>> requestManualDriver(String token, Map<String,dynamic> payload) async {
-    final r=await http.post(Uri.parse('${AppConstants.BEYTEI_URL}/wp-json/restaurant-app/v1/manager-request-driver'),
-        headers:{'Authorization':'Bearer $token','Content-Type':'application/json'},body:json.encode(payload)).timeout(const Duration(seconds:45));
-    if(r.statusCode!=200) throw Exception(_apiError(r));
-    return Map<String,dynamic>.from(json.decode(r.body));
+  // V34: WordPress is the ONLY entry point. It builds WooCommerce orders then
+  // invokes the existing auto_dispatch_taxi_request_unified() function.
+  // Do NOT call Laravel directly from the restaurant app.
+  Future<Map<String, dynamic>> getManagerCourierConfig(String token) async =>
+      _courierGet(token, 'manager-courier-v34/config');
+
+  Future<Map<String, dynamic>> getManagerCourierOrders(String token) async =>
+      _courierGet(token, 'manager-courier-v34');
+
+  Future<Map<String, dynamic>> getManagerCourierStatus(String token, int id) async =>
+      _courierGet(token, 'manager-courier-v34/$id');
+
+  Future<Map<String, dynamic>> _courierGet(String token, String route) async {
+    final r = await http.get(
+      Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/$route'),
+      headers: {'Authorization': 'Bearer $token', 'Accept': 'application/json'},
+    ).timeout(const Duration(seconds: 20));
+    final decoded = _courierDecode(r);
+    if (r.statusCode != 200) throw Exception(decoded['message'] ?? 'HTTP ${r.statusCode}');
+    return decoded;
+  }
+
+  Map<String, dynamic> _courierDecode(http.Response response) {
+    try {
+      final data = json.decode(response.body);
+      if (data is Map) return Map<String, dynamic>.from(data);
+    } catch (_) {}
+    throw Exception('رد غير مفهوم من WordPress (HTTP ${response.statusCode})');
+  }
+
+  Future<Map<String, dynamic>> requestManagerCourierV34(
+      String token, Map<String, dynamic> payload) async {
+    final r = await http.post(
+      Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/manager-courier-v34'),
+      headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json',
+        'Accept': 'application/json'},
+      body: json.encode(payload),
+    ).timeout(const Duration(seconds: 40));
+    final decoded = _courierDecode(r);
+    // HTTP 202 can mean a real Woo order was saved but dispatch was unconfirmed.
+    // Keep the ID; never retry by creating a new request ID.
+    if (decoded['order'] is Map) return decoded;
+    if (r.statusCode != 200 && r.statusCode != 201 && r.statusCode != 202) {
+      throw Exception(decoded['message'] ?? 'رفض الطلب HTTP ${r.statusCode}');
+    }
+    return decoded;
   }
 
   Future<bool> updateProductFull({
@@ -1141,8 +1265,9 @@ class ApiService {
       Uri.parse('${AppConstants.baseUrl}/restaurant-app/v1/finance-session-v27'),
       headers: {'Authorization': 'Bearer $wpToken', 'Accept': 'application/json'},
     ).timeout(const Duration(seconds: 20));
+    debugPrint('[FINANCE] WORDPRESS_SESSION_HTTP=${response.statusCode}');
     if (response.statusCode != 200) {
-      throw Exception('تعذّر التحقق من صلاحية حساب المطعم: ${_apiError(response)}');
+      throw Exception('تعذّر التحقق من صلاحية حساب المطعم (WordPress HTTP ${response.statusCode}): ${_apiError(response)}');
     }
     final data = json.decode(response.body);
     if (data is! Map || data['success'] != true || data['token'] is! String ||
@@ -1179,16 +1304,19 @@ class ApiService {
         'Authorization': 'Bearer $scope', 'Accept': 'application/json',
       }).timeout(const Duration(seconds: 30));
     }
+    debugPrint('[FINANCE] LARAVEL_REPORT_HTTP=${response.statusCode}');
     if (response.statusCode != 200) {
-      throw Exception('لم تُحمّل إحصائيات سيرفر السائقين: ${_apiError(response)}');
+      throw Exception('لم تُحمّل إحصائيات سيرفر السائقين (Laravel HTTP ${response.statusCode}): ${_apiError(response)}');
     }
     final decoded = json.decode(response.body);
     if (decoded is! Map || decoded['success'] != true ||
         decoded['source'] != 'laravel.delivery_orders.order_total' ||
         decoded['today'] is! Map || decoded['selected'] is! Map ||
         decoded['lifetime'] is! Map) {
-      throw Exception('استجابة الإحصائيات غير مكتملة');
+      debugPrint('[FINANCE] INVALID_REPORT_SHAPE');
+      throw Exception('استجابة الإحصائيات غير مكتملة؛ تحقق من إصدار Laravel المثبّت');
     }
+    debugPrint('[FINANCE] REPORT_PARSED_OK');
     return Map<String, dynamic>.from(decoded);
   }
 
@@ -1316,13 +1444,13 @@ class RestaurantNotificationService {
     await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
         alert: false, badge: true, sound: false);
     FirebaseMessaging.onMessage.listen((message) async {
-      if (message.data['type'] != 'new_order') return;
+      if (!['new_order', 'manager_courier_status', 'status_update'].contains(message.data['type'])) return;
       final id = int.tryParse('${message.data['order_id']}') ?? 0;
       try {
         await _local.show(
           id > 0 ? id : DateTime.now().millisecondsSinceEpoch ~/ 1000,
-          message.notification?.title ?? message.data['title'] ?? 'طلب جديد',
-          message.notification?.body ?? message.data['body'] ?? 'وصل طلب جديد إلى المطعم',
+          message.notification?.title ?? message.data['title'] ?? 'تحديث طلب المندوب',
+          message.notification?.body ?? message.data['body'] ?? 'تم تحديث حالة الطلب',
           const NotificationDetails(
               android: AndroidNotificationDetails('high_importance_channel', 'طلبات المطعم',
                   channelDescription: 'إشعارات طلبات منصة بيتي الجديدة',
@@ -1679,6 +1807,201 @@ class RestaurantProductsProvider with ChangeNotifier {
     notifyListeners();
   }
 }
+// BEYTEI V34.5 — consistent responsive manager UI, no changes to server APIs.
+class BeyteiManagerPalette {
+  static const Color blue = Color(0xFF137DB5);
+  static const Color dark = Color(0xFF153A53);
+  static const Color green = Color(0xFF169967);
+  static const Color border = Color(0xFFDAE7EF);
+  static const Color hint = Color(0xFF648096);
+  static const Color background = Color(0xFFF7FAFC);
+}
+
+class BeyteiManagerQuickAction extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color accent;
+  final VoidCallback onTap;
+
+  const BeyteiManagerQuickAction({super.key, required this.title,
+    required this.subtitle, required this.icon, required this.accent,
+    required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.white,
+    borderRadius: BorderRadius.circular(16),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 88),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: BeyteiManagerPalette.border),
+        ),
+        child: Row(children: [
+          Container(
+            width: 37, height: 37,
+            decoration: BoxDecoration(color: accent.withOpacity(0.09),
+                borderRadius: BorderRadius.circular(11)),
+            child: Icon(icon, color: accent, size: 21),
+          ),
+          const SizedBox(width: 9),
+          Expanded(child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, maxLines: 2, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800,
+                      color: BeyteiManagerPalette.dark)),
+              const SizedBox(height: 2),
+              Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 10.5,
+                      color: BeyteiManagerPalette.hint)),
+            ],
+          )),
+        ]),
+      ),
+    ),
+  );
+}
+
+// Status reflects the existing RestaurantSettingsProvider. In auto mode it
+// reports "according to schedule", not a fabricated current open/closed value.
+class BeyteiManagerReceptionControl extends StatelessWidget {
+  const BeyteiManagerReceptionControl({super.key});
+
+  Future<void> _update(BuildContext context,
+      RestaurantSettingsProvider settings, bool enabled) async {
+    if (!enabled) {
+      final confirmed = await showDialog<bool>(context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('إيقاف استقبال الطلبات؟'),
+          content: const Text('سيبقى المطعم مغلقاً يدوياً حتى تعيد تشغيل الاستقبال أو تفعّل الجدول.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('رجوع')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('إيقاف')),
+          ],
+        ),
+      );
+      if (confirmed != true || !context.mounted) return;
+    }
+    final token = Provider.of<AuthProvider>(context, listen: false).token;
+    final success = await settings.updateRestaurantStatus(token, 'manual', enabled);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(success ? 'تم تحديث استقبال الطلبات' :
+          settings.error ?? 'تعذر تحديث استقبال الطلبات')));
+    }
+  }
+
+  Future<void> _pause(BuildContext context,
+      RestaurantSettingsProvider settings) async {
+    await showModalBottomSheet<void>(context: context, showDragHandle: true,
+      builder: (sheetContext) => SafeArea(child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 6, 18, 12),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('إيقاف استقبال الطلبات مؤقتاً',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          ...[15, 30, 60].map((minutes) => ListTile(
+            leading: const Icon(Icons.pause_circle_outline,
+                color: BeyteiManagerPalette.blue),
+            title: Text('$minutes دقيقة'),
+            onTap: () async {
+              Navigator.pop(sheetContext);
+              final token = Provider.of<AuthProvider>(context, listen: false).token;
+              try {
+                if (token == null) throw Exception('يرجى تسجيل الدخول');
+                await ApiService().pauseIncomingOrders(token, minutes);
+                await settings.fetchSettings(token);
+                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('تم الإيقاف لمدة $minutes دقيقة')));
+              } catch (error) {
+                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('$error')));
+              }
+            },
+          )),
+        ]),
+      )),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      Consumer<RestaurantSettingsProvider>(builder: (context, settings, _) {
+        final receiving = settings.operationMode == 'auto' || settings.isRestaurantOpen;
+        final statusText = !settings.loaded ? 'جاري قراءة الحالة' :
+        settings.operationMode == 'auto' ? 'حسب جدول العمل' :
+        settings.isRestaurantOpen ? 'يستقبل الطلبات' : 'استقبال متوقف';
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          const Divider(height: 24, color: BeyteiManagerPalette.border),
+          Row(children: [
+            const Icon(Icons.storefront_outlined,
+                color: BeyteiManagerPalette.blue, size: 21),
+            const SizedBox(width: 7),
+            const Expanded(child: Text('استقبال طلبات المطعم',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800,
+                    color: BeyteiManagerPalette.dark))),
+            if (settings.isLoading)
+              const SizedBox(width: 18, height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+            Switch.adaptive(
+              value: receiving,
+              onChanged: (!settings.loaded || settings.isLoading)
+                  ? null : (value) => _update(context, settings, value),
+            ),
+          ]),
+          Row(children: [
+            Container(width: 7, height: 7, decoration: BoxDecoration(
+                color: receiving ? BeyteiManagerPalette.green : Colors.orange,
+                shape: BoxShape.circle)),
+            const SizedBox(width: 6),
+            Flexible(child: Text(statusText,
+                style: const TextStyle(fontSize: 12, color: BeyteiManagerPalette.hint))),
+            if (!settings.loaded) TextButton(
+                onPressed: () => settings.fetchSettings(
+                    Provider.of<AuthProvider>(context, listen: false).token),
+                child: const Text('تحديث الحالة')),
+          ]),
+          if (settings.error != null)
+            Text(settings.error!, style: const TextStyle(fontSize: 11,
+                color: Colors.deepOrange)),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: OutlinedButton.icon(
+              onPressed: settings.loaded ? () => _pause(context, settings) : null,
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: BeyteiManagerPalette.blue,
+                  side: const BorderSide(color: BeyteiManagerPalette.border),
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 12)),
+              icon: const Icon(Icons.pause_circle_outline, size: 18),
+              label: const FittedBox(fit: BoxFit.scaleDown,
+                  child: Text('إيقاف مؤقت')),
+            )),
+            const SizedBox(width: 9),
+            Expanded(child: OutlinedButton.icon(
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const RestaurantSettingsPage())),
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: BeyteiManagerPalette.green,
+                  side: const BorderSide(color: BeyteiManagerPalette.border),
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 12)),
+              icon: const Icon(Icons.schedule_outlined, size: 18),
+              label: const FittedBox(fit: BoxFit.scaleDown,
+                  child: Text('أوقات العمل')),
+            )),
+          ]),
+        ]);
+      });
+}
+
 class UnifiedOrdersScreen extends StatefulWidget {
   const UnifiedOrdersScreen({super.key});
 
@@ -1702,8 +2025,11 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadFinancialSummary());
   }
 
+  int _summaryRequestId = 0;
+
   Future<void> _loadFinancialSummary() async {
     if (!mounted) return;
+    final requestId = ++_summaryRequestId;
     setState(() { _financialLoading = true; _financialError = null; });
     try {
       final token = Provider.of<AuthProvider>(context, listen: false).token;
@@ -1713,7 +2039,8 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
       final to = _customFinancialRange == null ? null :
       DateFormat('yyyy-MM-dd').format(_customFinancialRange!.end);
       final result = await ApiService().getDriverFinanceSnapshot(token, from: from, to: to);
-      if (!mounted) return;
+      if (!mounted || requestId != _summaryRequestId) return;
+      // Display reliable finance counters immediately, without waiting on order details.
       setState(() {
         _today = Map<String, dynamic>.from(result['today'] as Map);
         _month = Map<String, dynamic>.from(result['selected'] as Map);
@@ -1722,16 +2049,32 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
         _recentLaravelOrders = (result['orders'] is List)
             ? (result['orders'] as List).whereType<Map>()
             .map((e) => Map<String, dynamic>.from(e)).take(10).toList()
-            : [];
+            : <Map<String, dynamic>>[];
+        _financialLoading = false;
       });
+      // Get full meal details in the background, never hold up the six financial cards.
+      unawaited(_loadRecentLaravelDetails(token, requestId, from, to));
     } catch (e) {
-      if (mounted) setState(() {
+      if (mounted && requestId == _summaryRequestId) setState(() {
         _financialError = '$e'; _today = null; _month = null; _all = null;
-        _unknownDeliveryDates = 0;
-        _recentLaravelOrders = [];
+        _unknownDeliveryDates = 0; _recentLaravelOrders = [];
+        _financialLoading = false;
       });
-    } finally {
-      if (mounted) setState(() => _financialLoading = false);
+    }
+  }
+
+  Future<void> _loadRecentLaravelDetails(String token, int requestId, String? from, String? to) async {
+    try {
+      final details = await ApiService().getLaravelManagerOrders(token,
+          status: 'completed', perPage: 10, from: from, to: to);
+      if (!mounted || requestId != _summaryRequestId) return;
+      if (details['orders'] is List) {
+        setState(() => _recentLaravelOrders = (details['orders'] as List)
+            .whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList());
+      }
+    } catch (e) {
+      debugPrint('[ORDERS] RECENT_DETAILS_FAILED: $e');
+      // Keep the summary orders returned by V27 report as a safe fallback.
     }
   }
 
@@ -1769,108 +2112,275 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
         builder: (_) => ManagerOrdersHistoryScreen(initialStatus: status)));
   }
 
+  static const _sky = Color(0xFF169DDB);
+  static const _deep = Color(0xFF076D9F);
+
+  Widget _summaryTile(String label, String value, IconData icon) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: BeyteiManagerPalette.border),
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Icon(icon, color: BeyteiManagerPalette.blue, size: 18),
+        const SizedBox(width: 6),
+        Expanded(child: Text(label, maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 11.5,
+                color: BeyteiManagerPalette.hint))),
+      ]),
+      const Spacer(),
+      Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: BeyteiManagerPalette.dark,
+              fontSize: 15.5, fontWeight: FontWeight.w800)),
+    ]),
+  );
+  Widget _section(String title, IconData icon, VoidCallback go) => Padding(
+    padding: const EdgeInsets.fromLTRB(0, 16, 0, 8),
+    child: Row(children: [Icon(icon, color: _deep, size: 22), const SizedBox(width: 9),
+      Expanded(child: Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF17425D)))),
+      TextButton(onPressed: go, child: const Text('عرض الكل'))]),
+  );
+
   @override
   Widget build(BuildContext context) {
     final token = Provider.of<AuthProvider>(context, listen: false).token;
     return Consumer<DashboardProvider>(builder: (context, dashboard, _) {
-      final active = dashboard.orders['active'] ?? [];
-      // Recent completed orders now come from Laravel, not WooCommerce.
-      if (dashboard.isLoading && dashboard.orders.isEmpty) {
-        return const Center(child: CircularProgressIndicator());
-      }
+      final active = dashboard.orders['active'] ?? <Order>[];
       return RefreshIndicator(
         onRefresh: _reload,
-        child: ListView(padding: const EdgeInsets.all(16), children: [
-          const RestaurantQuickPanel(),
-          if (dashboard.orderLoadError != null) Card(child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text('تعذر تحديث قائمة الطلبات من السيرفر: ${dashboard.orderLoadError}. آخر بيانات محفوظة ما زالت معروضة.',
-                  style: const TextStyle(color: Colors.deepOrange)))),
-          const SizedBox(height: 18),
-          Row(children: [
-            const Expanded(child: Text('📊 ملخص المبيعات الفعلي',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.teal))),
-            TextButton.icon(onPressed: () => _viewOrders(),
-                icon: const Icon(Icons.receipt_long), label: const Text('مشاهدة الطلبات')),
-          ]),
-          const Text('الإحصائيات من سيرفر السائقين: السعر المعتمد بعد التعديل، دون أجرة التوصيل. يبدأ اليوم 3:00 فجراً بتوقيت بغداد.',
-              style: TextStyle(fontSize: 12, color: Colors.black54)),
-          Wrap(spacing: 8, children: [
-            TextButton.icon(onPressed: _chooseFinancialRange,
-                icon: const Icon(Icons.date_range),
-                label: Text(_customFinancialRange == null ? 'آخر 30 يوماً (يمكن تحديد فترة)' :
-                '${DateFormat('yyyy-MM-dd').format(_customFinancialRange!.start)} إلى ${DateFormat('yyyy-MM-dd').format(_customFinancialRange!.end)}')),
-            if (_customFinancialRange != null) TextButton(
-                onPressed: () { setState(() => _customFinancialRange = null); _loadFinancialSummary(); },
-                child: const Text('عودة لآخر 30 يوماً')),
-          ]),
-          if (_unknownDeliveryDates > 0) Text(
-              'تنبيه: $_unknownDeliveryDates طلب مكتمل بلا تاريخ تسليم. يظهر في إحصائية منذ البداية، ولا يمكن نسبته لفترة معينة.',
-              style: const TextStyle(color: Colors.deepOrange, fontSize: 12)),
-          if (_financialLoading) const LinearProgressIndicator(),
-          if (_financialError != null) Padding(padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text('تعذر تحميل الملخص الدقيق: $_financialError',
-                  style: const TextStyle(color: Colors.deepOrange))),
-          const SizedBox(height: 12),
-          GridView.count(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2, childAspectRatio: 1.4,
-              crossAxisSpacing: 10, mainAxisSpacing: 10, children: [
-                _stat('مكتملة اليوم', _num(_today, 'completed_orders'), Icons.today, Colors.blue),
-                _stat('مبيعات اليوم', _num(_today, 'net_sales', money: true), Icons.attach_money, Colors.green),
-                _stat(_customFinancialRange == null ? 'مكتملة آخر 30 يوماً' : 'مكتملة الفترة',
-                    _num(_month, 'completed_orders'), Icons.calendar_month, Colors.orange),
-                _stat(_customFinancialRange == null ? 'مبيعات آخر 30 يوماً' : 'مبيعات الفترة',
-                    _num(_month, 'net_sales', money: true), Icons.trending_up, Colors.purple),
-                _stat('مكتملة منذ البداية', _num(_all, 'completed_orders'), Icons.receipt_long, Colors.blueGrey),
-                _stat('مبيعات منذ البداية', _num(_all, 'net_sales', money: true), Icons.account_balance_wallet, Colors.teal),
+        color: _sky,
+        child: ListView(padding: const EdgeInsets.fromLTRB(12, 10, 12, 28), children: [
+          // One compact, consistent dashboard card combining sales and reception.
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border.all(color: BeyteiManagerPalette.border, width: 1.2),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              const Row(children: [
+                Icon(Icons.storefront_rounded,
+                    color: BeyteiManagerPalette.blue, size: 24),
+                SizedBox(width: 9),
+                Expanded(child: Text('لوحة مدير المطعم',
+                    style: TextStyle(color: BeyteiManagerPalette.dark,
+                        fontSize: 19, fontWeight: FontWeight.w800))),
               ]),
-          const SizedBox(height: 8),
-          TextButton.icon(onPressed: _financialLoading ? null : _loadFinancialSummary,
-              icon: const Icon(Icons.refresh), label: const Text('تحديث ملخص المبيعات')),
+              const SizedBox(height: 4),
+              const Text('طلباتك ومبيعاتك في مكان واحد',
+                  style: TextStyle(color: BeyteiManagerPalette.hint,
+                      fontSize: 12)),
+              const SizedBox(height: 14),
+              const Text('مبيعات اليوم', style: TextStyle(
+                  color: BeyteiManagerPalette.hint, fontSize: 12)),
+              const SizedBox(height: 4),
+              Text(_num(_today, 'net_sales', money: true),
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: BeyteiManagerPalette.blue,
+                      fontSize: 26, fontWeight: FontWeight.w900)),
+              const SizedBox(height: 5),
+              Row(children: [
+                const Icon(Icons.task_alt_rounded,
+                    color: BeyteiManagerPalette.green, size: 17),
+                const SizedBox(width: 5),
+                Text('${_num(_today, 'completed_orders')} طلبات مكتملة',
+                    style: const TextStyle(fontSize: 12,
+                        color: BeyteiManagerPalette.dark)),
+              ]),
+              const BeyteiManagerReceptionControl(),
+            ]),
+          ),
           const SizedBox(height: 16),
-          Row(children: [
-            Expanded(child: Text('🔔 الطلبات الجارية (${active.length})',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
-            TextButton(onPressed: () => _viewOrders('active'), child: const Text('عرض الكل')),
-          ]),
-          if (active.isEmpty) const Padding(padding: EdgeInsets.all(16),
-              child: Text('لا توجد طلبات جارية حالياً')),
-          ...active.take(8).map((order) => OrderCard(order: order,
+          const Text('إجراءات سريعة',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800,
+                  color: BeyteiManagerPalette.dark)),
+          const SizedBox(height: 9),
+          LayoutBuilder(builder: (context, constraints) {
+            final wide = constraints.maxWidth >= 650;
+            final columnCount = wide ? 3 : 2;
+            const spacing = 9.0;
+            final width = (constraints.maxWidth - (columnCount - 1) * spacing) / columnCount;
+            final actions = <Widget>[
+              BeyteiManagerQuickAction(
+                  title: 'الجارية (${active.length})', subtitle: 'متابعة الطلبات',
+                  icon: Icons.delivery_dining_rounded,
+                  accent: BeyteiManagerPalette.blue,
+                  onTap: () => _viewOrders('active')),
+              BeyteiManagerQuickAction(
+                  title: 'سجل الطلبات', subtitle: 'الطلبات المكتملة',
+                  icon: Icons.history_rounded,
+                  accent: BeyteiManagerPalette.green,
+                  onTap: () => _viewOrders()),
+              BeyteiManagerQuickAction(
+                  title: 'طلب مندوب', subtitle: 'عادي أو مستعجل',
+                  icon: Icons.local_shipping_outlined,
+                  accent: BeyteiManagerPalette.blue,
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const ManagerCourierScreen()))),
+              BeyteiManagerQuickAction(
+                  title: 'إضافة وجبة', subtitle: 'إضافة منتج جديد',
+                  icon: Icons.add_circle_outline,
+                  accent: BeyteiManagerPalette.green,
+                  onTap: () => RestaurantManagerNavigation.addMeal(context)),
+              BeyteiManagerQuickAction(
+                  title: 'إدارة الأقسام', subtitle: 'إضافة وتعديل الأقسام',
+                  icon: Icons.grid_view_rounded,
+                  accent: BeyteiManagerPalette.blue,
+                  onTap: () => RestaurantManagerNavigation.categories(context)),
+              BeyteiManagerQuickAction(
+                  title: 'المبيعات والأرباح', subtitle: 'التقارير المالية',
+                  icon: Icons.analytics_outlined,
+                  accent: BeyteiManagerPalette.green,
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const ManagerAnalyticsScreen()))),
+            ];
+            return Wrap(spacing: spacing, runSpacing: spacing,
+                children: actions.map((action) => SizedBox(
+                    width: width, child: action)).toList());
+          }),
+          const SizedBox(height: 5),
+          _section('ملخص الأداء', Icons.query_stats_rounded,
+                  () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ManagerAnalyticsScreen()))),
+          OutlinedButton.icon(onPressed: _chooseFinancialRange, icon: const Icon(Icons.date_range_outlined),
+              label: Text(_customFinancialRange == null ? 'آخر 30 يوماً • تغيير الفترة' :
+              '${DateFormat('yyyy-MM-dd').format(_customFinancialRange!.start)} — ${DateFormat('yyyy-MM-dd').format(_customFinancialRange!.end)}')),
+          if (_customFinancialRange != null) TextButton(
+              onPressed: () {setState(() => _customFinancialRange = null); _loadFinancialSummary();},
+              child: const Text('العودة إلى آخر 30 يوماً')),
+          if (_financialLoading) const LinearProgressIndicator(color: _sky),
+          if (_financialError != null) Card(child: Padding(padding: const EdgeInsets.all(14),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('تعذر تحديث المبيعات: $_financialError', style: const TextStyle(color: Colors.deepOrange)),
+                TextButton.icon(onPressed: _loadFinancialSummary,
+                    icon: const Icon(Icons.refresh), label: const Text('إعادة المحاولة'))]))),
+          const SizedBox(height: 10),
+          LayoutBuilder(builder: (context, constraints) => GridView.count(
+              shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+              crossAxisCount: constraints.maxWidth >= 650 ? 3 : 2,
+              childAspectRatio: constraints.maxWidth >= 650 ? 2.5 : 1.55,
+              mainAxisSpacing: 9, crossAxisSpacing: 9,
+              children: [
+                _summaryTile('مكتملة اليوم', _num(_today, 'completed_orders'), Icons.today_outlined),
+                _summaryTile('مبيعات اليوم', _num(_today, 'net_sales', money: true), Icons.payments_outlined),
+                _summaryTile('مكتملة الفترة', _num(_month, 'completed_orders'), Icons.calendar_month_outlined),
+                _summaryTile('مبيعات الفترة', _num(_month, 'net_sales', money: true), Icons.trending_up_rounded),
+                _summaryTile('مكتملة منذ البداية', _num(_all, 'completed_orders'), Icons.receipt_long_outlined),
+                _summaryTile('مبيعات منذ البداية', _num(_all, 'net_sales', money: true), Icons.account_balance_wallet_outlined),
+              ])),
+          const SizedBox(height: 7),
+          const Text('الأسعار المعتمدة من Laravel ولا تشمل أجور التوصيل. يبدأ اليوم المحاسبي الساعة 3 فجراً.',
+              style: TextStyle(fontSize: 11, color: Color(0xFF6B8091))),
+          if (_unknownDeliveryDates > 0) Padding(padding: const EdgeInsets.only(top: 6), child: Text(
+              '$_unknownDeliveryDates طلبات بلا تاريخ تسليم، تظهر ضمن الإجمالي منذ البداية فقط.',
+              style: const TextStyle(color: Colors.deepOrange, fontSize: 11))),
+          _section('الطلبات الجارية (${active.length})', Icons.local_shipping_outlined,
+                  () => _viewOrders('active')),
+          if (dashboard.isLoading && active.isEmpty) const LinearProgressIndicator(color: _sky),
+          if (dashboard.orderLoadError != null) Card(child: Padding(padding: const EdgeInsets.all(12),
+              child: Column(children: [
+                Text('تعذّر تحميل الطلبات من Laravel: ${dashboard.orderLoadError}',
+                    style: const TextStyle(color: Colors.deepOrange)),
+                TextButton.icon(onPressed: () => dashboard.fetchDashboardData(token),
+                    icon: const Icon(Icons.refresh), label: const Text('إعادة المحاولة'))]))),
+          if (active.isEmpty && !dashboard.isLoading && dashboard.orderLoadError == null)
+            const Card(child: Padding(padding: EdgeInsets.all(18),
+                child: Text('لا توجد طلبات جارية حالياً', textAlign: TextAlign.center))),
+          ...active.take(4).map((order) => OrderCard(order: order,
               onStatusChanged: () => dashboard.fetchDashboardData(token),
               pickupCode: dashboard.pickupCodes[order.id])),
-          const SizedBox(height: 18),
-          Row(children: [
-            const Expanded(child: Text('✅ الطلبات المنتهية مؤخراً',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
-            TextButton(onPressed: () => _viewOrders(), child: const Text('مشاهدة جميع الطلبات')),
-          ]),
+          _section('الطلبات المكتملة مؤخراً', Icons.check_circle_outline,
+                  () => _viewOrders()),
           if (_financialLoading && _recentLaravelOrders.isEmpty)
-            const Center(child: CircularProgressIndicator()),
-          if (!_financialLoading && _financialError == null && _recentLaravelOrders.isEmpty)
-            const Padding(padding: EdgeInsets.all(16),
-                child: Text('لا توجد طلبات مكتملة في الفترة المحددة على سيرفر السائقين')),
-          ..._recentLaravelOrders.map((o) => Card(child: ListTile(
-            leading: const Icon(Icons.check_circle, color: Colors.green),
-            title: Text('طلب #${o['id'] ?? '-'} — مكتمل'),
-            subtitle: Text('التسليم: ${o['delivered_at'] ?? '-'}'),
-            trailing: Text('${NumberFormat('#,##0').format(num.tryParse('${o['order_total']}') ?? 0)} د.ع',
-                style: const TextStyle(fontWeight: FontWeight.bold)),
-          ))),
+            const LinearProgressIndicator(color: _sky),
+          if (!_financialLoading && _recentLaravelOrders.isEmpty && _financialError == null)
+            const Card(child: Padding(padding: EdgeInsets.all(15),
+                child: Text('لا توجد طلبات مكتملة في القائمة حالياً'))),
+          ..._recentLaravelOrders.take(5).map((o) => Card(
+            child: ListTile(
+              onTap: () => showBeyteiCompletedDriverOrder(context, o),
+              leading: const CircleAvatar(backgroundColor: Color(0xFFE5F7FD),
+                  child: Icon(Icons.check, color: _deep)),
+              title: Text('طلب السائقين #${o['id'] ?? 'غير متاح'}'),
+              subtitle: Text('تم التسليم • ${o['delivered_at'] ?? '—'}'),
+              trailing: Text('${NumberFormat('#,##0').format(beyteiCompleteOrderAmount(o) ?? 0)} د.ع',
+                  style: const TextStyle(color: _deep, fontWeight: FontWeight.bold)),
+            ),
+          )),
         ]),
       );
     });
   }
+}
 
-  Widget _stat(String title, String value, IconData icon, Color color) => Card(
-    child: Padding(padding: const EdgeInsets.all(10), child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center, children: [
-      Row(children: [Icon(icon, size: 20, color: color), const SizedBox(width: 5),
-        Expanded(child: Text(title, style: const TextStyle(fontSize: 12), maxLines: 2))]),
-      const SizedBox(height: 7),
-      Text(value, maxLines: 2, overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color)),
-    ])),
+// Read-only details of a completed driver order. V27 may return only the
+// financial summary; meal details appear only when Laravel actually sends them.
+void showBeyteiCompletedDriverOrder(BuildContext context, Map<String, dynamic> order) {
+  String display(dynamic value, [String fallback = 'غير متاح']) {
+    final v = value?.toString().trim() ?? '';
+    return v.isEmpty || v == 'null' ? fallback : v;
+  }
+  String money(dynamic value) {
+    final n = num.tryParse('${value ?? ''}');
+    return n == null ? 'غير متاح' : '${NumberFormat('#,##0').format(n)} د.ع';
+  }
+  final rawItems = order['line_items'];
+  dynamic itemsValue = rawItems;
+  if (rawItems is String && rawItems.trim().isNotEmpty) {
+    try { itemsValue = json.decode(rawItems); } catch (_) { itemsValue = null; }
+  }
+  final items = itemsValue is List
+      ? itemsValue.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
+      : <Map<String, dynamic>>[];
+  final simpleItems = display(order['order_items'], '');
+  final note = display(order['notes'], '');
+
+  showModalBottomSheet<void>(
+    context: context, isScrollControlled: true, showDragHandle: true,
+    builder: (sheetContext) => SafeArea(child: FractionallySizedBox(
+      heightFactor: 0.76,
+      child: ListView(padding: const EdgeInsets.all(16), children: [
+        Text('تفاصيل الطلب #${display(order['id'])}',
+            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        ListTile(title: const Text('الحالة'),
+            trailing: Text(restaurantOrderStatusLabel(display(order['status'])))),
+        ListTile(title: const Text('تاريخ التسليم'),
+            subtitle: Text(display(order['delivered_at']))),
+        const Divider(),
+        ListTile(title: const Text('سعر الطلب كامل'),
+            trailing: Text(money(beyteiCompleteOrderAmount(order)),
+                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green))),
+        const Divider(),
+        const Text('الوجبات والكميات', style: TextStyle(fontWeight: FontWeight.bold)),
+        if (items.isNotEmpty)
+          ...items.map((item) => ListTile(
+            title: Text(display(item['name'], 'منتج')),
+            subtitle: Text([
+              'الكمية: ${display(item['quantity'], '1')}',
+              if (display(item['options_summary'], '').isNotEmpty)
+                display(item['options_summary']),
+              if (display(item['note'], '').isNotEmpty)
+                'ملاحظة: ${display(item['note'])}',
+            ].join(' • ')),
+            trailing: Text(money(item['total'])),
+          ))
+        else if (simpleItems.isNotEmpty)
+          Padding(padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Text(simpleItems))
+        else
+          const Padding(padding: EdgeInsets.symmetric(vertical: 10),
+              child: Text('نسخة API المالي الحالية لا ترسل تفاصيل الوجبات لهذا الطلب؛ تعرض فقط المبلغ ورقم الطلب وتاريخ التسليم.')),
+        if (note.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text('ملاحظات الطلب: $note'),
+        ],
+        const SizedBox(height: 20),
+      ]),
+    )),
   );
 }
 
@@ -1908,7 +2418,8 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
       final token = Provider.of<AuthProvider>(context, listen: false).token;
       if (token == null) throw Exception('يرجى تسجيل الدخول');
       if (selected == 'completed') {
-        final result = await ApiService().getDriverFinanceSnapshot(token, page: _nextPage);
+        final result = await ApiService().getLaravelManagerOrders(token,
+            status: 'completed', page: _nextPage, perPage: 20);
         if (!mounted || _status != selected) return;
         final rows = (result['orders'] is List)
             ? (result['orders'] as List).whereType<Map>()
@@ -1921,13 +2432,17 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
           _nextPage++;
         });
       } else {
-        final result = await ApiService().getManagerOrdersPage(
-            status: selected, token: token, page: _nextPage, perPage: 20);
+        final result = await ApiService().getLaravelManagerOrders(token,
+            status: 'active', page: _nextPage, perPage: 20);
+        final activeOrders = (result['orders'] as List)
+            .whereType<Map>()
+            .map((e) => ApiService.mapDriverOrderToCard(Map<String, dynamic>.from(e)))
+            .toList();
         if (!mounted || _status != selected) return;
         final seen = _items.map((e) => e.id).toSet();
         setState(() {
-          _items.addAll(result.orders.where((e) => seen.add(e.id)));
-          _hasMore = result.hasMore;
+          _items.addAll(activeOrders.where((e) => seen.add(e.id)));
+          _hasMore = result['has_more'] == true;
           _nextPage++;
         });
       }
@@ -1952,7 +2467,7 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
         ChoiceChip(label: const Text('الطلبات الجارية'),
             selected: _status == 'active', onSelected: (_) => _select('active')),
         const SizedBox(width: 10),
-        ChoiceChip(label: const Text('المكتملة (آخر 30 يوماً)'),
+        ChoiceChip(label: const Text('الطلبات المكتملة'),
             selected: _status == 'completed', onSelected: (_) => _select('completed')),
       ])),
       Expanded(child: RefreshIndicator(
@@ -1969,8 +2484,9 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
                 child: Center(child: Text('لا توجد طلبات في هذا القسم'))),
           if (_status == 'completed')
             ..._completedDriverOrders.map((o) => Card(child: ListTile(
+              onTap: () => showBeyteiCompletedDriverOrder(context, o),
               leading: const Icon(Icons.check_circle, color: Colors.green),
-              title: Text('طلب #${o['id'] ?? '-'}  (الأصلي ${o['source_order_id'] ?? '-'})'),
+              title: Text('طلب السائقين #${o['id'] ?? '-'}'),
               subtitle: Text('مكتمل — ${o['delivered_at'] ?? '-'}'),
               trailing: Text('${NumberFormat('#,##0').format(num.tryParse('${o['order_total']}') ?? 0)} د.ع',
                   style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -2000,9 +2516,12 @@ class DashboardProvider with ChangeNotifier {
   Timer? _timer;
   Timer? _debounceTimer;
   bool _fetching = false;
+  bool _ratingsFetching = false;
   String? _orderLoadError;
+  String? _ratingsLoadError;
 
   String? get orderLoadError => _orderLoadError;
+  String? get ratingsLoadError => _ratingsLoadError;
   Map<String, List<Order>> get orders => _orders;
   RestaurantRatingsDashboard? get ratingsDashboard => _ratingsDashboard;
   Map<int, String> get pickupCodes => _pickupCodes;
@@ -2033,8 +2552,27 @@ class DashboardProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  void _refreshRatingsIndependently(String token) {
+    if (_ratingsFetching) return;
+    _ratingsFetching = true;
+    unawaited(ApiService().getDashboardRatings(token).then<void>((ratings) {
+      _ratingsDashboard = ratings;
+      _ratingsLoadError = null;
+      notifyListeners();
+    }).catchError((Object error) {
+      _ratingsLoadError = '$error';
+      debugPrint('تعذر تحديث تقييمات المطعم: $error');
+      notifyListeners();
+    }).whenComplete(() {
+      _ratingsFetching = false;
+    }));
+  }
+
   Future<void> fetchDashboardData(String? token, {bool silent = false}) async {
-    if (token == null || _fetching) return;
+    if (token == null) return;
+    // Ratings are independent from WooCommerce order loading.
+    _refreshRatingsIndependently(token);
+    if (_fetching) return;
     _fetching = true;
 
     if (!silent || _orders.isEmpty) {
@@ -2045,9 +2583,15 @@ class DashboardProvider with ChangeNotifier {
     try {
       final ApiService api = ApiService();
 
-      // 🔥 جلب الطلبات النشطة والمكتملة بشكل منفصل لضمان الدقة
-      final activeFromServer = await api.getRestaurantOrders(status: 'active', token: token);
-      final completedFromServer = await api.getRestaurantOrders(status: 'completed', token: token);
+      // Completed orders and sales come directly from Laravel in UnifiedOrdersScreen.
+      // Do not scan WooCommerce completed orders again (very slow for large stores).
+      final activePayload = await api.getLaravelManagerOrders(
+          token, status: 'active', perPage: 50);
+      final activeFromServer = (activePayload['orders'] as List)
+          .whereType<Map>()
+          .map((e) => ApiService.mapDriverOrderToCard(Map<String, dynamic>.from(e)))
+          .toList();
+      final completedFromServer = <Order>[]; // completed history is also on Laravel
 
       List<Order> allOrders = [...activeFromServer, ...completedFromServer];
 
@@ -2077,12 +2621,6 @@ class DashboardProvider with ChangeNotifier {
       _orderLoadError = null;
       // Update order cards immediately; a slow ratings API must not hide them.
       notifyListeners();
-
-      try {
-        _ratingsDashboard = await api.getDashboardRatings(token);
-      } catch (e) {
-        debugPrint('تعذر تحديث التقييمات: $e');
-      }
 
     } catch (e, stackTrace) {
       _orderLoadError = '$e';
@@ -2148,7 +2686,7 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
       child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 440),
           child: Form(key: _formKey, child: Column(mainAxisSize: MainAxisSize.min, children: [
             const CircleAvatar(radius: 42, backgroundColor: Color(0xFFE0F4ED),
-                child: Icon(Icons.storefront_rounded, size: 46, color: Colors.teal)),
+                child: Icon(Icons.storefront_rounded, size: 46, color: const Color(0xFF168EC7))),
             const SizedBox(height: 18),
             const Text('مدير المطعم', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 25)),
             const SizedBox(height: 8),
@@ -2228,7 +2766,7 @@ class RestaurantQuickPanel extends StatelessWidget {
       Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(
         crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          const Icon(Icons.storefront, color: Colors.teal), const SizedBox(width: 8),
+          const Icon(Icons.storefront, color: const Color(0xFF168EC7)), const SizedBox(width: 8),
           const Expanded(child: Text('استقبال طلبات المطعم', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
           if (settings.isLoading) const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
         ]),
@@ -2353,18 +2891,24 @@ class _ManagerAnalyticsScreenState extends State<ManagerAnalyticsScreen> {
       final to = _range == null ? null : DateFormat('yyyy-MM-dd').format(_range!.end);
       final next = loadMore ? _page + 1 : 1;
       final result = await ApiService().getDriverFinanceSnapshot(token,
-          from: from, to: to, page: next);
+          from: from, to: to, page: 1);
+      // When a custom date is selected, the finance report remains the source
+      // for the scoped completed list in that specific accounting date window.
+      final detailed = await ApiService().getLaravelManagerOrders(token,
+          status: 'completed', page: next, perPage: 30,
+          from: from ?? result['from']?.toString(),
+          to: to ?? result['to']?.toString());
       if (!mounted) return;
       setState(() {
         _data = result;
         if (!loadMore) _orders.clear();
-        if (result['orders'] is List) {
-          for (final raw in (result['orders'] as List)) {
+        if ((detailed?['orders'] ?? result['orders']) is List) {
+          for (final raw in ((detailed?['orders'] ?? result['orders']) as List)) {
             if (raw is Map) _orders.add(Map<String, dynamic>.from(raw));
           }
         }
         _page = next;
-        _hasMore = result['has_more'] == true;
+        _hasMore = (detailed?['has_more'] ?? result['has_more']) == true;
       });
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -2411,7 +2955,7 @@ class _ManagerAnalyticsScreenState extends State<ManagerAnalyticsScreen> {
           setState(() => _range = null); _load();
         }, child: const Text('آخر 30 يوماً')),
       ]),
-      const Text('بداية اليوم المحاسبي 3:00 فجراً بتوقيت بغداد. الأسعار من order_total بعد اعتماد تعديل الإدارة، ولا تشمل أجرة التوصيل.',
+      const Text('بداية اليوم المحاسبي 3:00 فجراً بتوقيت بغداد. مبيعات المطعم المحاسبية لا تشمل أجرة توصيل المندوب.',
           style: TextStyle(fontSize: 12, color: Colors.black54)),
       if (_loading) const LinearProgressIndicator(),
       if (_error != null) Padding(padding: const EdgeInsets.all(10),
@@ -2434,9 +2978,10 @@ class _ManagerAnalyticsScreenState extends State<ManagerAnalyticsScreen> {
         const Text('الطلبات المكتملة خلال الفترة',
             style: TextStyle(fontWeight: FontWeight.bold)),
         ..._orders.map((o) => Card(child: ListTile(
+          onTap: () => showBeyteiCompletedDriverOrder(context, o),
           leading: const Icon(Icons.receipt_long),
-          title: Text('طلب #${o['id']} — ${_money(o['order_total'])}'),
-          subtitle: Text('الحالة: ${o['status']} | التسليم: ${o['delivered_at'] ?? 'غير متاح'} (UTC)'),
+          title: Text('طلب #${o['id']} — ${_money(beyteiCompleteOrderAmount(o))}'),
+          subtitle: Text('الحالة: ${restaurantOrderStatusLabel('${o['status']}')} | التسليم: ${o['delivered_at'] ?? 'غير متاح'}'),
         ))),
         if (_hasMore) TextButton.icon(onPressed: _loadingMore ? null : () => _load(loadMore: true),
             icon: const Icon(Icons.expand_more), label: const Text('عرض المزيد')),
@@ -2527,39 +3072,84 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('لوحة تحكم المطعم', style: TextStyle(fontWeight: FontWeight.bold)),
+        titleSpacing: 8,
+        title: const Text('منصة بيتي\nإدارة المطعم',
+            maxLines: 2, style: TextStyle(fontSize: 15, height: 1.12,
+                fontWeight: FontWeight.bold)),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.account_balance_wallet, color: Colors.green),
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen())),
-            tooltip: 'المحفظة والأرباح',
-          ),
-          IconButton(icon: const Icon(Icons.location_on_outlined, color: Colors.blue),
-              tooltip: 'تحديد موقع المطعم وإرساله للسيرفر',
-              onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen()))),
-          IconButton(icon: const Icon(Icons.delivery_dining), tooltip: 'طلب مندوب مستعجل',
-              onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const ManagerCourierScreen()))),
-          IconButton(icon: const Icon(Icons.notifications_active_outlined),
-              tooltip: 'اختبار إشعار الطلبات', onPressed: _testNotifications),
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.red),
-            onPressed: () => auth.logout(context),
-            tooltip: 'تسجيل الخروج',
+          ConstrainedBox(
+            constraints: BoxConstraints(
+                maxWidth: MediaQuery.sizeOf(context).width * 0.61),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+
+                IconButton(tooltip: 'المحفظة', padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 37, height: 43),
+                    icon: const Icon(Icons.account_balance_wallet_outlined, size: 23, color: Colors.green),
+                    onPressed: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const WalletScreen()))),
+                IconButton(tooltip: 'موقع المطعم والمنطقة', padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 37, height: 43),
+                    icon: const Icon(Icons.location_on_outlined, size: 23, color: Colors.blue),
+                    onPressed: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen()))),
+                IconButton(tooltip: 'طلب مندوب', padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 37, height: 43),
+                    icon: const Icon(Icons.local_shipping_outlined, size: 23),
+                    onPressed: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const ManagerCourierScreen()))),
+                IconButton(tooltip: 'اختبار الإشعارات', padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 37, height: 43),
+                    icon: const Icon(Icons.notifications_active_outlined, size: 23),
+                    onPressed: _testNotifications),
+                IconButton(tooltip: 'العروض الترويجية', padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 37, height: 43),
+                    icon: const Icon(Icons.campaign_outlined, size: 23),
+                    onPressed: () => _showModernOfferDialog(context)),
+                IconButton(tooltip: 'تسجيل الخروج', padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(width: 37, height: 43),
+                    icon: const Icon(Icons.logout, size: 23, color: Colors.red),
+                    onPressed: () => auth.logout(context)),
+              ]),
+            ),
           ),
         ],
         bottom: TabBar(
           controller: _tabController,
-          isScrollable: true,
-          labelColor: Colors.teal,
-          unselectedLabelColor: Colors.grey,
-          indicatorColor: Colors.teal,
+          isScrollable: false,
+          padding: EdgeInsets.zero,
+          labelPadding: EdgeInsets.zero,
+          indicatorSize: TabBarIndicatorSize.tab,
+          indicatorColor: BeyteiManagerPalette.blue,
+          labelColor: BeyteiManagerPalette.blue,
+          unselectedLabelColor: BeyteiManagerPalette.hint,
           tabs: const [
-            Tab(icon: Icon(Icons.dashboard), text: 'الطلبات والإحصائيات'), // تم دمجه
-            Tab(icon: Icon(Icons.fastfood_outlined), text: 'المنتجات'),
-            Tab(icon: Icon(Icons.star_rate), text: 'التقييمات'),
-            Tab(icon: Icon(Icons.settings), text: 'الإعدادات'),
+            Tab(height: 62, child: Column(
+                mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.dashboard_outlined, size: 21),
+              SizedBox(height: 3),
+              Text('الطلبات\nوالإحصائيات', textAlign: TextAlign.center,
+                  maxLines: 2, style: TextStyle(fontSize: 10.5, height: 1.12)),
+            ])),
+            Tab(height: 62, child: Column(
+                mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.fastfood_outlined, size: 21),
+              SizedBox(height: 3),
+              Text('المنتجات', style: TextStyle(fontSize: 11.5)),
+            ])),
+            Tab(height: 62, child: Column(
+                mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.star_outline_rounded, size: 21),
+              SizedBox(height: 3),
+              Text('التقييمات', style: TextStyle(fontSize: 11.5)),
+            ])),
+            Tab(height: 62, child: Column(
+                mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.settings_outlined, size: 21),
+              SizedBox(height: 3),
+              Text('الإعدادات', style: TextStyle(fontSize: 11.5)),
+            ])),
           ],
         ),
       ),
@@ -2570,32 +3160,6 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
           const ProductManagementTab(),
           const RatingsDashboardScreen(),
           const RestaurantSettingsScreen(),
-        ],
-      ),
-      // 🔥 ترتيب الأزرار العائمة: إضافة وجبة فوق إرسال عرض
-      floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          // 1. زر إضافة وجبة (في الأعلى)
-          FloatingActionButton.extended(
-            heroTag: "btn_add_meal",
-            onPressed: () => RestaurantManagerNavigation.addMeal(context),
-            icon: const Icon(Icons.add_circle_outline),
-            label: const Text('إضافة وجبة'),
-            backgroundColor: Colors.teal.shade700,
-            foregroundColor: Colors.white,
-          ),
-          const SizedBox(height: 12),
-          // 2. زر إرسال عرض (في الأسفل)
-          FloatingActionButton.extended(
-            heroTag: "btn_offer",
-            onPressed: () => _showModernOfferDialog(context),
-            icon: const Icon(Icons.campaign_rounded),
-            label: const Text('إرسال عرض'),
-            backgroundColor: Colors.purple.shade700,
-            foregroundColor: Colors.white,
-          ),
         ],
       ),
     );
@@ -2663,180 +3227,450 @@ class _RestaurantDashboardScreenState extends State<RestaurantDashboardScreen> w
 
 }
 // Direct one-tap dispatch from restaurant dashboard; no customer information form.
-class RestaurantUrgentPickupQuickButton extends StatefulWidget {
+// V34: the quick button opens the validated form; no dispatch without fee.
+class RestaurantUrgentPickupQuickButton extends StatelessWidget {
   const RestaurantUrgentPickupQuickButton({super.key});
   @override
-  State<RestaurantUrgentPickupQuickButton> createState() => _RestaurantUrgentPickupQuickButtonState();
-}
-class _RestaurantUrgentPickupQuickButtonState extends State<RestaurantUrgentPickupQuickButton> {
-  bool _busy = false;
-  int? _submittedOrder;
-  late final String _requestId =
-      '${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1 << 31)}';
-
-  Future<void> _call() async {
-    if (_busy || _submittedOrder != null) return;
-    setState(() => _busy = true);
-    try {
-      final token = Provider.of<AuthProvider>(context, listen: false).token;
-      if (token == null) throw Exception('يرجى تسجيل الدخول');
-      final contextData = await ApiService().getManagerContext(token);
-      final lat = double.tryParse('${contextData['latitude']}');
-      final lng = double.tryParse('${contextData['longitude']}');
-      if (!mounted) return;
-      if (lat == null || lng == null || lat.abs() < 0.000001 || lng.abs() < 0.000001) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('حدد موقع المطعم أولاً، ثم أعد الضغط على طلب المندوب')));
-        await Navigator.push<void>(context,
-            MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen()));
-        return;
-      }
-      final result = await ApiService().requestUrgentPickup(token, _requestId);
-      if (!mounted) return;
-      final orderId = int.tryParse('${result['order_id']}');
-      if (orderId != null) setState(() => _submittedOrder = orderId);
-      final success = result['success'] == true && result['dispatch_confirmed'] == true;
-      final message = success
-          ? 'تم تسجيل استدعاء المندوب المستعجل، رقم الطلب #$orderId'
-          : (result['message'] ?? 'الاستدعاء غير مؤكد. افحص الطلبات قبل تكراره.').toString();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          backgroundColor: success ? Colors.green.shade700 : Colors.orange.shade800,
-          content: Text(message), duration: const Duration(seconds: 6)));
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('تعذّر تأكيد الطلب: $e. تأكد من الطلبات قبل إعادة المحاولة.'),
-          duration: const Duration(seconds: 6)));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-  @override
   Widget build(BuildContext context) => FilledButton.tonalIcon(
-    onPressed: (_busy || _submittedOrder != null) ? null : _call,
-    icon: Icon(_busy ? Icons.hourglass_top : Icons.delivery_dining),
-    label: Text(_busy ? 'جارٍ الطلب...' : _submittedOrder != null
-        ? 'استدعاء #$_submittedOrder' : 'طلب مندوب مستعجل'),
+    onPressed: () => Navigator.push(context,
+        MaterialPageRoute(builder: (_) => const ManagerCourierScreen(initialUrgent: true))),
+    icon: const Icon(Icons.flash_on), label: const Text('مندوب مستعجل'),
   );
 }
 
-// V21: The manager calls a courier to the restaurant with ONE tap.
-// Customer details are handed over after the courier arrives; none are fabricated.
+// V34 - complete restaurant courier request and event-driven tracking.
 class ManagerCourierScreen extends StatefulWidget {
-  const ManagerCourierScreen({super.key});
+  final bool initialUrgent;
+  const ManagerCourierScreen({super.key, this.initialUrgent = true});
   @override
   State<ManagerCourierScreen> createState() => _ManagerCourierScreenState();
 }
 
-class _ManagerCourierScreenState extends State<ManagerCourierScreen> {
+class _ManagerCourierScreenState extends State<ManagerCourierScreen>
+    with WidgetsBindingObserver {
   final ApiService _api = ApiService();
-  bool _loading = true;
-  bool _busy = false;
+  final _formKey = GlobalKey<FormState>();
+  final _phone = TextEditingController();
+  final _name = TextEditingController();
+  final _address = TextEditingController();
+  final _notes = TextEditingController();
+  StreamSubscription<RemoteMessage>? _messages;
+  late bool _urgent;
+  int _fee = 1000;
+  bool _loading = true, _sending = false;
+  Map<String, dynamic>? _context;
+  List<Map<String, dynamic>> _orders = [];
   String? _error;
-  String _restaurantName = '';
-  double? _lat;
-  double? _lng;
-  int? _orderId;
-  String? _notice;
-  late final String _requestId;
+  String? _requestId;
+  int? _lastOrder;
+  bool _unconfirmed = false;
+  static const _deep = Color(0xFF147EBC);
+  static const _green = Color(0xFF0DBA85);
 
   @override
   void initState() {
     super.initState();
-    _requestId = '${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1 << 31)}';
-    _load();
+    _urgent = widget.initialUrgent;
+    WidgetsBinding.instance.addObserver(this);
+    _messages = FirebaseMessaging.onMessage.listen((msg) {
+      final type = msg.data['type']?.toString() ?? '';
+      if (type == 'manager_courier_status' || type == 'driver_assigned' ||
+          type == 'order_status_update' || type == 'status_update') {
+        _refresh(silent: true);
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+  }
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refresh(silent: true);
+  }
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _messages?.cancel();
+    _phone.dispose();_name.dispose();_address.dispose();
+    _notes.dispose();
+    super.dispose();
   }
 
-  Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
+  // Zone IDs/names always come from the existing authenticated
+  // manager-context endpoint, never from a globally selectable city list.
+  List<Map<String, dynamic>> _serverAreas = [];
+  int? _zoneId;
+  bool _courierApiAvailable = false;
+
+  String get _zoneText => beyteiZoneDescription(_zoneId, _serverAreas);
+
+  Future<void> _refresh({bool silent = false}) async {
+    if (!mounted) return;
+    if (!silent) setState(() { _loading = true; _error = null; });
     try {
       final token = Provider.of<AuthProvider>(context, listen: false).token;
       if (token == null) throw Exception('يرجى تسجيل الدخول');
-      final info = await _api.getManagerContext(token);
+      // Three independent GET requests start at once; no sequential network waits.
+      final baseFuture = _api.getManagerContext(token);
+      final configFuture = _api.getManagerCourierConfig(token)
+          .timeout(const Duration(seconds: 12)).then<Map<String,dynamic>?>((v)=>v)
+          .catchError((Object e) { debugPrint('Courier config: $e'); return null; });
+      final ordersFuture = _api.getManagerCourierOrders(token)
+          .timeout(const Duration(seconds: 12)).then<Map<String,dynamic>?>((v)=>v)
+          .catchError((Object e) { debugPrint('Courier orders: $e'); return null; });
+      final base = await baseFuture;
+      final areas = (base['areas'] as List? ?? [])
+          .whereType<Map>().map((v) => Map<String, dynamic>.from(v)).toList();
+      final allowed = areas.map((a) => int.tryParse('${a['id']}'))
+          .whereType<int>().where((id)=>id>0).toSet();
+      final saved = int.tryParse('${base['pickup_zone_id']}');
+      int? selected = saved != null && allowed.contains(saved)
+          ? saved : allowed.length == 1 ? allowed.single : null;
+      final info = <String,dynamic>{
+        'restaurant_id':base['id'], 'restaurant_name':base['name'],
+        'pickup_lat':base['latitude'], 'pickup_lng':base['longitude'],
+        'zone_id':selected, 'allowed_zones':areas, 'enabled':false,
+      };
+      if (mounted) setState(() {
+        _serverAreas = areas; _zoneId=selected; _context=info;
+        _loading=false; // Show region and controls immediately.
+      });
+      final remote = await configFuture;
+      final all = await ordersFuture;
+      final supported = remote != null;
+      String? notice;
+      if (remote != null) {
+        final returnedZone = int.tryParse('${remote['zone_id']}');
+        if (returnedZone != null && allowed.contains(returnedZone)) selected=returnedZone;
+        info.addAll(remote);
+        info['zone_id']=selected;
+      } else {
+        notice='تعذر الوصول إلى خدمة طلب المندوب؛ تأكد من الشبكة أو تفعيل V34.';
+      }
+      final orders = (all?['orders'] as List? ?? [])
+          .whereType<Map>().map((m)=>Map<String,dynamic>.from(m)).toList();
+      if (all == null && supported) notice='تعذر تحديث قائمة الطلبات. اسحب الشاشة لإعادة المحاولة.';
+      final prefs = await SharedPreferences.getInstance();
+      final rid = int.tryParse('${info['restaurant_id']}') ?? 0;
+      final requestKey = 'beytei_v34_active_request_$rid';
+      var id = prefs.getString(requestKey);
+      if (id == null) {
+        id='${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1<<31)}';
+        await prefs.setString(requestKey,id);
+      }
       if (!mounted) return;
       setState(() {
-        _restaurantName = (info['name'] ?? '').toString();
-        _lat = double.tryParse('${info['latitude']}');
-        _lng = double.tryParse('${info['longitude']}');
+        _serverAreas=areas; _zoneId=selected;
+        _context=info; _courierApiAvailable=supported;
+        _orders=orders; _requestId=id; _error=notice;
+        _unconfirmed=orders.any((o)=>o['dispatch_confirmed']!=true &&
+            !['cancelled','failed'].contains(o['status']));
       });
     } catch (e) {
-      if (mounted) setState(() => _error = '$e');
+      if (mounted && !silent) setState(() => _error='تعذر تحميل بيانات المطعم: $e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() => _loading=false);
     }
   }
 
-  bool get _hasLocation => _lat != null && _lng != null &&
-      _lat!.abs() > 0.000001 && _lng!.abs() > 0.000001 &&
-      _lat!.abs() <= 90 && _lng!.abs() <= 180;
+  Future<void> _saveNewRequestKey() async {
+    final rid = int.tryParse('${_context?['restaurant_id']}') ?? 0;
+    final newId = '${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(1 << 31)}';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('beytei_v34_active_request_$rid', newId);
+    _requestId = newId;
+  }
 
-  Future<void> _request() async {
-    if (_busy || _orderId != null || !_hasLocation) return;
-    setState(() { _busy = true; _error = null; });
+  Future<void> _submit() async {
+    if (_sending || _unconfirmed || _context?['enabled'] != true || !_formKey.currentState!.validate()) return;
+    // Laravel currently applies a zone-84 driver fee adjustment above 1,500 IQD.
+    // Never promise the selected 2,000/3,000 IQD will be sent unchanged.
+    if (_zoneId == 84 && _fee > 1500) {
+      _toast('في الكوت لا يمكن حالياً طلب أجرة 2000 أو 3000 لأن سيرفر السائقين يغيرها. اختر 1000 إلى حين توحيد التسعير.');
+      return;
+    }
+    if (!_courierApiAvailable) {
+      _toast('مسار طلب المندوب بالتوكن غير موجود في WordPress الحالي. لم يتم إرسال أي طلب.');
+      return;
+    }
+    if (_zoneId == null) {
+      _toast('منطقة المطعم غير معتمدة؛ اخترها من إعدادات موقع المطعم');return;
+    }
+    final verifiedZone = int.tryParse('${_context?['zone_id']}');
+    if (verifiedZone != _zoneId) {
+      _toast('المنطقة المختارة تختلف عن المنطقة المعتمدة في WordPress. لم يتم إرسال الطلب.');
+      return;
+    }
+    if (_context?['pickup_lat'] == null || _context?['pickup_lng'] == null) {
+      _toast('حدد موقع المطعم أولاً');return;
+    }
+    final confirmed = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: Text(_urgent ? 'تأكيد مندوب مستعجل' : 'تأكيد طلب المندوب'),
+      content: Text('الأجرة: $_fee دينار\nالمطعم: ${_context?['restaurant_name']}\n'
+          'سيرسل الطلب إلى سائقي $_zoneText. هل تؤكد؟'),
+      actions: [TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
+        FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('تأكيد'))],
+    ));
+    if (confirmed != true || !mounted) return;
+    setState(() { _sending = true; _lastOrder = null; });
     try {
       final token = Provider.of<AuthProvider>(context, listen: false).token;
       if (token == null) throw Exception('يرجى تسجيل الدخول');
-      final data = await _api.requestUrgentPickup(token, _requestId);
+      // Obtain a FRESH FCM token from THIS phone for EVERY courier request.
+      // Do not rely on a token saved earlier for a different manager/device.
+      String? deviceFcmToken;
+      try {
+        deviceFcmToken = await FirebaseMessaging.instance.getToken()
+            .timeout(const Duration(seconds: 12));
+      } catch (e) {
+        throw Exception('تعذر الحصول على توكن إشعارات هذا الهاتف: $e');
+      }
+      if (deviceFcmToken == null || deviceFcmToken.trim().isEmpty) {
+        throw Exception('توكن الإشعارات غير متوفر. فعّل إشعارات التطبيق وتأكد من الاتصال بالإنترنت. لم يتم إرسال طلب.');
+      }
+      final body = <String, dynamic>{
+        'request_id': _requestId,
+        'fcm_token': deviceFcmToken.trim(),
+        'device_platform': Platform.isIOS ? 'ios' : 'android',
+        'mode': _urgent ? 'urgent' : 'normal',
+        'delivery_fee': _fee,
+        // Client sends both numeric zone and its UI label. Backend must
+        // independently verify the zone belongs to the logged-in restaurant.
+        'zone_id': _zoneId,
+        'zone_name': beyteiZoneName(_zoneId, _serverAreas),
+        'restaurant_id': _context?['restaurant_id'],
+        'restaurant_name': _context?['restaurant_name'],
+        if (!_urgent) 'customer_name': _name.text.trim(),
+        if (!_urgent) 'customer_phone': _phone.text.trim(),
+        if (!_urgent) 'destination_address': _address.text.trim(),
+        // Legacy Laravel requires coordinates; restaurant pickup is provisional.
+        if (!_urgent) 'destination_lat': _context?['pickup_lat'],
+        if (!_urgent) 'destination_lng': _context?['pickup_lng'],
+        if (!_urgent) 'notes': '⚠️ موقع الخريطة هو موقع المطعم مؤقتاً وليس موقع الزبون. '
+            'اتصل بالزبون للتوجيه حسب العنوان المكتوب. ${_notes.text.trim()}',
+      };
+      final result = await _api.requestManagerCourierV34(token, body);
+      final data = result['order'];
+      if (data is Map) {
+        final id = int.tryParse('${data['order_id']}');
+        if (id != null && mounted) setState(() => _lastOrder = id);
+        // Once saved, new requests must use a NEW key. Never retry uncertain
+        // dispatch as a new order; manager must inspect the saved order first.
+        if (data['dispatch_confirmed'] == true) await _saveNewRequestKey();
+      }
       if (!mounted) return;
-      final id = int.tryParse('${data['order_id']}');
-      final succeeded = data['success'] == true && data['dispatch_confirmed'] == true;
-      setState(() {
-        _orderId = id; // Do not duplicate a saved order even if dispatch is uncertain.
-        _notice = succeeded
-            ? 'تم إرسال استدعاء مندوب مستعجل. رقم الطلب: #$id'
-            : (data['message'] ?? 'تم تسجيل الطلب، لكن وصوله للمندوب لم يتأكد. راجع الطلب رقم #$id ولا تعِد الإرسال.').toString();
-      });
+      _toast('${result['message'] ?? 'تم إنشاء الطلب'}');
+      await _refresh(silent: true);
+      if (_lastOrder != null && mounted) {
+        await Navigator.push(context,MaterialPageRoute(
+            builder: (_) => ManagerCourierTrackingScreen(orderId: _lastOrder!)));
+        if (mounted) await _refresh(silent: true);
+      }
     } catch (e) {
-      if (mounted) setState(() => _error = 'تعذر تأكيد الطلب: $e. إذا انقطع الاتصال بعد الضغط، افحص الطلبات قبل إعادة المحاولة.');
+      if (mounted) _toast('تعذر التأكيد: $e. لا تغيّر الطلب أو تكرره حتى تتأكد من القائمة.');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _sending = false);
     }
   }
-
+  void _toast(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text),
+        duration: const Duration(seconds: 6)));
+  }
+  InputDecoration _input(String label, IconData icon) => InputDecoration(
+      labelText: label, prefixIcon: Icon(icon,color:_deep),border:const OutlineInputBorder());
+  Widget _feeChoice(int value) => ChoiceChip(
+    label: Text('${NumberFormat('#,##0').format(value)} د.ع'),
+    selected: _fee == value,
+    onSelected: _sending ? null : (_) => setState(() => _fee=value),
+  );
   Future<void> _openLocation() async {
-    await Navigator.push<void>(context,
-        MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen()));
-    if (mounted) await _load();
+    await Navigator.push(context,MaterialPageRoute(
+        builder: (_) => const ManagerPickupLocationScreen()));
+    if (mounted) await _refresh();
   }
-
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('طلب مندوب مستعجل')),
-    body: _loading ? const Center(child: CircularProgressIndicator())
-        : ListView(padding: const EdgeInsets.all(20), children: [
-      const SizedBox(height: 18),
-      const Center(child: Icon(Icons.delivery_dining, color: Colors.deepOrange, size: 72)),
-      const SizedBox(height: 14),
-      const Text('استدعاء مندوب للمطعم', textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-      const SizedBox(height: 8),
-      const Text('ضغطة واحدة فقط. يصل المندوب إلى موقع المطعم المحفوظ، وتعطيه تفاصيل الزبون والعنوان يدوياً عندما يحضر.',
-          textAlign: TextAlign.center),
-      const SizedBox(height: 20),
-      Card(child: ListTile(
-        leading: Icon(_hasLocation ? Icons.location_on : Icons.location_off,
-            color: _hasLocation ? Colors.green : Colors.red),
-        title: Text(_restaurantName.isNotEmpty ? _restaurantName : 'المطعم'),
-        subtitle: Text(_hasLocation
-            ? 'موقع الاستلام محفوظ (${_lat!.toStringAsFixed(5)}, ${_lng!.toStringAsFixed(5)})'
-            : 'يجب تحديد موقع المطعم قبل طلب مندوب'),
-        trailing: IconButton(onPressed: _openLocation,
-            icon: const Icon(Icons.edit_location_alt_outlined), tooltip: 'تحديد موقع المطعم'),
-        onTap: _openLocation,
-      )),
-      const SizedBox(height: 12),
-      if (_error != null) Padding(padding: const EdgeInsets.only(bottom: 12),
-          child: Text(_error!, style: const TextStyle(color: Colors.red))),
-      if (_notice != null) Padding(padding: const EdgeInsets.only(bottom: 12),
-          child: Text(_notice!, style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold))),
-      SizedBox(height: 54, child: FilledButton.icon(
-        onPressed: (_busy || _orderId != null || !_hasLocation) ? null : _request,
-        icon: const Icon(Icons.campaign_outlined),
-        label: Text(_busy ? 'جارٍ استدعاء المندوب...' : _orderId != null ? 'تم تسجيل الاستدعاء' : 'طلب مندوب مستعجل'),
-      )),
-      const SizedBox(height: 14),
-      const Text('استدعاء استلام فقط: لا يُدخل رقم زبون أو تفاصيل أو أجرة توصيل، ولا تُنشأ فاتورة تحصيل بقيمة افتراضية. التوزيع يتم وفق آلية السائقين الحالية.',
-          textAlign: TextAlign.center, style: TextStyle(color: Colors.black54, fontSize: 12)),
-    ]),
+    appBar: AppBar(title:const Text('طلب مندوب | منصة بيتي'),
+        actions: [IconButton(icon:const Icon(Icons.refresh),onPressed:()=>_refresh())]),
+    body: RefreshIndicator(onRefresh:_refresh,child:ListView(padding:const EdgeInsets.all(16),children:[
+      if (_loading) const LinearProgressIndicator(),
+      if (_error != null) Card(child:Padding(padding:const EdgeInsets.all(12),
+          child:Text(_error!,style:const TextStyle(color:Colors.red)))),
+      Card(color:const Color(0xFFEAF7FF),child:Padding(padding:const EdgeInsets.all(14),child:Column(
+          crossAxisAlignment:CrossAxisAlignment.start,children:[
+        Text('${_context?['restaurant_name'] ?? 'المطعم'}',
+            style:const TextStyle(fontSize:19,fontWeight:FontWeight.bold,color:_deep)),
+        const SizedBox(height:6),
+        Text('منطقة إرسال الطلب: $_zoneText',
+            style: const TextStyle(fontWeight: FontWeight.w600)),
+        if (_serverAreas.length > 1) const Padding(
+          padding: EdgeInsets.only(top: 6),
+          child: Text('إذا كان المطعم مسجلاً في أكثر من منطقة، اعتمد منطقة الاستلام '
+              'من إعدادات موقع المطعم. لا يمكن إرسال منطقة عشوائية.',
+              style: TextStyle(color: Colors.deepOrange)),
+        ),
+        if (!_courierApiAvailable || _context?['enabled'] != true)
+          const Text('الإرسال غير مفعّل: لا يوجد مسار WordPress متوافق أو لم تُفعّل هذه الميزة.',
+              style:TextStyle(color:Colors.deepOrange,fontWeight:FontWeight.bold)),
+        TextButton.icon(onPressed:_openLocation,icon:const Icon(Icons.place),
+            label:const Text('تعديل موقع المطعم')),
+      ]))),
+      const SizedBox(height:14),
+      SegmentedButton<bool>(segments:const [
+        ButtonSegment(value:true,label:Text('مندوب مستعجل'),icon:Icon(Icons.flash_on)),
+        ButtonSegment(value:false,label:Text('طلب مندوب'),icon:Icon(Icons.local_shipping)),
+      ],selected:{_urgent},onSelectionChanged:_sending?null:(s)=>setState(()=>_urgent=s.first)),
+      const SizedBox(height:14),
+      const Text('أجرة التوصيل',style:TextStyle(fontWeight:FontWeight.bold,fontSize:16)),
+      Wrap(spacing:8,children:[_feeChoice(1000),_feeChoice(2000),_feeChoice(3000)]),
+      Form(key:_formKey,child:Column(children:[
+        if (_urgent) const Card(child:Padding(padding:EdgeInsets.all(12),child:Text(
+            'استدعاء للمطعم مباشرة. المندوب يحصل على اسم المطعم وموقعه وملاحظة «زبون مستعجل». '
+                'تفاصيل التوصيل تُعطى عند وصوله.'))),
+        if (!_urgent) ...[
+          const SizedBox(height:10),
+          TextFormField(controller:_name,decoration:_input('اسم الزبون (اختياري)',Icons.person)),
+          const SizedBox(height:10),
+          TextFormField(controller:_phone,keyboardType:TextInputType.phone,
+              decoration:_input('رقم هاتف الزبون',Icons.phone),
+              validator:(v)=>RegExp(r'^07\d{9}$').hasMatch((v??'').trim())?null:'أدخل رقم عراقي صحيح'),
+          const SizedBox(height:10),
+          TextFormField(controller:_address,decoration:_input('عنوان الزبون',Icons.location_on),
+              validator:(v)=>(v??'').trim().length>=5?null:'عنوان الزبون مطلوب'),
+          const SizedBox(height:10),
+          const Card(child:Padding(padding:EdgeInsets.all(12), child:Text(
+              'لا تحتاج كتابة إحداثيات الزبون. سيظهر عنوانه ورقمه للمندوب. '
+                  'إلى حين توفير تحديد موقع الزبون من الخريطة، موقع الوجهة على الخريطة '
+                  'سيكون مبدئياً عند المطعم وليس عنوان الزبون؛ على المندوب الاتصال بالزبون للتوجيه.',
+              style:TextStyle(color:Colors.deepOrange)))),
+          const SizedBox(height:10),
+          TextFormField(controller:_notes,maxLines:2,
+              decoration:_input('ملاحظات إلى المندوب',Icons.notes)),
+        ],
+      ])),
+      const SizedBox(height:15),
+      if (_unconfirmed) const Padding(padding: EdgeInsets.all(8),
+          child: Text('يوجد طلب محفوظ لم يتأكد وصوله إلى السائقين. راجع الطلب قبل إنشاء طلب جديد.',
+              style: TextStyle(color: Colors.deepOrange))),
+      FilledButton.icon(style:FilledButton.styleFrom(backgroundColor:_green,
+          minimumSize:const Size.fromHeight(52)),
+          onPressed:_sending || _unconfirmed || !_courierApiAvailable || _zoneId==null || _context?['enabled']!=true?null:_submit,
+          icon:Icon(_urgent?Icons.flash_on:Icons.send),
+          label:Text(_sending?'جاري التأكيد...':_urgent?'طلب مندوب مستعجل':'إرسال طلب مندوب')),
+      const SizedBox(height:22),
+      const Text('طلبات المندوب ومتابعتها',style:TextStyle(fontWeight:FontWeight.bold,fontSize:18)),
+      if (_orders.isEmpty) const Padding(padding:EdgeInsets.all(12),
+          child:Text('لا توجد طلبات جديدة من هذا النوع')),
+      // كل طلب يُعرض كبطاقة مستقلة، مع أقواس واضحة وآمنة.
+      ..._orders.map((o) {
+        final orderId = int.tryParse('${o['order_id']}') ?? 0;
+        final isUrgent = o['mode'] == 'urgent';
+        return Card(
+          child: ListTile(
+            leading: Icon(
+              isUrgent ? Icons.flash_on : Icons.local_shipping,
+              color: _deep,
+            ),
+            title: Text('طلب السائقين #${o['delivery_order_id'] ?? 'بانتظار الرقم'} — ${restaurantOrderStatusLabel('${o['status'] ?? 'pending'}')}'),
+            subtitle: Text('${o['restaurant_name']} • ${o['fee']} د.ع'),
+            trailing: const Icon(Icons.chevron_left),
+            onTap: orderId <= 0
+                ? null
+                : () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ManagerCourierTrackingScreen(
+                    orderId: orderId,
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      }),
+    ], // ListView.children
+    ), // ListView
+    ), // RefreshIndicator
+  ); // Scaffold
+}
+
+class ManagerCourierTrackingScreen extends StatefulWidget {
+  final int orderId;
+  const ManagerCourierTrackingScreen({super.key,required this.orderId});
+  @override
+  State<ManagerCourierTrackingScreen> createState()=>_ManagerCourierTrackingScreenState();
+}
+class _ManagerCourierTrackingScreenState extends State<ManagerCourierTrackingScreen>
+    with WidgetsBindingObserver {
+  StreamSubscription<RemoteMessage>? _updates;
+  Map<String,dynamic>? _order;
+  bool _loading=true;
+  String? _error;
+  @override
+  void initState(){super.initState();WidgetsBinding.instance.addObserver(this);
+  _updates=FirebaseMessaging.onMessage.listen((msg){
+    final id=msg.data['order_id']?.toString()??msg.data['source_order_id']?.toString();
+    if(id=='${widget.orderId}') _refresh(silent:true);
+  });
+  WidgetsBinding.instance.addPostFrameCallback((_)=>_refresh());
+  }
+  @override void dispose(){WidgetsBinding.instance.removeObserver(this);_updates?.cancel();super.dispose();}
+  @override void didChangeAppLifecycleState(AppLifecycleState state){
+    if(state==AppLifecycleState.resumed)_refresh(silent:true);
+  }
+  Future<void> _refresh({bool silent=false}) async {
+    if(!mounted)return;
+    if(!silent)setState((){_loading=true;_error=null;});
+    try {
+      final token=Provider.of<AuthProvider>(context,listen:false).token;
+      if(token==null)throw Exception('يرجى تسجيل الدخول');
+      final r=await ApiService().getManagerCourierStatus(token,widget.orderId);
+      if(mounted)setState(()=>_order=Map<String,dynamic>.from(r['order'] as Map));
+    } catch(e){if(mounted && !silent)setState(()=>_error='$e');}
+    finally{if(mounted && !silent)setState(()=>_loading=false);}
+  }
+  Future<void> _call() async {
+    final phone=(_order?['driver_phone']??'').toString();
+    if(phone.isEmpty)return;
+    final uri=Uri(scheme:'tel',path:phone);
+    if(await canLaunchUrl(uri))await launchUrl(uri);
+  }
+  @override Widget build(BuildContext context)=>Scaffold(
+    appBar:AppBar(title:Text('تتبع طلب السائقين #${_order?['delivery_order_id'] ?? 'بانتظار الرقم'}'),
+        actions:[IconButton(onPressed:()=>_refresh(),icon:const Icon(Icons.refresh))]),
+    body:_loading?const Center(child:CircularProgressIndicator()):
+    RefreshIndicator(onRefresh:_refresh,child:ListView(padding:const EdgeInsets.all(16),children:[
+      if(_error!=null)Text(_error!,style:const TextStyle(color:Colors.red)),
+      if(_order!=null)...[
+        Card(color:const Color(0xFFE8F7FF),child:Padding(padding:const EdgeInsets.all(18),child:Column(
+            crossAxisAlignment:CrossAxisAlignment.start,children:[
+          const Text('الحالة الحالية',style:TextStyle(color:Color(0xFF526A7C))),
+          const SizedBox(height:6),
+          Text(restaurantOrderStatusLabel('${_order!['status'] ?? 'pending'}'),style:const TextStyle(fontSize:23,
+              fontWeight:FontWeight.bold,color:Color(0xFF0879B1))),
+          const SizedBox(height:8),
+          Text('المطعم: ${_order!['restaurant_name']}'),
+          Text('منطقة المندوبين: ${beyteiZoneDescription(int.tryParse('${_order!['zone_id']}'))}'),
+          if(_order!['dispatch_confirmed']!=true) const Text(
+              'تم تسجيل الطلب في WordPress، لكن تأكيد وصوله لسيرفر المندوبين غير متوفر.',
+              style:TextStyle(color:Colors.deepOrange)),
+        ]))),
+        Card(child:ListTile(
+          leading:const Icon(Icons.delivery_dining,color:Colors.green),
+          title:Text((_order!['driver_name']??'').toString().isEmpty
+              ?'بانتظار قبول المندوب':'المندوب: ${_order!['driver_name']}'),
+          subtitle:Text((_order!['driver_phone']??'').toString().isEmpty
+              ?'سيظهر رقم المندوب عندما يرسله السيرفر':'هاتف: ${_order!['driver_phone']}'),
+          trailing:(_order!['driver_phone']??'').toString().isEmpty?null:
+          IconButton(icon:const Icon(Icons.call),onPressed:_call),
+        )),
+        const Card(child:Padding(padding:EdgeInsets.all(14),child:Text(
+            'التحديثات تصل بإشعارات FCM، ويمكنك السحب للتحديث.\n'
+                'تتبع مراحل الاستلام والتسليم يعتمد على تحديث الحالة القادم من سيرفر المندوبين.\n'
+                'المحادثة داخل التطبيق تحتاج إلى ربط قناة الدردشة الحالية بهوية مدير المطعم؛ '
+                'لا نفتح محادثة بهوية الزبون دون تحقق من صلاحياتها.'))),
+      ],
+    ])),
   );
 }
 
@@ -2921,7 +3755,7 @@ class _ManagerPickupLocationScreenState extends State<ManagerPickupLocationScree
       return;
     }
     if (_zone == null) {
-      setState(() => _error = 'حدد منطقة المندوبين الخاصة بموقع المطعم');
+      setState(() => _error = 'اختر منطقة الاستلام من القائمة، ثم اضغط حفظ الموقع');
       return;
     }
     final confirmed = await showDialog<bool>(context: context,
@@ -2965,11 +3799,33 @@ class _ManagerPickupLocationScreenState extends State<ManagerPickupLocationScree
       OutlinedButton.icon(onPressed: _viewMap,
           icon: const Icon(Icons.map_outlined), label: const Text('معاينة الموقع على الخريطة')),
       const SizedBox(height: 12),
-      DropdownButtonFormField<int>(value: _zone,
-          decoration: const InputDecoration(labelText: 'منطقة المندوبين / الاستلام', border: OutlineInputBorder()),
-          items: _areas.map((a) => DropdownMenuItem<int>(
-              value: int.tryParse('${a['id']}'), child: Text('${a['name']}'))).toList(),
-          onChanged: _busy ? null : (v) => setState(() => _zone = v)),
+      if (_areas.isEmpty)
+        const Card(child: ListTile(
+            leading: Icon(Icons.warning_amber_rounded, color: Colors.deepOrange),
+            title: Text('لا توجد مناطق مرتبطة بهذا المطعم في WordPress'),
+            subtitle: Text('يلزم ربط المطعم بمنطقة في إعدادات WordPress أولاً.')))
+      else
+        DropdownButtonFormField<int>(
+          value: _zone,
+          isExpanded: true,
+          decoration: const InputDecoration(
+              labelText: 'منطقة استلام المندوبين (اختر واحفظ مرة واحدة)',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.location_city)),
+          items: _areas.map((area) {
+            final id = int.tryParse('${area['id']}') ?? 0;
+            return DropdownMenuItem<int>(
+              value: id,
+              child: Text(beyteiZoneDescription(id, _areas)),
+            );
+          }).toList(),
+          onChanged: _busy ? null : (id) => setState(() => _zone = id),
+        ),
+      if (_zone == null && _areas.length > 1)
+        const Padding(padding: EdgeInsets.only(top: 8),
+            child: Text('اختر المنطقة التي يقع فيها المطعم، ثم اضغط حفظ الموقع. '
+                'لن تُختار أول منطقة تلقائياً.',
+                style: TextStyle(color: Colors.deepOrange))),
       const SizedBox(height: 12),
       if (_error != null) Text(_error!, style: const TextStyle(color: Colors.red)),
       const SizedBox(height: 14),
@@ -3083,27 +3939,44 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
 
         return Scaffold(
           floatingActionButton: FloatingActionButton.extended(
-              onPressed: _navigateToAddScreen,
-              label: const Text("إضافة وجبة"),
-              icon: const Icon(Icons.fastfood)
-          ),
-          appBar: AppBar(
-            automaticallyImplyLeading: false,
-            title: TextField(
-                controller: _searchController,
-                decoration: const InputDecoration(hintText: 'ابحث عن منتج...', prefixIcon: Icon(Icons.search), border: InputBorder.none),
-                onChanged: (query) => provider.search(query)
-            ),
-            actions: [
-              // 🔥 أيقونة إدارة الأقسام
-              IconButton(
-                icon: const Icon(Icons.category_outlined, color: Colors.teal),
-                tooltip: 'إدارة الأقسام',
-                onPressed: _openManageSections,
-              ),
-            ],
+            onPressed: _navigateToAddScreen,
+            backgroundColor: BeyteiManagerPalette.blue,
+            foregroundColor: Colors.white,
+            label: const Text('إضافة وجبة'),
+            icon: const Icon(Icons.add_rounded),
           ),
           body: Column(children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 3),
+              child: Row(children: [
+                Expanded(child: TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    hintText: 'ابحث عن وجبة أو منتج',
+                    prefixIcon: const Icon(Icons.search_rounded),
+                    filled: true,
+                    fillColor: Colors.white,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 11),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: const BorderSide(color: BeyteiManagerPalette.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: const BorderSide(color: BeyteiManagerPalette.border),
+                    ),
+                  ),
+                  onChanged: (query) => provider.search(query),
+                )),
+                const SizedBox(width: 8),
+                IconButton.filledTonal(
+                  tooltip: 'إدارة الأقسام',
+                  icon: const Icon(Icons.category_outlined),
+                  onPressed: _openManageSections,
+                ),
+              ]),
+            ),
+
             Padding(padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
                 child: Wrap(spacing: 8, children: [
                   ChoiceChip(label: const Text('الكل'), selected: _productFilter == 'all',
@@ -3153,13 +4026,13 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                             decoration: BoxDecoration(
-                                color: Colors.teal.shade50,
+                                color: const Color(0xFFE6F6FD),
                                 borderRadius: BorderRadius.circular(4),
-                                border: Border.all(color: Colors.teal.shade200)
+                                border: Border.all(color: const Color(0xFFB4E5F8))
                             ),
                             child: Text(
                               sectionName,
-                              style: const TextStyle(fontSize: 11, color: Colors.teal, fontWeight: FontWeight.w600),
+                              style: const TextStyle(fontSize: 11, color: const Color(0xFF168EC7), fontWeight: FontWeight.w600),
                             ),
                           ),
                         ],
@@ -3461,7 +4334,7 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
             ? CachedNetworkImage(imageUrl: widget.product!.imageUrl, fit: BoxFit.cover,
             errorWidget: (_, __, ___) => const Icon(Icons.add_a_photo_outlined, size: 48))
             : const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(Icons.add_a_photo_outlined, size: 45, color: Colors.teal),
+          Icon(Icons.add_a_photo_outlined, size: 45, color: const Color(0xFF168EC7)),
           SizedBox(height: 8), Text('اضغط لإضافة صورة (اختياري)'),
         ])),
       ));
@@ -3595,8 +4468,20 @@ class _RatingsDashboardScreenState extends State<RatingsDashboardScreen> {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     return Consumer<DashboardProvider>(
       builder: (context, dashboard, child) {
-        if (dashboard.isLoading && dashboard.ratingsDashboard == null) return const Center(child: CircularProgressIndicator());
-        if (dashboard.ratingsDashboard == null) return const Center(child: Text("لا توجد بيانات تقييم."));
+        if (dashboard.ratingsDashboard == null && dashboard.ratingsLoadError != null) {
+          return Center(child: Padding(padding: const EdgeInsets.all(20),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Text('تعذّر جلب التقييمات من السيرفر.'),
+                const SizedBox(height: 8),
+                Text(dashboard.ratingsLoadError!, textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12, color: Colors.deepOrange)),
+                TextButton(onPressed: () => dashboard.fetchDashboardData(authProvider.token),
+                    child: const Text('إعادة المحاولة')),
+              ])));
+        }
+        if (dashboard.ratingsDashboard == null) {
+          return const Center(child: CircularProgressIndicator());
+        }
         final data = dashboard.ratingsDashboard!;
         return RefreshIndicator(
           onRefresh: () => dashboard.fetchDashboardData(authProvider.token),
@@ -3606,19 +4491,29 @@ class _RatingsDashboardScreenState extends State<RatingsDashboardScreen> {
                 Card(
                     child: Padding(
                         padding: const EdgeInsets.all(20.0),
-                        child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceAround,
-                            children: [
-                              Column(children: [
-                                Text(data.averageRating.toStringAsFixed(1), style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.amber)),
-                                RatingBarIndicator(rating: data.averageRating, itemBuilder: (context, index) => const Icon(Icons.star, color: Colors.amber), itemCount: 5, itemSize: 25.0)
-                              ]),
-                              Column(children: [
-                                Text(data.totalReviews.toString(), style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold)),
-                                const Text("إجمالي التقييمات")
-                              ]),
-                            ]
-                        )
+                        child: Row(children: [
+                          Expanded(child: Column(children: [
+                            Text(data.averageRating.toStringAsFixed(1),
+                                style: const TextStyle(fontSize: 33,
+                                    fontWeight: FontWeight.bold,
+                                    color: BeyteiManagerPalette.blue)),
+                            RatingBarIndicator(
+                                rating: data.averageRating,
+                                itemBuilder: (context, index) =>
+                                const Icon(Icons.star_rounded, color: Colors.amber),
+                                itemCount: 5, itemSize: 19),
+                          ])),
+                          Container(height: 56, width: 1,
+                              color: BeyteiManagerPalette.border),
+                          Expanded(child: Column(children: [
+                            Text(data.totalReviews.toString(),
+                                style: const TextStyle(fontSize: 33,
+                                    fontWeight: FontWeight.bold,
+                                    color: BeyteiManagerPalette.green)),
+                            const Text('إجمالي التقييمات', maxLines: 1,
+                                style: TextStyle(fontSize: 12)),
+                          ])),
+                        ])
                     )
                 ),
                 const SizedBox(height: 24),
@@ -3854,7 +4749,7 @@ class _WalletScreenState extends State<WalletScreen> {
   }
   double? _number(dynamic raw) => raw == null ? null : double.tryParse(raw.toString());
   Widget _tile(String title, double? amount, IconData icon) => Card(
-      child: ListTile(leading: Icon(icon, color: Colors.teal), title: Text(title),
+      child: ListTile(leading: Icon(icon, color: const Color(0xFF168EC7)), title: Text(title),
           subtitle: Text(amount == null ? 'غير متاح من السيرفر'
               : '${NumberFormat('#,##0.##').format(amount)} د.ع',
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 19))));
@@ -3882,6 +4777,17 @@ class _WalletScreenState extends State<WalletScreen> {
   }
 }
 
+
+/// Customer-facing total for completed order details only, NOT restaurant net sales.
+/// Laravel's current receiveOrder calculates final_total without delivery_fee.
+/// Missing values are not fabricated: return null if no usable amount exists.
+num? beyteiCompleteOrderAmount(Map<String, dynamic> order) {
+  num? n(dynamic v) => v is num ? v : num.tryParse('${v ?? ''}');
+  final beforeDelivery = n(order['final_total']) ?? n(order['order_total']);
+  if (beforeDelivery == null) return null;
+  return beforeDelivery + (n(order['delivery_fee']) ?? 0);
+}
+
 String restaurantOrderStatusLabel(String value) {
   const names = <String, String>{
     'pending': 'بانتظار الدفع', 'processing': 'قيد التحضير',
@@ -3889,6 +4795,8 @@ String restaurantOrderStatusLabel(String value) {
     'refunded': 'مسترجع', 'failed': 'فشل',
     'picked_up': 'استلمه المندوب', 'out-for-delivery': 'في الطريق',
     'delivered': 'تم التوصيل',
+    'accepted': 'قبله المندوب', 'at_store': 'وصل المندوب للمطعم',
+    'driver-assigned': 'تم تعيين المندوب', 'out_for_delivery': 'في طريق التوصيل',
   };
   return names[value.toLowerCase()] ?? value;
 }
@@ -3926,7 +4834,7 @@ class _OrderCardState extends State<OrderCard> {
 
   @override
   Widget build(BuildContext context) {
-    final formatter = DateFormat('yyyy-MM-dd – hh:mm a', 'ar');
+    final formatter = DateFormat('yyyy-MM-dd • hh:mm a'); // no uninitialized ar locale
     final orderDate = widget.isCompleted
         ? (widget.order.dateCompleted ?? widget.order.dateCreated)
         : widget.order.dateCreated;
@@ -3948,15 +4856,16 @@ class _OrderCardState extends State<OrderCard> {
                     children: [
                       Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(color: Colors.teal.shade600, borderRadius: BorderRadius.circular(8)),
-                          child: Text("#${widget.order.id}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
+                          decoration: BoxDecoration(color: const Color(0xFF159FD9), borderRadius: BorderRadius.circular(8)),
+                          child: Text(widget.order.driverOrderId == null
+                              ? "الرقم غير متاح" : "#${widget.order.driverOrderId}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
                       ),
                       Text(formattedDate, style: const TextStyle(fontSize: 12, color: Colors.grey)),
                     ]
                 ),
                 const SizedBox(height: 8),
                 Text('حالة الطلب: ${restaurantOrderStatusLabel(widget.order.status)}',
-                    style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.teal)),
+                    style: const TextStyle(fontWeight: FontWeight.w600, color: const Color(0xFF168EC7))),
                 if (widget.isCompleted && widget.order.dateCompleted != null)
                   Text('تاريخ الإنهاء: $formattedDate', style: const TextStyle(fontSize: 12, color: Colors.grey)),
                 const Divider(height: 25),
@@ -3979,6 +4888,11 @@ class _OrderCardState extends State<OrderCard> {
                             ]))).toList()
                     )
                 ),
+                if (widget.order.notes.trim().isNotEmpty) Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text('ملاحظات الطلب: ${widget.order.notes}',
+                      style: const TextStyle(color: Color(0xFF8A6018), fontWeight: FontWeight.w600)),
+                ),
                 const SizedBox(height: 10),
                 Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -3987,7 +4901,7 @@ class _OrderCardState extends State<OrderCard> {
                       Text("${widget.order.total} د.ع", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green))
                     ]
                 ),
-                if (!isFinished && hasDriver && !['picked_up', 'out-for-delivery', 'delivered'].contains(widget.order.status.toLowerCase())) ...[
+                if (!isFinished && widget.order.id > 0 && hasDriver && !['picked_up', 'out-for-delivery', 'delivered'].contains(widget.order.status.toLowerCase())) ...[
                   const SizedBox(height: 15),
                   SizedBox(
                       width: double.infinity, height: 48,
@@ -4076,10 +4990,20 @@ class RestaurantManagerApp extends StatelessWidget {
 
       ],
       child: MaterialApp(
-        title: 'Restaurant Manager',
+        title: 'منصة بيتي | مدير المطعم',
         theme: ThemeData(
-            primarySwatch: Colors.teal,
-            scaffoldBackgroundColor: const Color(0xFFF5F5F5),
+            colorScheme: ColorScheme.fromSeed(seedColor: BeyteiManagerPalette.blue, brightness: Brightness.light),
+            scaffoldBackgroundColor: BeyteiManagerPalette.background,
+            useMaterial3: true,
+            cardTheme: CardThemeData(
+              color: Colors.white,
+              elevation: 0,
+              margin: const EdgeInsets.symmetric(vertical: 5),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(color: BeyteiManagerPalette.border),
+              ),
+            ),
             fontFamily: 'Tajawal',
             appBarTheme: const AppBarTheme(
                 backgroundColor: Colors.white, elevation: 0.5,
