@@ -25,23 +25,29 @@ class ContestModel {
   });
 
   factory ContestModel.fromJson(Map<String, dynamic> json) {
-    // التحقق مما إذا كان هناك مسابقة نشطة
-    bool active = json['data']?['has_active_contest'] ?? false;
-
-    if (!active) {
+    final data = json['data'];
+    final payload = data is Map ? data : <String, dynamic>{};
+    if (payload['has_active_contest'] != true) {
       return ContestModel(hasActiveContest: false);
     }
-
-    var contestData = json['data']['contest'];
-    var progressData = json['data']['progress'];
-
+    final rawContest = payload['contest'];
+    if (rawContest is! Map) return ContestModel(hasActiveContest: false);
+    final progress = payload['progress'];
+    final progressData = progress is Map ? progress : <String, dynamic>{};
+    int toInt(dynamic value) => value is num
+        ? value.toInt() : int.tryParse('$value') ?? 0;
+    final target = toInt(rawContest['target_rides']);
+    final completed = toInt(
+      progressData['completed_rides'] ?? rawContest['completed_rides'],
+    );
     return ContestModel(
       hasActiveContest: true,
-      title: contestData['title'] ?? 'مسابقة',
-      targetRides: contestData['target_rides'] ?? 0,
-      completedRides: progressData['completed_rides'] ?? 0,
-      rewardAmount: contestData['reward_amount'].toString(),
-      progressPercentage: (progressData['completed_rides'] / contestData['target_rides']).clamp(0.0, 1.0),
+      title: (rawContest['title'] ?? 'مسابقة').toString(),
+      targetRides: target,
+      completedRides: completed,
+      rewardAmount: (rawContest['reward_amount'] ?? 0).toString(),
+      progressPercentage: target > 0
+          ? (completed / target).clamp(0.0, 1.0).toDouble() : 0.0,
     );
   }
 }
