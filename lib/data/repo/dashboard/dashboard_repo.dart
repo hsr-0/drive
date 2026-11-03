@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:ovoride_driver/core/helper/shared_preference_helper.dart';
 import 'package:ovoride_driver/core/utils/method.dart';
@@ -69,7 +70,7 @@ class DashBoardRepo {
     // ---------------------------------------------------------
     // نستخدم http.post عادي بدون await (Fire and Forget) حتى لا يبطئ التطبيق
     try {
-      final String broadcastUrl = "${UrlContainer.baseUrl}/api/driver/broadcast-location";
+      final String broadcastUrl = "${UrlContainer.baseUrl}driver/broadcast-location";
       final String token = apiClient.sharedPreferences.getString(SharedPreferenceHelper.accessTokenKey) ?? '';
 
       // نتأكد من وجود التوكن ومعرف الرحلة قبل الإرسال
@@ -86,13 +87,13 @@ class DashBoardRepo {
             'latitude': lat,         // أسماء نظيفة وصحيحة للسيرفر الجديد
             'longitude': long,
           },
-        ).catchError((e) {
+        ).then<void>((_) {}, onError: (Object e) {
           // في حال فشل البث، لا نوقف التطبيق، فقط نسجل الخطأ في الـ Console
-          print("⚠️ [BROADCAST WARNING] فشل في البث اللحظي (لن يؤثر على حفظ MySQL): $e");
+          debugPrint("⚠️ [BROADCAST WARNING] فشل في البث اللحظي (لن يؤثر على حفظ MySQL): $e");
         });
       }
     } catch (e) {
-      print("❌ [BROADCAST ERROR] استثناء في كود البث: $e");
+      debugPrint("❌ [BROADCAST ERROR] استثناء في كود البث: $e");
     }
 
     // نرجع نتيجة طلب MySQL الأصلي كما كان يتوقع التطبيق
@@ -144,9 +145,41 @@ class DashBoardRepo {
   // ===========================================================================
   // 🏆 جلب بيانات المسابقة الحالية للسائق
   // ===========================================================================
+  Future<ResponseModel> getFundedContests() =>
+      apiClient.request(
+        "${UrlContainer.baseUrl}driver/contests",
+        Method.getMethod,
+        null,
+        passHeader: true,
+      );
+
+  Future<ResponseModel> joinFundedContest(int contestId) =>
+      apiClient.request(
+        "${UrlContainer.baseUrl}driver/contests/$contestId/join",
+        Method.postMethod,
+        <String, dynamic>{},
+        passHeader: true,
+      );
+
+  Future<ResponseModel> getFundedContestNotices() =>
+      apiClient.request(
+        "${UrlContainer.baseUrl}driver/contest-notices",
+        Method.getMethod,
+        null,
+        passHeader: true,
+      );
+
+  Future<ResponseModel> getMyContestRides(int contestId) =>
+      apiClient.request(
+        "${UrlContainer.baseUrl}driver/contests/$contestId/rides",
+        Method.getMethod,
+        null,
+        passHeader: true,
+      );
+
   Future<ResponseModel> getCurrentContest() async {
     // استخدمنا الرابط الذي جهزناه في لارافيل
-    String url = "${UrlContainer.baseUrl}/api/driver/current-contest";
+    String url = "${UrlContainer.baseUrl}driver/current-contest";
 
     ResponseModel responseModel = await apiClient.request(
       url,
