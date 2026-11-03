@@ -60,13 +60,13 @@ class ContestProgressCard extends StatelessWidget {
   final double progressPercentage;
 
   const ContestProgressCard({
-    Key? key,
+    super.key,
     required this.title,
     required this.targetRides,
     required this.completedRides,
     required this.rewardAmount,
     required this.progressPercentage,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -86,7 +86,7 @@ class ContestProgressCard extends StatelessWidget {
         ),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF00B4D8).withOpacity(0.4),
+            color: const Color(0xFF00B4D8).withValues(alpha: 0.4),
             blurRadius: 15,
             offset: const Offset(0, 8),
           ),
@@ -104,7 +104,7 @@ class ContestProgressCard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.2),
+                      color: Colors.white.withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Icon(
@@ -153,7 +153,7 @@ class ContestProgressCard extends StatelessWidget {
                 height: 12,
                 width: double.infinity,
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.3),
+                  color: Colors.white.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
@@ -170,7 +170,7 @@ class ContestProgressCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(10),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.white.withOpacity(0.5),
+                          color: Colors.white.withValues(alpha: 0.5),
                           blurRadius: 6,
                           offset: const Offset(0, 0),
                         ),
