@@ -157,10 +157,10 @@ class _ContestDetailsScreenState extends State<ContestDetailsScreen> {
             .map((x) => Map<String, dynamic>.from(x)).toList());
       }
     } catch (_) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تعذر تحميل الرحلات المحتسبة')));
+      if (mounted) { ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تعذر تحميل الرحلات المحتسبة'))); }
     } finally {
-      if (mounted) setState(() => _loadingRides = false);
+      if (mounted) { setState(() => _loadingRides = false); }
     }
   }
 
