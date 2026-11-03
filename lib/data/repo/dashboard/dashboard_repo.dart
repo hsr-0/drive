@@ -86,7 +86,7 @@ class DashBoardRepo {
             'latitude': lat,         // أسماء نظيفة وصحيحة للسيرفر الجديد
             'longitude': long,
           },
-        ).catchError((e) {
+        ).then<void>((_) {}, onError: (Object e) {
           // في حال فشل البث، لا نوقف التطبيق، فقط نسجل الخطأ في الـ Console
           print("⚠️ [BROADCAST WARNING] فشل في البث اللحظي (لن يؤثر على حفظ MySQL): $e");
         });
