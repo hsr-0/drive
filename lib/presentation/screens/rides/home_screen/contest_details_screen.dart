@@ -98,7 +98,7 @@ class _ContestDetailsScreenState extends State<ContestDetailsScreen> {
       } catch (_) {
         // Notifications must not hide a successful contest list.
       }
-      if (!mounted) return;
+      if (!mounted) { return; }
       setState(() { _contests = contests; _notices = notices; });
     } catch (e) {
       if (mounted) setState(() {
