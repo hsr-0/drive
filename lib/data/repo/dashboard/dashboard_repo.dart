@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:ovoride_driver/core/helper/shared_preference_helper.dart';
 import 'package:ovoride_driver/core/utils/method.dart';
@@ -88,11 +89,11 @@ class DashBoardRepo {
           },
         ).then<void>((_) {}, onError: (Object e) {
           // في حال فشل البث، لا نوقف التطبيق، فقط نسجل الخطأ في الـ Console
-          print("⚠️ [BROADCAST WARNING] فشل في البث اللحظي (لن يؤثر على حفظ MySQL): $e");
+          debugPrint("⚠️ [BROADCAST WARNING] فشل في البث اللحظي (لن يؤثر على حفظ MySQL): $e");
         });
       }
     } catch (e) {
-      print("❌ [BROADCAST ERROR] استثناء في كود البث: $e");
+      debugPrint("❌ [BROADCAST ERROR] استثناء في كود البث: $e");
     }
 
     // نرجع نتيجة طلب MySQL الأصلي كما كان يتوقع التطبيق
