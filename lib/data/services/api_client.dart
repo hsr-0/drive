@@ -84,7 +84,6 @@ class ApiClient extends LocalStorageService {
       // printX('params-----------${params.toString()}');
       // printX('status-----------${response.statusCode}');
       printX('body-------------${response.data.toString()}');
-      printX('token------------$token');
 
       // Process response
       if (response.statusCode == 200) {
