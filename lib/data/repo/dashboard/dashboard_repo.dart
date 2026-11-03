@@ -69,7 +69,7 @@ class DashBoardRepo {
     // ---------------------------------------------------------
     // نستخدم http.post عادي بدون await (Fire and Forget) حتى لا يبطئ التطبيق
     try {
-      final String broadcastUrl = "${UrlContainer.baseUrl}/api/driver/broadcast-location";
+      final String broadcastUrl = "${UrlContainer.baseUrl}driver/broadcast-location";
       final String token = apiClient.sharedPreferences.getString(SharedPreferenceHelper.accessTokenKey) ?? '';
 
       // نتأكد من وجود التوكن ومعرف الرحلة قبل الإرسال
@@ -144,9 +144,41 @@ class DashBoardRepo {
   // ===========================================================================
   // 🏆 جلب بيانات المسابقة الحالية للسائق
   // ===========================================================================
+  Future<ResponseModel> getFundedContests() =>
+      apiClient.request(
+        "${UrlContainer.baseUrl}driver/contests",
+        Method.getMethod,
+        null,
+        passHeader: true,
+      );
+
+  Future<ResponseModel> joinFundedContest(int contestId) =>
+      apiClient.request(
+        "${UrlContainer.baseUrl}driver/contests/$contestId/join",
+        Method.postMethod,
+        <String, dynamic>{},
+        passHeader: true,
+      );
+
+  Future<ResponseModel> getFundedContestNotices() =>
+      apiClient.request(
+        "${UrlContainer.baseUrl}driver/contest-notices",
+        Method.getMethod,
+        null,
+        passHeader: true,
+      );
+
+  Future<ResponseModel> getMyContestRides(int contestId) =>
+      apiClient.request(
+        "${UrlContainer.baseUrl}driver/contests/$contestId/rides",
+        Method.getMethod,
+        null,
+        passHeader: true,
+      );
+
   Future<ResponseModel> getCurrentContest() async {
     // استخدمنا الرابط الذي جهزناه في لارافيل
-    String url = "${UrlContainer.baseUrl}/api/driver/current-contest";
+    String url = "${UrlContainer.baseUrl}driver/current-contest";
 
     ResponseModel responseModel = await apiClient.request(
       url,
