@@ -70,7 +70,7 @@ class _ContestDetailsScreenState extends State<ContestDetailsScreen> {
       value is Map ? Map<String, dynamic>.from(value) : null;
 
   Future<void> _refresh() async {
-    if (mounted) setState(() { _loading = true; _error = null; });
+    if (mounted) { setState(() { _loading = true; _error = null; }); }
     try {
       final ResponseModel res = await _repo.getFundedContests();
       final data = _jsonObject(res.responseJson);
@@ -101,11 +101,11 @@ class _ContestDetailsScreenState extends State<ContestDetailsScreen> {
       if (!mounted) { return; }
       setState(() { _contests = contests; _notices = notices; });
     } catch (e) {
-      if (mounted) setState(() {
+      if (mounted) { setState(() {
         _error = 'تعذر تحميل التحديات. تأكد من الاتصال وأعد المحاولة.';
-      });
+      }); }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) { setState(() => _loading = false); }
     }
   }
 
@@ -134,7 +134,7 @@ class _ContestDetailsScreenState extends State<ContestDetailsScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _joiningId = null);
+      if (mounted) { setState(() => _joiningId = null); }
     }
   }
 
