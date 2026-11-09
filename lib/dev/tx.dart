@@ -22,6 +22,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart' as geolocator;
 import 'package:vibration/vibration.dart';
+import 'field_poster_delivery.dart'; // منصة بيتي: توزيع البوسترات - مستقل عن الطلبات
 
 class BalanceManager {
   static int _balance = 0;
@@ -2855,6 +2856,15 @@ class _ZeroBalanceLockScreenState extends State<ZeroBalanceLockScreen> {
 
                     const Divider(color: Colors.white30, thickness: 1, height: 20),
 
+                    // توزيع البوسترات لا يتطلب رصيد نقاط طلبات الدلفري.
+                    TextButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const PosterWorkerAccessPage()),
+                      ),
+                      icon: const Icon(Icons.map_outlined, color: Colors.white),
+                      label: const Text('توزيع البوسترات — حساب مستقل',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    ),
                     // ✅ زر تسجيل الخروج الجديد
                     TextButton.icon(
                       onPressed: () => _logout(context),
@@ -3006,6 +3016,16 @@ class _DriverLoginState extends State<DriverLogin> {
             TextButton(
                 onPressed: widget.onToggle,
                 child: const Text("ليس لديك حساب؟ سجل الآن")
+            ),
+            const Divider(height: 28),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const PosterWorkerAccessPage(),
+                ),
+              ),
+              icon: const Icon(Icons.route_outlined),
+              label: const Text('توزيع البوسترات — دخول مستقل'),
             ),
           ],
         ),
@@ -3439,6 +3459,8 @@ class _MainDeliveryLayoutState extends State<MainDeliveryLayout> with WidgetsBin
           ModernOnlineToggle(token: widget.authResult.token),
           _buildCompactBalanceHeader(),
           _buildCompetitionSummaryHeader(),
+          // حساب بوسترات مستقل، لا يستخدم توكن الطلبات أو محفظة الدلفري.
+          const PosterDistributionEntry(),
 
           Expanded(
             child: Stack(
