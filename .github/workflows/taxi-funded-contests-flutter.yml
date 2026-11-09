@@ -1,0 +1,31 @@
+name: Taxi funded contest Flutter checks
+
+on:
+  push:
+    branches:
+      - feature/taxi-funded-contests-v1
+  pull_request:
+    paths:
+      - 'lib/presentation/screens/rides/home_screen/**'
+      - 'lib/driver_contest_screen.dart'
+      - 'lib/data/repo/dashboard/dashboard_repo.dart'
+      - '.github/workflows/taxi-funded-contests-flutter.yml'
+
+jobs:
+  driver-contest-analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Dependencies
+        run: flutter pub get
+      - name: Analyze modified driver contest files
+        run: |
+          flutter analyze --no-pub \
+            lib/presentation/screens/rides/home_screen/contest_details_screen.dart \
+            lib/presentation/screens/rides/home_screen/home_screen.dart \
+            lib/data/repo/dashboard/dashboard_repo.dart \
+            lib/driver_contest_screen.dart

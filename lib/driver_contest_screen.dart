@@ -25,23 +25,29 @@ class ContestModel {
   });
 
   factory ContestModel.fromJson(Map<String, dynamic> json) {
-    // التحقق مما إذا كان هناك مسابقة نشطة
-    bool active = json['data']?['has_active_contest'] ?? false;
-
-    if (!active) {
+    final data = json['data'];
+    final payload = data is Map ? data : <String, dynamic>{};
+    if (payload['has_active_contest'] != true) {
       return ContestModel(hasActiveContest: false);
     }
-
-    var contestData = json['data']['contest'];
-    var progressData = json['data']['progress'];
-
+    final rawContest = payload['contest'];
+    if (rawContest is! Map) return ContestModel(hasActiveContest: false);
+    final progress = payload['progress'];
+    final progressData = progress is Map ? progress : <String, dynamic>{};
+    int toInt(dynamic value) => value is num
+        ? value.toInt() : int.tryParse('$value') ?? 0;
+    final target = toInt(rawContest['target_rides']);
+    final completed = toInt(
+      progressData['completed_rides'] ?? rawContest['completed_rides'],
+    );
     return ContestModel(
       hasActiveContest: true,
-      title: contestData['title'] ?? 'مسابقة',
-      targetRides: contestData['target_rides'] ?? 0,
-      completedRides: progressData['completed_rides'] ?? 0,
-      rewardAmount: contestData['reward_amount'].toString(),
-      progressPercentage: (progressData['completed_rides'] / contestData['target_rides']).clamp(0.0, 1.0),
+      title: (rawContest['title'] ?? 'مسابقة').toString(),
+      targetRides: target,
+      completedRides: completed,
+      rewardAmount: (rawContest['reward_amount'] ?? 0).toString(),
+      progressPercentage: target > 0
+          ? (completed / target).clamp(0.0, 1.0).toDouble() : 0.0,
     );
   }
 }
@@ -54,13 +60,13 @@ class ContestProgressCard extends StatelessWidget {
   final double progressPercentage;
 
   const ContestProgressCard({
-    Key? key,
+    super.key,
     required this.title,
     required this.targetRides,
     required this.completedRides,
     required this.rewardAmount,
     required this.progressPercentage,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -80,7 +86,7 @@ class ContestProgressCard extends StatelessWidget {
         ),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF00B4D8).withOpacity(0.4),
+            color: const Color(0xFF00B4D8).withValues(alpha: 0.4),
             blurRadius: 15,
             offset: const Offset(0, 8),
           ),
@@ -98,7 +104,7 @@ class ContestProgressCard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.2),
+                      color: Colors.white.withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Icon(
@@ -147,7 +153,7 @@ class ContestProgressCard extends StatelessWidget {
                 height: 12,
                 width: double.infinity,
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.3),
+                  color: Colors.white.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
@@ -164,7 +170,7 @@ class ContestProgressCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(10),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.white.withOpacity(0.5),
+                          color: Colors.white.withValues(alpha: 0.5),
                           blurRadius: 6,
                           offset: const Offset(0, 0),
                         ),
