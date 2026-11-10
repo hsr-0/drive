@@ -16,6 +16,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:android_intent_plus/android_intent.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -3025,7 +3026,7 @@ class _DriverLoginState extends State<DriverLogin> {
                 ),
               ),
               icon: const Icon(Icons.route_outlined),
-              label: const Text('توزيع البوسترات — دخول مستقل'),
+              label: const Text('توزيع البوسترات — تسجيل أو دخول مستقل'),
             ),
           ],
         ),
@@ -5045,58 +5046,121 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
   }
 
-  Future<void> _launchWazeWithCoords(double lat, double lng) async {
-    final cleanLat = lat.toStringAsFixed(6);
-    final cleanLng = lng.toStringAsFixed(6);
-
-    final wazeUri = Uri(
-      scheme: 'https',
-      host: 'waze.com',
-      path: '/ul',
-      queryParameters: {
-        'll': '$cleanLat,$cleanLng',
-        'navigate': 'yes',
-      },
-    );
-
-    if (await canLaunchUrl(wazeUri)) {
-      await launchUrl(wazeUri, mode: LaunchMode.externalApplication);
-    } else {
-      final androidUri = Uri.parse('waze://?ll=$cleanLat,$cleanLng&navigate=yes');
-      final iosUri = Uri.parse('waze://?ll=$cleanLat,$cleanLng&navigate=yes');
-
-      if (Platform.isAndroid && await canLaunchUrl(androidUri)) {
-        await launchUrl(androidUri, mode: LaunchMode.externalApplication);
-      } else if (Platform.isIOS && await canLaunchUrl(iosUri)) {
-        await launchUrl(iosUri, mode: LaunchMode.externalApplication);
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("❌ يرجى تثبيت تطبيق Waze (ويز) على جهازك أولاً"),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      }
+  // Beytei Waze fix V5.3.1: launch directly; Android package visibility can
+  // make canLaunchUrl return false even when Waze is installed.
+  // Beytei navigation V5.3.2: explicit Android package intent.
+  // This prevents browser/app-choice handlers from hijacking a Waze click.
+  // Do not use canLaunchUrl/canResolveActivity to infer installation.
+  Future<bool> _tryNativeNavigation(String url, String appPackage) async {
+    if (!Platform.isAndroid) return false;
+    try {
+      await AndroidIntent(
+        action: 'action_view',
+        data: url,
+        package: appPackage,
+      ).launch();
+      return true;
+    } catch (error) {
+      debugPrint('BEYTEI_NAV: $appPackage launch failed: $error');
+      return false;
     }
   }
 
-  Future<void> _launchWazeWithAddress(String address) async {
-    final encodedAddress = Uri.encodeComponent(address);
-    final wazeUri = Uri.parse("https://waze.com/ul?q=$encodedAddress&navigate=yes");
-    if (await canLaunchUrl(wazeUri)) {
-      await launchUrl(wazeUri, mode: LaunchMode.externalApplication);
-    } else {
+  Future<bool> _tryWebNavigation(Uri uri) async {
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (error) {
+      debugPrint('BEYTEI_NAV: web fallback failed: $error');
+      return false;
+    }
+  }
+
+  Future<void> _openNavigation({
+    double? latitude,
+    double? longitude,
+    String? address,
+  }) async {
+    final validCoords = latitude != null &&
+        longitude != null &&
+        latitude.isFinite &&
+        longitude.isFinite &&
+        latitude >= -90 && latitude <= 90 &&
+        longitude >= -180 && longitude <= 180 &&
+        (latitude != 0 || longitude != 0);
+    final cleanAddress = (address ?? '').trim();
+
+    if (!validCoords && cleanAddress.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("❌ يرجى تثبيت تطبيق Waze (ويز) على جهازك أولاً"),
-            backgroundColor: Colors.red,
+            content: Text('لا تتوفر إحداثيات أو عنوان صالح لفتح الخريطة'),
+            backgroundColor: Colors.orange,
           ),
         );
       }
+      return;
     }
+
+    final coords = validCoords
+        ? '${latitude!.toStringAsFixed(6)},${longitude!.toStringAsFixed(6)}'
+        : null;
+    final destination = coords ?? cleanAddress;
+
+    if (Platform.isAndroid) {
+      // Target the installed Waze package itself. No "is installed" guessing.
+      final wazeDeepLink = coords != null
+          ? 'waze://?ll=$coords&navigate=yes'
+          : 'waze://?q=${Uri.encodeQueryComponent(cleanAddress)}&navigate=yes';
+      if (await _tryNativeNavigation(wazeDeepLink, 'com.waze')) return;
+
+      // If Waze cannot handle the request, open Google Maps directly.
+      final googleDeepLink =
+          'google.navigation:q=${Uri.encodeQueryComponent(destination)}&mode=d';
+      if (await _tryNativeNavigation(
+        googleDeepLink,
+        'com.google.android.apps.maps',
+      )) return;
+    }
+
+    // Cross-platform fallbacks, used on iOS or when neither Android app opens.
+    final wazeUniversalLink = Uri.https(
+      'waze.com',
+      '/ul',
+      coords != null
+          ? <String, String>{'ll': coords, 'navigate': 'yes'}
+          : <String, String>{'q': cleanAddress, 'navigate': 'yes'},
+    );
+    if (await _tryWebNavigation(wazeUniversalLink)) return;
+
+    final googleMapsLink = Uri.https(
+      'www.google.com',
+      '/maps/dir/',
+      <String, String>{
+        'api': '1',
+        'destination': destination,
+        'travelmode': 'driving',
+      },
+    );
+    if (await _tryWebNavigation(googleMapsLink)) return;
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'تعذر فتح الخرائط. تحقق من إعدادات فتح التطبيقات أو جرّب خرائط Google.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _launchWazeWithCoords(double lat, double lng) async {
+    await _openNavigation(latitude: lat, longitude: lng);
+  }
+
+  Future<void> _launchWazeWithAddress(String address) async {
+    await _openNavigation(address: address);
   }
 
   Future<void> _launchRestaurantMap() async {
