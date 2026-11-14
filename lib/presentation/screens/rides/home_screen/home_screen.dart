@@ -9,7 +9,6 @@ import 'package:ovoride_driver/core/utils/style.dart';
 import 'package:ovoride_driver/data/controller/dashboard/dashboard_controller.dart';
 import 'package:ovoride_driver/presentation/components/bottom-sheet/custom_bottom_sheet.dart';
 import 'package:ovoride_driver/presentation/components/divider/custom_spacer.dart';
-import 'package:ovoride_driver/presentation/components/no_data.dart';
 import 'package:ovoride_driver/presentation/components/shimmer/ride_shimmer.dart';
 import 'package:ovoride_driver/presentation/screens/dashboard/dashboard_background.dart';
 import 'package:ovoride_driver/presentation/screens/dashboard/widgets/driver_kyc_warning_section.dart';
