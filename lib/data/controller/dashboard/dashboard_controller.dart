@@ -153,6 +153,27 @@ class DashBoardController extends GetxController {
     ].where((part) => part.isNotEmpty).join(', ');
   }
 
+  bool _refreshingOffers = false;
+
+  /// Lightweight fallback for missed Pusher/FCM while the home page is visible.
+  Future<void> refreshActiveOffers() async {
+    if (_refreshingOffers) return;
+    _refreshingOffers = true;
+    try {
+      final response = await repo.getDashboardData(page: '1');
+      if (response.statusCode != 200) return;
+      final model = DashBoardRideResponseModel.fromJson(response.responseJson);
+      if (model.status != 'success') return;
+      rideList = List<RideModel>.from(model.data?.ride?.data ?? []);
+      runningRide = model.data?.runningRide;
+      update();
+    } catch (error) {
+      printX('Failed to refresh assigned ride offers: ' + error.toString());
+    } finally {
+      _refreshingOffers = false;
+    }
+  }
+
   List<RideModel> rideList = [];
   List<RideModel> pendingRidesList = [];
   RideModel? runningRide;
