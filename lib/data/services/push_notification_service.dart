@@ -108,7 +108,7 @@ class PushNotificationService {
   void _handleMessageInteraction(RemoteMessage message) {
     try {
       Map<String, dynamic> data = message.data;
-      if (data['type'] == 'ride_request') {
+      if ((data['type'] == 'ride_request' || data['type'] == 'NEW_RIDE')) {
         getx.Get.toNamed(RouteHelper.dashboard);
         return;
       }
