@@ -10,6 +10,7 @@ import '../../core/helper/shared_preference_helper.dart';
 import '../../core/utils/method.dart';
 import '../../core/utils/url_container.dart';
 import '../../firebase_options.dart';
+import 'package:ovoride_driver/core/route/route.dart';
 import 'api_client.dart';
 import 'package:get/get.dart' as getx;
 
@@ -34,6 +35,9 @@ Future<void> _messageHandler(RemoteMessage message) async {
   await flutterLocalNotificationsPlugin
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
       ?.createNotificationChannel(channel);
+
+  // FCM automatically displays notification+data in the background; avoid a second local copy.
+  if (message.notification != null && Platform.isAndroid) return;
 
   // إظهار الإشعار يدوياً
   String title = message.notification?.title ?? message.data['title']?.toString() ?? 'طلب جديد';
@@ -86,6 +90,9 @@ class PushNotificationService {
       sound: true,
     );
 
+    final initialMessage = await messaging.getInitialMessage();
+    if (initialMessage != null) _handleMessageInteraction(initialMessage);
+
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
       _handleMessageInteraction(message);
     });
@@ -101,6 +108,10 @@ class PushNotificationService {
   void _handleMessageInteraction(RemoteMessage message) {
     try {
       Map<String, dynamic> data = message.data;
+      if (data['type'] == 'ride_request') {
+        getx.Get.toNamed(RouteHelper.dashboard);
+        return;
+      }
       String? remark = data['for_app'];
 
       if (remark != null && remark.isNotEmpty) {
@@ -133,6 +144,10 @@ class PushNotificationService {
         if (response.payload != null) {
           try {
             Map<String, dynamic> data = jsonDecode(response.payload!);
+            if (data['type'] == 'ride_request') {
+              getx.Get.toNamed(RouteHelper.dashboard);
+              return;
+            }
             if (data['for_app'] != null) {
               String remark = data['for_app'];
               String route = remark.split('-')[0];
@@ -227,30 +242,23 @@ class PushNotificationService {
   }
 
   Future<bool> sendUserToken() async {
-    String deviceToken;
-    if (apiClient.sharedPreferences.containsKey(SharedPreferenceHelper.fcmDeviceKey)) {
-      deviceToken = apiClient.sharedPreferences.getString(SharedPreferenceHelper.fcmDeviceKey) ?? '';
-    } else {
-      deviceToken = '';
-    }
-
-    FirebaseMessaging firebaseMessaging = FirebaseMessaging.instance;
-    bool success = false;
-    if (deviceToken.isEmpty) {
-      firebaseMessaging.getToken().then((fcmDeviceToken) async {
-        success = await sendUpdatedToken(fcmDeviceToken ?? '');
+    final messaging = FirebaseMessaging.instance;
+    try {
+      final token = await messaging.getToken();
+      if (token != null && token.isNotEmpty) {
+        apiClient.sharedPreferences.setString(
+            SharedPreferenceHelper.fcmDeviceKey, token);
+        await sendUpdatedToken(token);
+      }
+      messaging.onTokenRefresh.listen((updated) async {
+        apiClient.sharedPreferences.setString(
+            SharedPreferenceHelper.fcmDeviceKey, updated);
+        await sendUpdatedToken(updated);
       });
-    } else {
-      firebaseMessaging.onTokenRefresh.listen((fcmDeviceToken) async {
-        if (deviceToken == fcmDeviceToken) {
-          success = true;
-        } else {
-          apiClient.sharedPreferences.setString(SharedPreferenceHelper.fcmDeviceKey, fcmDeviceToken);
-          success = await sendUpdatedToken(fcmDeviceToken);
-        }
-      });
+      return token != null && token.isNotEmpty;
+    } catch (_) {
+      return false;
     }
-    return success;
   }
 
   Future<bool> sendUpdatedToken(String deviceToken) async {
