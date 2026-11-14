@@ -85,7 +85,20 @@ class ForgroundLocationService extends TaskHandler {
   }
 
   @override
-  void onRepeatEvent(DateTime timestamp) async {}
+  void onRepeatEvent(DateTime timestamp) async {
+    // Movement alone is not a heartbeat. Keep stationary online drivers visible.
+    try {
+      final api = dashBoardRepo.apiClient;
+      if (!api.isLoggedIn() || !api.getUserOnlineStatus()) return;
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+      final rideId = _sharedPreferences.getString('current_ride_id') ?? '';
+      await sendLocationToUnifiedSystem(lat: pos.latitude, long: pos.longitude, rideId: rideId);
+    } catch (error) {
+      printE('Driver location heartbeat failed: ' + error.toString());
+    }
+  }
 
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
