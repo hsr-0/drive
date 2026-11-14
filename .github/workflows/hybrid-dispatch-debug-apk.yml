@@ -34,6 +34,10 @@ jobs:
           cp gradlew "$GITHUB_WORKSPACE/android/gradlew"
           cp -R gradle/wrapper/. "$GITHUB_WORKSPACE/android/gradle/wrapper/"
           chmod +x "$GITHUB_WORKSPACE/android/gradlew"
+      - name: Accept Android SDK licences and install requested NDK
+        run: |
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.14033849"
       - run: flutter build apk --debug
       - uses: actions/upload-artifact@v4
         with:
