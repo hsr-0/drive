@@ -291,6 +291,16 @@ class DashBoardController extends GetxController {
     }
   }
 
+  Future<void> declineOffer(String rideId) async {
+    try {
+      await repo.declineOffer(rideId);
+    } catch (error) {
+      printX('Could not decline offer: ' + error.toString());
+    } finally {
+      refreshActiveOffers();
+    }
+  }
+
   void updateMainAmount(double amount) {
     bidAmountController.text = StringConverter.formatNumber(amount.toString());
     update();
