@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:ovoride_driver/core/utils/verification_image_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:ovoride_driver/core/helper/string_format_helper.dart';
@@ -437,11 +438,12 @@ class VehicleVerificationController extends GetxController {
       );
       if (photo == null) return;
 
+      final uploadImage = await VerificationImageHelper.prepare(photo);
       if (isVehicle) {
-        imageFile = File(photo.path);
+        imageFile = uploadImage;
       } else {
-        formList[index].imageFile = File(photo.path);
-        formList[index].selectedValue = photo.name;
+        formList[index].imageFile = uploadImage;
+        formList[index].selectedValue = uploadImage.uri.pathSegments.last;
       }
       update();
     } catch (e) {
