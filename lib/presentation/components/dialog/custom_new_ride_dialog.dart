@@ -145,7 +145,7 @@ class CustomNewRideDialog {
                         ),
                       ),
                       Text(
-                        "$currencySym${StringConverter.formatNumber(ride.amount ?? '0')}",
+                        "$currencySym${StringConverter.formatNumber(ride.payableFare.toString())}",
                         overflow: TextOverflow.ellipsis,
                         style: boldExtraLarge.copyWith(
                           color: MyColor.primaryColor,
@@ -182,7 +182,7 @@ class CustomNewRideDialog {
                 child: Center(
                   child: Text(
                     MyStrings.recommendedPrice.rKv({
-                      "priceKey": "$currencySym${StringConverter.formatNumber(ride.amount.toString())}",
+                      "priceKey": "$currencySym${StringConverter.formatNumber(ride.payableFare.toString())}",
                       "distanceKey": "${ride.getDistance()} ${MyUtils.getDistanceLabel(distance: ride.distance, unit: Get.find<ApiClient>().getDistanceUnit())}",
                     }).tr,
                     style: regularDefault.copyWith(
