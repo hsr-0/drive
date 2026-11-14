@@ -14,6 +14,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Create required local Android SDK and Flutter path settings
+        run: |
+          printf 'sdk.dir=%s\nflutter.sdk=%s\n' "$ANDROID_HOME" "$FLUTTER_ROOT" > android/local.properties
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
@@ -21,11 +29,6 @@ jobs:
         run: |
           cd android
           gradle wrapper --gradle-version 8.13 --distribution-type bin
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-      - run: flutter pub get
       - run: flutter build apk --debug
       - uses: actions/upload-artifact@v4
         with:
