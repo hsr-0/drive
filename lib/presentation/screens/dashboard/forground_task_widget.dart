@@ -59,7 +59,7 @@ class ForGroundTaskWidgetState extends State<ForGroundTaskWidget> with WidgetsBi
         playSound: false,
       ),
       foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(300000),
+        eventAction: ForegroundTaskEventAction.repeat(45000),
         autoRunOnBoot: true,
         autoRunOnMyPackageReplaced: true,
         allowWakeLock: true,
