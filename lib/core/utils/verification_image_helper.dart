@@ -14,15 +14,18 @@ class VerificationImageHelper {
       throw const FormatException('Selected image not found');
     }
 
-    final path = picked.path.toLowerCase();
-    if (path.endsWith('.jpg') ||
-        path.endsWith('.jpeg') ||
-        path.endsWith('.png')) {
-      return source;
+    final temp = await getTemporaryDirectory();
+    final extension = picked.path.split('.').last;
+    final lowerExtension = extension.toLowerCase();
+    final id = DateTime.now().microsecondsSinceEpoch;
+
+    // Server extension validation is case-sensitive: JPG must become jpg.
+    if (const ['jpg', 'jpeg', 'png'].contains(lowerExtension)) {
+      if (extension == lowerExtension) return source;
+      return source.copy('${temp.path}/beytei_verify_$id.$lowerExtension');
     }
 
-    final temp = await getTemporaryDirectory();
-    final target = '${temp.path}/beytei_verify_${DateTime.now().microsecondsSinceEpoch}.jpg';
+    final target = '${temp.path}/beytei_verify_$id.jpg';
     final converted = await FlutterImageCompress.compressAndGetFile(
       source.path,
       target,
