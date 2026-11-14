@@ -21,7 +21,7 @@ class OfferBidBottomSheet extends StatelessWidget {
           Text('إلى: ' + (ride.destination ?? '-')),
           const SizedBox(height: 18),
           const Text('الأجرة المحددة من منصة بيتي', textAlign: TextAlign.center),
-          Text((ride.amount ?? '0') + ' د.ع', textAlign: TextAlign.center,
+          Text(ride.payableFare.toStringAsFixed(0) + ' د.ع', textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
           const SizedBox(height: 12),
           ElevatedButton(
@@ -32,7 +32,10 @@ class OfferBidBottomSheet extends StatelessWidget {
             child: const Text('قبول الرحلة بهذا السعر'),
           ),
           TextButton(
-            onPressed: () => Get.back(),
+            onPressed: () {
+              controller.declineOffer(ride.id ?? '-1');
+              Get.back();
+            },
             child: const Text('ليس الآن'),
           ),
         ]),
