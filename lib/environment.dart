@@ -3,7 +3,7 @@ class Environment {
   static const String appName = 'بيتي خدمات';
   static const String version = '1.3.6';
 
-  static const int bidAcceptSecond = 30; //Bid ACCEPT second
+  static const int bidAcceptSecond = 20; //Bid ACCEPT second
   static const int driverLocationUpdateAfterNmetersOrMovements = 50; //Driver location update after n meters or movements
 
   //Language
