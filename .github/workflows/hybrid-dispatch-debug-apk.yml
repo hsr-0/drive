@@ -30,6 +30,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/beytei-gradle-wrapper"
           cd "$RUNNER_TEMP/beytei-gradle-wrapper"
+          printf 'plugins { id "base" }\n' > build.gradle
           gradle wrapper --gradle-version 8.13 --distribution-type bin
           cp gradlew "$GITHUB_WORKSPACE/android/gradlew"
           cp -R gradle/wrapper/. "$GITHUB_WORKSPACE/android/gradle/wrapper/"
