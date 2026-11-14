@@ -651,6 +651,11 @@ class _VehicleVerificationScreenState extends State<VehicleVerificationScreen> {
                                                                                       }
                                                                                     },
                                                                                   ),
+                                                                                  TextButton.icon(
+                                                                                    onPressed: () => controller.pickDocument(index),
+                                                                                    icon: const Icon(Icons.insert_drive_file_outlined),
+                                                                                    label: Text('${MyStrings.chooseFile.tr} (PDF / Word)'),
+                                                                                  ),
                                                                                 ],
                                                                               )
                                                                             : model.type == 'datetime'
