@@ -181,17 +181,14 @@ class ApiClient extends LocalStorageService {
       });
 
       // Add files with dynamic keys
-      files.forEach((fieldKey, file) async {
-        formData.files.add(
-          MapEntry(
-            fieldKey, // Dynamic key for each file
-            await dioX.MultipartFile.fromFile(
-              file.path,
-              filename: file.path.split('/').last,
-            ),
-          ),
+      // Await each file before sending: async forEach does not wait.
+      for (final entry in files.entries) {
+        final part = await dioX.MultipartFile.fromFile(
+          entry.value.path,
+          filename: entry.value.uri.pathSegments.last,
         );
-      });
+        formData.files.add(MapEntry(entry.key, part));
+      }
 
       dioX.Response response;
       switch (method) {
