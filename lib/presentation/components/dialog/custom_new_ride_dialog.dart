@@ -182,7 +182,7 @@ class CustomNewRideDialog {
                 child: Center(
                   child: Text(
                     MyStrings.recommendedPrice.rKv({
-                      "priceKey": "$currencySym${StringConverter.formatNumber(ride.recommendAmount.toString())}",
+                      "priceKey": "$currencySym${StringConverter.formatNumber(ride.amount.toString())}",
                       "distanceKey": "${ride.getDistance()} ${MyUtils.getDistanceLabel(distance: ride.distance, unit: Get.find<ApiClient>().getDistanceUnit())}",
                     }).tr,
                     style: regularDefault.copyWith(
