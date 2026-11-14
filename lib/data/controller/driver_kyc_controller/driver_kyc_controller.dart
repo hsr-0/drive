@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:ovoride_driver/core/helper/string_format_helper.dart';
@@ -16,6 +17,7 @@ import '../../../core/helper/date_converter.dart';
 class DriverKycController extends GetxController {
   DriverVerificationKycRepo repo;
   DriverKycController({required this.repo});
+  final ImagePicker _imagePicker = ImagePicker();
   File? imageFile;
 
   bool isLoading = true;
@@ -279,19 +281,39 @@ class DriverKycController extends GetxController {
     update();
   }
 
-  void pickFile(int index) async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      allowMultiple: false,
-      type: FileType.custom,
-      allowedExtensions: ['jpg', 'png', 'jpeg', 'pdf', 'doc', 'docx'],
-    );
+  Future<void> pickFile(int index) async {
+    try {
+      final XFile? photo = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 90,
+        requestFullMetadata: false,
+      );
+      if (photo == null) return;
 
-    if (result == null) return;
-
-    formList[index].imageFile = File(result.files.single.path!);
-    String fileName = result.files.single.name;
-    formList[index].selectedValue = fileName;
-    update();
-    return;
+      formList[index].imageFile = File(photo.path);
+      formList[index].selectedValue = photo.name;
+      update();
+    } catch (e) {
+      CustomSnackBar.error(errorList: [MyStrings.somethingWentWrong.tr]);
+    }
   }
+
+  // Keep PDF/Word selection as an explicit alternative to the photo gallery.
+  Future<void> pickDocument(int index) async {
+    try {
+      final FilePickerResult? result = await FilePicker.platform.pickFiles(
+        allowMultiple: false,
+        type: FileType.custom,
+        allowedExtensions: ['pdf', 'doc', 'docx'],
+      );
+      if (result == null || result.files.single.path == null) return;
+
+      formList[index].imageFile = File(result.files.single.path!);
+      formList[index].selectedValue = result.files.single.name;
+      update();
+    } catch (e) {
+      CustomSnackBar.error(errorList: [MyStrings.somethingWentWrong.tr]);
+    }
+  }
+
 }
