@@ -36,6 +36,7 @@ class RideModel {
   String? isAccepted;
   String? isRunning;
   String? amount;
+  String? discountAmount;
   String? charge;
   String? appliedCouponId;
   String? status;
@@ -88,6 +89,7 @@ class RideModel {
     this.isAccepted,
     this.isRunning,
     this.amount,
+    this.discountAmount,
     this.charge,
     this.appliedCouponId,
     this.status,
@@ -140,6 +142,7 @@ class RideModel {
         isAccepted: json["is_accepted"].toString(),
         isRunning: json["is_running"].toString(),
         amount: json["amount"].toString(),
+        discountAmount: json["discount_amount"]?.toString(),
         charge: json["charge"].toString(),
         appliedCouponId: json["applied_coupon_id"].toString(),
         status: json["status"].toString(),
@@ -191,6 +194,7 @@ class RideModel {
         "is_accepted": isAccepted,
         "is_running": isRunning,
         "amount": amount,
+        "discount_amount": discountAmount,
         "charge": charge,
         "applied_coupon_id": appliedCouponId,
         "status": status,
@@ -204,6 +208,12 @@ class RideModel {
         "user": user,
         "driver": driver,
       };
+
+  double get payableFare {
+    final gross = double.tryParse(amount ?? '0') ?? 0;
+    final discount = double.tryParse(discountAmount ?? '0') ?? 0;
+    return gross > discount ? gross - discount : 0;
+  }
 
   double getDistance() {
     return (double.tryParse(distance ?? '0') ?? 0).toPrecision(2);
