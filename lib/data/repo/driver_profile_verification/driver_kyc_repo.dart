@@ -51,6 +51,8 @@ class DriverVerificationKycRepo {
     List<GlobalFormModel> list,
   ) async {
     apiClient.initToken();
+    fieldList.clear();
+    filesList.clear();
     await modelToMap(list);
     String url = '${UrlContainer.baseUrl}${UrlContainer.driverVerificationFormUrl}';
 
