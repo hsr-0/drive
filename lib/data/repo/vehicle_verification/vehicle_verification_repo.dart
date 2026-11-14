@@ -61,6 +61,8 @@ class VehicleVerificationRepo {
     required File image,
   }) async {
     apiClient.initToken();
+    fieldList.clear();
+    filesList.clear();
     await modelToMap(formList);
 
     String url = '${UrlContainer.baseUrl}${UrlContainer.vehicleVerificationFormUrl}';
