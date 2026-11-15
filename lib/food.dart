@@ -183,6 +183,7 @@ class FoodItem {
   final int id; final String name; final String description;
   final double price; final double? salePrice; final String imageUrl;
   int quantity; final int categoryId; final String status;
+  final String unitType;
   final String availabilityStart;
   final String availabilityEnd;
   bool get isHidden => status != 'publish';
@@ -191,6 +192,7 @@ class FoodItem {
     required this.id, required this.name, required this.description,
     required this.price, this.salePrice, required this.imageUrl,
     this.quantity = 1, required this.categoryId, this.status = 'publish',
+    this.unitType = 'piece',
     this.availabilityStart = '', this.availabilityEnd = '',
   });
 
@@ -223,6 +225,7 @@ class FoodItem {
       price: safeParseDouble(json['regular_price']),
       salePrice: (json['sale_price'] != '' && json['sale_price'] != null) ? safeParseDouble(json['sale_price'], -1.0) : null,
       imageUrl: extractImageUrl(json['images']), categoryId: extractRestaurantId(json), status: json['status']?.toString() ?? 'publish',
+      unitType: json['unit_type'] == 'kg' ? 'kg' : 'piece',
       availabilityStart:(json['availability_start']??'').toString(),
       availabilityEnd:(json['availability_end']??'').toString(),
     );
@@ -1186,6 +1189,7 @@ class ApiService {
     required String price, required String salePrice, required String description,
     File? image, required int categoryId,
     String availabilityStart = '', String availabilityEnd = '',
+    String unitType = 'piece',
   }) async {
     final img = image == null ? null : base64Encode(await image.readAsBytes());
     final response = await http.post(
@@ -1196,6 +1200,7 @@ class ApiService {
         'sale_price': salePrice, 'description': description,
         'image_base64': img, 'category_id': categoryId,
         'availability_start': availabilityStart,'availability_end':availabilityEnd,
+        'unit_type': unitType,
       }),
     ).timeout(AppConstants.API_TIMEOUT);
     if (response.statusCode != 200) throw Exception(_apiError(response));
@@ -1207,6 +1212,7 @@ class ApiService {
     String? salePrice, required String description, File? image,
     required int categoryId,
     String availabilityStart = '', String availabilityEnd = '',
+    String unitType = 'piece',
   }) async {
     final imageBase64 = image == null ? null : base64Encode(await image.readAsBytes());
     final response = await http.post(
@@ -1217,6 +1223,7 @@ class ApiService {
         'description': description, 'image_base64': imageBase64,
         'category_id': categoryId,
         'availability_start':availabilityStart,'availability_end':availabilityEnd,
+        'unit_type': unitType,
       }),
     ).timeout(AppConstants.API_TIMEOUT);
     if (response.statusCode != 201 && response.statusCode != 200) {
@@ -2839,6 +2846,19 @@ class RestaurantQuickPanel extends StatelessWidget {
             icon: const Icon(Icons.add_circle_outline), label: const Text('وجبة جديدة')),
         FilledButton.tonalIcon(onPressed: () => RestaurantManagerNavigation.categories(context),
             icon: const Icon(Icons.category_outlined), label: const Text('إدارة الأقسام')),
+        FilledButton.tonalIcon(
+            onPressed: () {
+              final token = Provider.of<AuthProvider>(context, listen: false).token;
+              if (token == null || token.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('يرجى تسجيل الدخول مجدداً')));
+                return;
+              }
+              Navigator.push(context, MaterialPageRoute(builder: (_) =>
+                  BeyteiMarketManagerScreen(token: token)));
+            },
+            icon: const Icon(Icons.storefront_outlined),
+            label: const Text('إدارة الواجهة والبنرات')),
         const RestaurantUrgentPickupQuickButton(),
         FilledButton.tonalIcon(onPressed: () => Navigator.push(context,
             MaterialPageRoute(builder: (_) => const ManagerPickupLocationScreen())),
@@ -4124,6 +4144,7 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
   late final TextEditingController _description;
   late final TextEditingController _price;
   late final TextEditingController _salePrice;
+  String _saleUnit = 'piece';
   bool _hoursEnabled = false;
   TimeOfDay _productOpen = const TimeOfDay(hour: 7, minute: 0);
   TimeOfDay _productClose = const TimeOfDay(hour: 12, minute: 0);
@@ -4152,6 +4173,7 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
     _description = TextEditingController(text: p?.description ?? '');
     _price = TextEditingController(text: p == null ? '' : p.price.toStringAsFixed(0));
     _salePrice = TextEditingController(text: p?.salePrice?.toStringAsFixed(0) ?? '');
+    _saleUnit = p?.unitType == 'kg' ? 'kg' : 'piece';
     if(p!=null && p.availabilityStart.isNotEmpty && p.availabilityEnd.isNotEmpty){
       _hoursEnabled=true;
       TimeOfDay parseHour(String x, TimeOfDay fallback){
@@ -4249,6 +4271,16 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('سعر الخصم يجب أن يكون أقل من السعر الأصلي')));
       return;
     }
+    if (_saleUnit == 'piece' && _groups.any((g) => g.kind == 'weight')) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('احذف مجموعة الوزن أو اختر البيع بالوزن قبل الحفظ')));
+      return;
+    }
+    if (_saleUnit == 'kg' && !_groups.any((g) => g.kind == 'weight')) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('عند البيع بالوزن يجب إعداد مجموعة الأوزان أولاً')));
+      return;
+    }
     if(_hoursEnabled && _timeCode(_productOpen)==_timeCode(_productClose)){
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('وقت بداية ونهاية توفر الوجبة لا يمكن أن يتساويا')));return;
     }
@@ -4269,7 +4301,8 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
             description: _description.text.trim(), image: _image,
             categoryId: _category!,
             availabilityStart:_hoursEnabled?_timeCode(_productOpen):'',
-            availabilityEnd:_hoursEnabled?_timeCode(_productClose):'');
+            availabilityEnd:_hoursEnabled?_timeCode(_productClose):'',
+            unitType:_saleUnit);
         _createdId = id; // يمنع تكرار الوجبة عند إعادة محاولة حفظ الخيارات.
         _creationUncertain = false;
       } else {
@@ -4279,7 +4312,8 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
             salePrice: sale, description: _description.text.trim(),
             image: _image, categoryId: _category!,
             availabilityStart:_hoursEnabled?_timeCode(_productOpen):'',
-            availabilityEnd:_hoursEnabled?_timeCode(_productClose):'');
+            availabilityEnd:_hoursEnabled?_timeCode(_productClose):'',
+            unitType:_saleUnit);
       }
 
       bool optionsOnline = true;
@@ -4359,6 +4393,16 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
               child: Text('${section['icon'] ?? '🍽️'}  ${section['name']}', overflow: TextOverflow.ellipsis))).toList(),
           onChanged: _saving ? null : (v) => setState(() => _category = v),
           validator: (v) => v == null ? 'اختر القسم' : null),
+      const SizedBox(height: 12),
+      DropdownButtonFormField<String>(
+        value: _saleUnit,
+        decoration: const InputDecoration(labelText: 'طريقة بيع المنتج'),
+        items: const [
+          DropdownMenuItem(value: 'piece', child: Text('بالقطعة (بسكويت، عصير...)')),
+          DropdownMenuItem(value: 'kg', child: Text('بالوزن (خضروات، فواكه...)')),
+        ],
+        onChanged: _saving ? null : (value) => setState(() => _saleUnit = value ?? 'piece'),
+      ),
       const SizedBox(height: 12),
       Row(children: [
         Expanded(child: TextFormField(controller: _price,
@@ -5039,3 +5083,337 @@ class AuthWrapper extends StatelessWidget {
   }
 }
 
+// ====== BEYTEI MARKET MANAGEMENT V32 — embedded in the original food.dart ======
+
+const String kBeyteiRestaurantServer = 'https://re.beytei.com';
+const Duration kBeyteiManagerTimeout = Duration(seconds: 30);
+
+class BeyteiMarketManagerScreen extends StatefulWidget {
+  final String token;
+  const BeyteiMarketManagerScreen({super.key, required this.token});
+  @override
+  State<BeyteiMarketManagerScreen> createState() => _BeyteiMarketManagerScreenState();
+}
+
+class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
+  final ImagePicker _picker = ImagePicker();
+  bool _loading = true;
+  bool _busy = false;
+  int _storeId = 0;
+  String _storeType = 'restaurant';
+  String _displayMode = 'legacy';
+  bool get _canCustomizeDisplay => const ['market','grocery'].contains(_storeType);
+  List<Map<String,dynamic>> _sections = [];
+  List<Map<String,dynamic>> _banners = [];
+
+  @override
+  void initState() { super.initState(); _load(); }
+  Future<Map<String,dynamic>> _request(String method, String endpoint,
+      [Map<String,dynamic>? data]) async {
+    final uri = Uri.parse('$kBeyteiRestaurantServer/wp-json/restaurant-app/v1/$endpoint');
+    final headers = {'Authorization':'Bearer ${widget.token}',
+      'Content-Type':'application/json'};
+    final http.Response response = method == 'GET'
+        ? await http.get(uri,headers:headers).timeout(kBeyteiManagerTimeout)
+        : await http.post(uri,headers:headers,body:jsonEncode(data??{})).timeout(kBeyteiManagerTimeout);
+    final decoded = jsonDecode(response.body);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception(decoded is Map ? (decoded['message'] ?? 'خطأ ${response.statusCode}')
+          : 'خطأ ${response.statusCode}');
+    }
+    if (decoded is! Map) throw Exception('استجابة غير صحيحة من السيرفر');
+    return Map<String,dynamic>.from(decoded);
+  }
+  Future<void> _load() async {
+    if (mounted) setState(() => _loading=true);
+    try {
+      final ctx=await _request('GET','manager-context');
+      final layout=await _request('GET','manager-market-layout');
+      final storeId=int.tryParse('${layout['store_id'] ?? 0}')??0;
+      final contextId=int.tryParse('${ctx['id'] ?? 0}')??0;
+      if (storeId <= 0 || contextId != storeId) {
+        throw Exception('تعذر التحقق من هوية المتجر في السيرفر');
+      }
+      final sections=(layout['sections'] as List? ?? const []);
+      if (!mounted) return;
+      setState(() {
+        _storeId=storeId;
+        _storeType=(layout['store_type']??'restaurant').toString();
+        final rawMode=(layout['display_mode']??'legacy').toString();
+        _displayMode=const ['legacy','modern','hybrid'].contains(rawMode) ? rawMode : 'legacy';
+        _sections=sections.whereType<Map>()
+            .map((x)=>Map<String,dynamic>.from(x)).toList();
+        _banners=(layout['banners'] as List? ?? [])
+            .whereType<Map>().map((x)=>Map<String,dynamic>.from(x)).toList();
+        _loading=false;
+      });
+    } catch(e) {
+      if (mounted) { setState(() => _loading=false); _message('$e',error:true); }
+    }
+  }
+  Future<void> _changeDisplayMode(String mode) async {
+    if (_busy || !_canCustomizeDisplay || mode == _displayMode) return;
+    setState(() => _busy=true);
+    try {
+      final result=await _request('POST','manager-market-display-mode',
+          {'display_mode':mode});
+      if (result['success']!=true) throw Exception('السيرفر لم يؤكد الحفظ');
+      if (!mounted) return;
+      setState(() => _displayMode=mode);
+      _message('تم حفظ طريقة العرض. افتح المتجر في تطبيق الزبون لمشاهدة التغيير');
+    } catch (e) { _message('تعذر تغيير طريقة العرض: $e',error:true); }
+    finally { if(mounted)setState(() => _busy=false); }
+  }
+  void _message(String value,{bool error=false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(value),
+        backgroundColor:error?Colors.red:Colors.green));
+  }
+  Future<void> _saveSection({Map<String,dynamic>? section}) async {
+    final name=TextEditingController(text:section?['name']?.toString()??'');
+    final icon=TextEditingController(text:section?['icon']?.toString()??'🛒');
+    final order=TextEditingController(text:section?['display_order']?.toString()??'0');
+    final description=TextEditingController(text:section?['description']?.toString()??'');
+    final background=TextEditingController(text:section?['background_color']?.toString()??'#FFFFFF');
+    bool featured=section?['featured']==true;
+    String sectionPresentation=section?['presentation_mode']=='modern'?'modern':'legacy';
+    int parentId = int.tryParse('${section?['parent'] ?? _storeId}') ?? _storeId;
+    final confirmed=await showDialog<bool>(context:context,builder:(ctx)=>StatefulBuilder(
+        builder: (ctx, setDialog) => AlertDialog(
+          title:Text(section==null?'إضافة قسم داخل المسواك':'تعديل القسم'),
+          content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[
+            TextField(controller:name,decoration:const InputDecoration(labelText:'اسم القسم (مثلاً: ماركت)')),
+            TextField(controller:icon,decoration:const InputDecoration(labelText:'أيقونة القسم')),
+            TextField(controller:description,decoration:const InputDecoration(labelText:'الوصف الصغير أسفل العنوان')),
+            TextField(controller:order,keyboardType:TextInputType.number,
+                decoration:const InputDecoration(labelText:'ترتيب ظهور القسم')),
+            TextField(controller:background,
+                decoration:const InputDecoration(labelText:'لون خلفية شريط المنتجات (مثال #FFF4D6)')),
+            DropdownButtonFormField<String>(
+              value:sectionPresentation,
+              decoration:const InputDecoration(labelText:'طريقة عرض هذا القسم'),
+              items:const [
+                DropdownMenuItem(value:'legacy',child:Text('الطريقة القديمة (قائمة المنتجات)')),
+                DropdownMenuItem(value:'modern',child:Text('ماركت حديث (أقسام وبنرات)')),
+              ],
+              onChanged:(value)=>setDialog(()=>sectionPresentation=value??'legacy'),
+            ),
+            SwitchListTile.adaptive(value:featured,
+                title:const Text('قسم مميز في الصفحة الرئيسية'),
+                subtitle:const Text('لتثبيت تصميم قسم أساسيات كل بيت وغيره'),
+                onChanged:(value)=>setDialog(()=>featured=value)),
+            DropdownButtonFormField<int>(value: parentId,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'القسم الأب'),
+                items: [DropdownMenuItem(value:_storeId,child:const Text('المتجر - قسم رئيسي')),
+                  for (final c in _sections)
+                    if (c['id'] != section?['id'])
+                      DropdownMenuItem(value:int.tryParse('${c['id']}')??0,
+                          child:Text('${c['name']}',overflow:TextOverflow.ellipsis))],
+                onChanged:(value) => setDialog(() => parentId=value??_storeId)),
+          ])),
+          actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
+            FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('حفظ'))],
+        )));
+    if (confirmed!=true) { name.dispose();icon.dispose();order.dispose();description.dispose();background.dispose(); return; }
+    if (name.text.trim().isEmpty) {
+      _message('اسم القسم مطلوب', error:true);
+      name.dispose();icon.dispose();order.dispose();description.dispose();background.dispose();
+      return;
+    }
+    if (!RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(background.text.trim())) {
+      _message('أدخل لوناً صحيحاً مثل #FFF4D6',error:true);
+      name.dispose();icon.dispose();order.dispose();description.dispose();background.dispose();
+      return;
+    }
+    try {
+      if (!mounted) return;
+      setState(()=>_busy=true);
+      final saved=await _request('POST',section==null?'create-subcategory':'update-subcategory',{
+        if(section!=null)'term_id':section['id'],
+        'name':name.text.trim(),'icon':icon.text.trim(),
+        'description':description.text.trim(), 'parent_id':parentId,
+        'display_order':int.tryParse(order.text.trim())??0,
+      });
+      final id=int.tryParse('${saved['term_id'] ?? saved['id'] ?? section?['id']}') ?? 0;
+      if (id <= 0) throw Exception('تعذر التحقق من معرف القسم');
+      await _request('POST','manager-section-style',{
+        'term_id':id, 'background_color':background.text.trim().toUpperCase(),
+        'featured':featured,'presentation_mode':sectionPresentation,
+      });
+      _message('تم حفظ القسم وتنسيقه');
+      await _load();
+    } catch(e) { _message('$e',error:true); }
+    finally { name.dispose();icon.dispose();order.dispose();description.dispose();background.dispose(); if(mounted)setState(()=>_busy=false); }
+  }
+  Future<void> _deleteSection(Map<String,dynamic> section) async {
+    final confirmed=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(
+      title:const Text('حذف القسم؟'),
+      content:Text('سيتم حذف ${section['name']} فقط إذا كان خالياً من المنتجات والأقسام الفرعية.'),
+      actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
+        TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('حذف',
+            style:TextStyle(color:Colors.red)))],
+    ));
+    if (confirmed!=true) return;
+    try { setState(()=>_busy=true);
+    await _request('POST','delete-subcategory',{'term_id':section['id']});
+    _message('تم حذف القسم'); await _load();
+    } catch(e) { _message('$e',error:true); }
+    finally { if(mounted)setState(()=>_busy=false); }
+  }
+  Future<Map<String,dynamic>> _upload(XFile file) async {
+    final bytes=await File(file.path).readAsBytes();
+    return _request('POST','manager-market-media',{'base64':base64Encode(bytes)});
+  }
+  Future<void> _changeSectionImage(Map<String,dynamic> section) async {
+    final file=await _picker.pickImage(source:ImageSource.gallery,
+        imageQuality:75,maxWidth:1000,maxHeight:1000);
+    if(file==null)return;
+    try {setState(()=>_busy=true);
+    final media=await _upload(file);
+    await _request('POST','manager-section-image',{
+      'term_id':section['id'],'attachment_id':media['id']});
+    _message('تم تغيير صورة القسم');await _load();
+    } catch(e) { _message('$e',error:true); }
+    finally {if(mounted)setState(()=>_busy=false);}
+  }
+  Future<void> _saveBanners(List<Map<String,dynamic>> banners) async {
+    final result = await _request('POST','manager-market-layout',{'banners':banners});
+    if (result['success'] != true) throw Exception('لم يؤكد السيرفر حفظ البنرات');
+    if (!mounted)return;
+    setState(()=>_banners=banners);
+  }
+  Future<void> _addBanner(bool video) async {
+    final XFile? file=video
+        ? await _picker.pickVideo(source:ImageSource.gallery)
+        : await _picker.pickImage(source:ImageSource.gallery,
+        imageQuality:85,maxWidth:1600,maxHeight:1000);
+    if(file==null)return;
+    try {setState(()=>_busy=true);
+    final media=await _upload(file);
+    final next=[..._banners,{'type':video?'video':'image',
+      'url':media['url'],'poster':'','title':'',
+      'placement':'hero','after_category_id':0}];
+    await _saveBanners(next);
+    _message(video?'تمت إضافة بنر فيديو':'تمت إضافة بنر صورة');
+    } catch(e) {_message('$e',error:true);}
+    finally {if(mounted)setState(()=>_busy=false);}
+  }
+  Future<void> _setBannerPlacement(int index, String placement) async {
+    try { setState(()=>_busy=true);
+    final next=_banners.map((x) => Map<String,dynamic>.from(x)).toList();
+    next[index]['placement']=placement;
+    next[index]['after_category_id']=0;
+    await _saveBanners(next);
+    _message('تم تحديث موقع البنر');
+    } catch(e) {_message('$e',error:true);}
+    finally {if(mounted)setState(()=>_busy=false);}
+  }
+  Future<void> _setBannerAfter(int index, int categoryId) async {
+    try { setState(()=>_busy=true);
+    final next=_banners.map((x) => Map<String,dynamic>.from(x)).toList();
+    next[index]['after_category_id']=categoryId;
+    await _saveBanners(next);
+    _message('تم تحديد القسم الذي يظهر بعده البنر');
+    } catch(e) {_message('$e',error:true);}
+    finally {if(mounted)setState(()=>_busy=false);}
+  }
+  Future<void> _deleteBanner(int index) async {
+    try {setState(()=>_busy=true);
+    final next=[..._banners]..removeAt(index);
+    await _saveBanners(next);
+    _message('تم حذف البنر من العرض');
+    } catch(e) {_message('$e',error:true);}
+    finally {if(mounted)setState(()=>_busy=false);}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar:AppBar(title:const Text('إدارة الواجهة والأقسام والبنرات'),actions:[
+        IconButton(onPressed:_busy?null:_load,icon:const Icon(Icons.refresh))]),
+      body:_loading?const Center(child:CircularProgressIndicator())
+          :RefreshIndicator(onRefresh:_load,child:ListView(padding:const EdgeInsets.all(14),children:[
+        if(_busy)const LinearProgressIndicator(),
+        Text('المتجر رقم $_storeId',style:const TextStyle(color:Colors.grey)),
+        const SizedBox(height:8),
+        if (_canCustomizeDisplay) ...[
+          const Text('طريقة عرض المتجر',style:TextStyle(fontSize:17,fontWeight:FontWeight.bold)),
+          const Text('لا يغيّر هذا الاختيار نوع المتجر أو منتجاته أو طلباته.'),
+          DropdownButton<String>(
+            value:_displayMode,
+            isExpanded:true,
+            items:const [
+              DropdownMenuItem(value:'legacy',child:Text('القديم — الخضروات والمرطبات مثل السابق')),
+              DropdownMenuItem(value:'modern',child:Text('الحديث — أقسام مصورة وبنرات')),
+              DropdownMenuItem(value:'hybrid',child:Text('المختلط — القديم + قسم ماركت حديث')),
+            ],
+            onChanged:_busy?null:(value){if(value!=null)_changeDisplayMode(value);},
+          ),
+          if (_displayMode=='hybrid') const Padding(
+            padding:EdgeInsets.symmetric(vertical:8),
+            child:Text('في الوضع المختلط عدّل القسم المقصود واختر «ماركت حديث» لطريقة عرضه؛ بقية الأقسام تبقى قديمة.',
+                style:TextStyle(color:Colors.black54,fontSize:12)),
+          ),
+          const SizedBox(height:14),
+        ],
+        Row(children:[const Expanded(child:Text('الأقسام والتصنيفات',
+            style:TextStyle(fontSize:17,fontWeight:FontWeight.bold))),
+          IconButton(onPressed:_busy?null:()=>_saveSection(),
+              icon:const Icon(Icons.add_circle,color:Colors.green))]),
+        for (final sec in _sections)
+          Card(child:ListTile(
+            leading:CircleAvatar(backgroundColor:const Color(0xFFF6EEE4),
+                child:Text((sec['icon']??'🛒').toString())),
+            title:Text((sec['name']??'').toString()),
+            subtitle:Text('ترتيب ${sec['display_order']??0}'),
+            trailing:Wrap(spacing:0,children:[
+              IconButton(tooltip:'صورة القسم',icon:const Icon(Icons.image_outlined),
+                  onPressed:_busy?null:()=>_changeSectionImage(sec)),
+              IconButton(tooltip:'تعديل',icon:const Icon(Icons.edit_outlined),
+                  onPressed:_busy?null:()=>_saveSection(section:sec)),
+              IconButton(tooltip:'حذف',icon:const Icon(Icons.delete_outline,color:Colors.red),
+                  onPressed:_busy?null:()=>_deleteSection(sec)),
+            ]),
+          )),
+        const SizedBox(height:22),
+        const Text('بنرات العروض',style:TextStyle(fontSize:17,fontWeight:FontWeight.bold)),
+        const Text('تظهر الصور والفيديوهات داخل الماركت حسب ترتيبها في هذه القائمة.'),
+        const SizedBox(height:8),
+        Wrap(spacing:10,children:[
+          OutlinedButton.icon(onPressed:(_busy||_banners.length>=12)?null:()=>_addBanner(false),
+              icon:const Icon(Icons.image),label:const Text('إضافة صورة')),
+          OutlinedButton.icon(onPressed:(_busy||_banners.length>=12)?null:()=>_addBanner(true),
+              icon:const Icon(Icons.movie),label:const Text('إضافة فيديو MP4')),
+        ]),
+        for(var i=0;i<_banners.length;i++)
+          Card(child:ListTile(
+            leading:Icon(_banners[i]['type']=='video'?Icons.play_circle:Icons.image),
+            title:Text(_banners[i]['type']=='video'?'بنر فيديو ${i+1}':'بنر صورة ${i+1}'),
+            subtitle:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+              Text((_banners[i]['url']??'').toString(),maxLines:1,
+                  overflow:TextOverflow.ellipsis),
+              Row(children:[
+                Expanded(child:DropdownButton<String>(
+                    isExpanded:true, value:(_banners[i]['placement']??'hero').toString(),
+                    items:const [DropdownMenuItem(value:'hero',child:Text('بنر رئيسي')),
+                      DropdownMenuItem(value:'inline',child:Text('بين الأقسام'))],
+                    onChanged:_busy?null:(value){if(value!=null)_setBannerPlacement(i,value);})),
+                if(_banners[i]['placement']=='inline')
+                  Expanded(child:DropdownButton<int>(isExpanded:true,
+                      value:int.tryParse('${_banners[i]['after_category_id']??0}')??0,
+                      items:[const DropdownMenuItem(value:0,child:Text('تلقائي')),
+                        for(final cat in _sections)
+                          DropdownMenuItem(value:int.tryParse('${cat['id']}')??0,
+                              child:Text('${cat['name']}',overflow:TextOverflow.ellipsis))],
+                      onChanged:_busy?null:(value){if(value!=null)_setBannerAfter(i,value);}))
+              ]),
+            ]),
+            trailing:IconButton(icon:const Icon(Icons.delete_outline,color:Colors.red),
+                onPressed:_busy?null:()=>_deleteBanner(i)),
+          )),
+        const SizedBox(height:70),
+      ])),
+    );
+  }
+}

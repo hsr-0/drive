@@ -1,5 +1,7 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:ovoride_driver/core/utils/verification_image_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:ovoride_driver/core/helper/string_format_helper.dart';
@@ -20,6 +22,7 @@ import '../../../core/helper/date_converter.dart';
 class VehicleVerificationController extends GetxController {
   VehicleVerificationRepo repo;
   VehicleVerificationController({required this.repo});
+  final ImagePicker _imagePicker = ImagePicker();
   File? kycimageFile;
   File? imageFile;
 
@@ -426,25 +429,44 @@ class VehicleVerificationController extends GetxController {
     update();
   }
 
-  void pickFile(int index, {bool isVehicle = false}) async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      allowMultiple: false,
-      type: FileType.custom,
-      allowedExtensions: ['jpg', 'png', 'jpeg', 'pdf', 'doc', 'docx'],
-    );
+  Future<void> pickFile(int index, {bool isVehicle = false}) async {
+    try {
+      final XFile? photo = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 90,
+        requestFullMetadata: false,
+      );
+      if (photo == null) return;
 
-    if (result == null) return;
-
-    if (isVehicle) {
-      printX("vehicle image");
-      imageFile = File(result.files.single.path!);
-    } else {
-      formList[index].imageFile = File(result.files.single.path!);
-      String fileName = result.files.single.name;
-      formList[index].selectedValue = fileName;
+      final uploadImage = await VerificationImageHelper.prepare(photo);
+      if (isVehicle) {
+        imageFile = uploadImage;
+      } else {
+        formList[index].imageFile = uploadImage;
+        formList[index].selectedValue = uploadImage.uri.pathSegments.last;
+      }
+      update();
+    } catch (e) {
+      CustomSnackBar.error(errorList: [MyStrings.somethingWentWrong.tr]);
     }
-
-    update();
-    return;
   }
+
+  // Document uploads still use Files; tapping the image field opens Photos.
+  Future<void> pickDocument(int index) async {
+    try {
+      final FilePickerResult? result = await FilePicker.platform.pickFiles(
+        allowMultiple: false,
+        type: FileType.custom,
+        allowedExtensions: ['pdf', 'doc', 'docx'],
+      );
+      if (result == null || result.files.single.path == null) return;
+
+      formList[index].imageFile = File(result.files.single.path!);
+      formList[index].selectedValue = result.files.single.name;
+      update();
+    } catch (e) {
+      CustomSnackBar.error(errorList: [MyStrings.somethingWentWrong.tr]);
+    }
+  }
+
 }
