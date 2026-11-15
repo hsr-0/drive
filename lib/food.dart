@@ -2239,6 +2239,11 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
                   accent: BeyteiManagerPalette.blue,
                   onTap: () => RestaurantManagerNavigation.categories(context)),
               BeyteiManagerQuickAction(
+                  title: 'طريقة عرض المتجر', subtitle: 'القديم / الحديث / المختلط',
+                  icon: Icons.storefront_outlined,
+                  accent: BeyteiManagerPalette.blue,
+                  onTap: () => beyteiOpenMarketPresentationSettings(context)),
+              BeyteiManagerQuickAction(
                   title: 'المبيعات والأرباح', subtitle: 'التقارير المالية',
                   icon: Icons.analytics_outlined,
                   accent: BeyteiManagerPalette.green,
@@ -2847,16 +2852,7 @@ class RestaurantQuickPanel extends StatelessWidget {
         FilledButton.tonalIcon(onPressed: () => RestaurantManagerNavigation.categories(context),
             icon: const Icon(Icons.category_outlined), label: const Text('إدارة الأقسام')),
         FilledButton.tonalIcon(
-            onPressed: () {
-              final token = Provider.of<AuthProvider>(context, listen: false).token;
-              if (token == null || token.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('يرجى تسجيل الدخول مجدداً')));
-                return;
-              }
-              Navigator.push(context, MaterialPageRoute(builder: (_) =>
-                  BeyteiMarketManagerScreen(token: token)));
-            },
+            onPressed: () => beyteiOpenMarketPresentationSettings(context),
             icon: const Icon(Icons.storefront_outlined),
             label: const Text('إدارة الواجهة والبنرات')),
         const RestaurantUrgentPickupQuickButton(),
@@ -3994,6 +3990,12 @@ class _ProductManagementTabState extends State<ProductManagementTab> {
                   icon: const Icon(Icons.category_outlined),
                   onPressed: _openManageSections,
                 ),
+                const SizedBox(width: 5),
+                IconButton.filledTonal(
+                  tooltip: 'طريقة عرض المتجر والبنرات',
+                  icon: const Icon(Icons.storefront_outlined),
+                  onPressed: () => beyteiOpenMarketPresentationSettings(context),
+                ),
               ]),
             ),
 
@@ -5083,7 +5085,218 @@ class AuthWrapper extends StatelessWidget {
   }
 }
 
-// ====== BEYTEI MARKET MANAGEMENT V32 — embedded in the original food.dart ======
+
+// ====== BEYTEI V38 — Native visual color wheel (no extra Flutter package) ======
+// The server still stores standard six-digit colors such as #DDF5FF.
+// Merchants select the color visually; no color name/HEX typing is required.
+Color beyteiMarketColorFromHex(String? raw) {
+  final hex = (raw ?? '').trim();
+  if (!RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(hex)) {
+    return const Color(0xFFFFFFFF);
+  }
+  return Color(0xFF000000 | int.parse(hex.substring(1), radix: 16));
+}
+
+String beyteiMarketColorToHex(Color value) =>
+    '#${(value.value & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
+
+class BeyteiMarketColorWheelDialog extends StatefulWidget {
+  final Color initialColor;
+  const BeyteiMarketColorWheelDialog({super.key, required this.initialColor});
+
+  @override
+  State<BeyteiMarketColorWheelDialog> createState() =>
+      _BeyteiMarketColorWheelDialogState();
+}
+
+class _BeyteiMarketColorWheelDialogState
+    extends State<BeyteiMarketColorWheelDialog> {
+  late HSVColor _selected;
+  static const double _wheelSize = 224;
+  static const List<Color> _presets = [
+    Color(0xFFE1F5FE), // Beytei sky blue
+    Color(0xFFB3E5FC),
+    Color(0xFFFFFFFF),
+    Color(0xFFFFF4D6),
+    Color(0xFFE8F5E9),
+    Color(0xFFFFE4E6),
+    Color(0xFFF2E7FE),
+    Color(0xFFFFE0B2),
+    Color(0xFFEEEEEE),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = HSVColor.fromColor(widget.initialColor);
+  }
+
+  void _pickWheel(Offset position) {
+    const center = _wheelSize / 2;
+    final dx = position.dx - center;
+    final dy = position.dy - center;
+    final distance = sqrt(dx * dx + dy * dy);
+    final saturation = (distance / center).clamp(0.0, 1.0);
+    final angle = atan2(dy, dx);
+    final hue = (angle * 180.0 / pi + 360.0) % 360.0;
+    setState(() => _selected = _selected.withHue(hue)
+        .withSaturation(saturation));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _selected.toColor();
+    return AlertDialog(
+      title: const Row(children: [
+        Icon(Icons.palette_outlined, color: Color(0xFF129AD1)),
+        SizedBox(width: 8),
+        Expanded(child: Text('اختيار لون القسم')),
+      ]),
+      content: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('حرّك إصبعك على عجلة الألوان لاختيار اللون',
+              textAlign: TextAlign.center),
+          const SizedBox(height: 12),
+          Center(child: SizedBox(
+            width: _wheelSize,
+            height: _wheelSize,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (details) => _pickWheel(details.localPosition),
+              onPanStart: (details) => _pickWheel(details.localPosition),
+              onPanUpdate: (details) => _pickWheel(details.localPosition),
+              child: CustomPaint(
+                painter: _BeyteiMarketHueSaturationPainter(_selected),
+              ),
+            ),
+          )),
+          const SizedBox(height: 12),
+          const Align(alignment: Alignment.centerRight,
+              child: Text('درجة الإضاءة')),
+          Slider(
+            min: 0,
+            max: 1,
+            value: _selected.value,
+            activeColor: const Color(0xFF129AD1),
+            onChanged: (v) => setState(() => _selected = _selected.withValue(v)),
+          ),
+          const Align(alignment: Alignment.centerRight,
+              child: Text('ألوان جاهزة — اختَر بضغطة واحدة')),
+          const SizedBox(height: 8),
+          Wrap(spacing: 7, runSpacing: 7, children: [
+            for (final preset in _presets)
+              InkWell(
+                onTap: () => setState(() => _selected = HSVColor.fromColor(preset)),
+                borderRadius: BorderRadius.circular(100),
+                child: Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    color: preset,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: color.value == preset.value
+                          ? const Color(0xFF129AD1) : Colors.black26,
+                      width: color.value == preset.value ? 3 : 1,
+                    ),
+                  ),
+                ),
+              ),
+          ]),
+          const SizedBox(height: 16),
+          Container(
+            height: 58,
+            width: double.infinity,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: color,
+              border: Border.all(color: Colors.black12),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Text('معاينة لون خلفية المنتجات',
+                style: TextStyle(
+                  color: ThemeData.estimateBrightnessForColor(color) == Brightness.dark
+                      ? Colors.white : Colors.black87,
+                  fontWeight: FontWeight.w600,
+                )),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء')),
+        FilledButton.icon(
+          onPressed: () => Navigator.pop(context, color),
+          icon: const Icon(Icons.check),
+          label: const Text('اعتماد اللون'),
+        ),
+      ],
+    );
+  }
+}
+
+class _BeyteiMarketHueSaturationPainter extends CustomPainter {
+  final HSVColor color;
+  const _BeyteiMarketHueSaturationPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = min(size.width, size.height) / 2 - 2;
+    final rect = Rect.fromCircle(center: center, radius: radius);
+    final huePaint = Paint()
+      ..shader = const SweepGradient(colors: [
+        Color(0xFFFF0000), Color(0xFFFFFF00), Color(0xFF00FF00),
+        Color(0xFF00FFFF), Color(0xFF0000FF), Color(0xFFFF00FF),
+        Color(0xFFFF0000),
+      ]).createShader(rect);
+    canvas.drawCircle(center, radius, huePaint);
+    final saturationPaint = Paint()
+      ..shader = const RadialGradient(colors: [
+        Colors.white, Color(0x00FFFFFF),
+      ]).createShader(rect);
+    canvas.drawCircle(center, radius, saturationPaint);
+    if (color.value < 1) {
+      canvas.drawCircle(center, radius,
+          Paint()..color = Colors.black.withOpacity(1 - color.value));
+    }
+    canvas.drawCircle(center, radius, Paint()
+      ..color = Colors.black26
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5);
+    final angle = color.hue * pi / 180.0;
+    final marker = Offset(
+      center.dx + cos(angle) * radius * color.saturation,
+      center.dy + sin(angle) * radius * color.saturation,
+    );
+    canvas.drawCircle(marker, 10, Paint()..color = Colors.white);
+    canvas.drawCircle(marker, 10, Paint()
+      ..color = Colors.black87
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2);
+    canvas.drawCircle(marker, 6, Paint()..color = color.toColor());
+  }
+
+  @override
+  bool shouldRepaint(covariant _BeyteiMarketHueSaturationPainter old) =>
+      old.color != color;
+}
+
+// ====== END V38 COLOR PICKER ======
+
+// ====== BEYTEI MARKET MANAGEMENT V38 — embedded in the original food.dart ======
+
+/// Opens the same settings screen from Dashboard, Products or Settings.
+/// The screen uses the signed-in restaurant owner's own store, not a global store ID.
+Future<void> beyteiOpenMarketPresentationSettings(BuildContext context) async {
+  final token = Provider.of<AuthProvider>(context, listen: false).token;
+  if (token == null || token.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('يرجى تسجيل الدخول مجدداً')));
+    return;
+  }
+  await Navigator.push(context, MaterialPageRoute(
+      builder: (_) => BeyteiMarketManagerScreen(token: token)));
+}
 
 const String kBeyteiRestaurantServer = 'https://re.beytei.com';
 const Duration kBeyteiManagerTimeout = Duration(seconds: 30);
@@ -5100,9 +5313,13 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
   bool _loading = true;
   bool _busy = false;
   int _storeId = 0;
-  String _storeType = 'restaurant';
+  String _storeName = '';
+  String _storeType = 'unknown';
   String _displayMode = 'legacy';
+  bool _serverSupportsDisplayMode = false;
+  String? _loadError;
   bool get _canCustomizeDisplay => const ['market','grocery'].contains(_storeType);
+  bool get _canSaveDisplayMode => _canCustomizeDisplay && _serverSupportsDisplayMode;
   List<Map<String,dynamic>> _sections = [];
   List<Map<String,dynamic>> _banners = [];
 
@@ -5125,7 +5342,7 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
     return Map<String,dynamic>.from(decoded);
   }
   Future<void> _load() async {
-    if (mounted) setState(() => _loading=true);
+    if (mounted) setState(() { _loading=true; _loadError=null; });
     try {
       final ctx=await _request('GET','manager-context');
       final layout=await _request('GET','manager-market-layout');
@@ -5138,7 +5355,9 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
       if (!mounted) return;
       setState(() {
         _storeId=storeId;
-        _storeType=(layout['store_type']??'restaurant').toString();
+        _storeName=(ctx['name']??'').toString();
+        _storeType=(layout['store_type']??'unknown').toString().trim().toLowerCase();
+        _serverSupportsDisplayMode = layout.containsKey('display_mode');
         final rawMode=(layout['display_mode']??'legacy').toString();
         _displayMode=const ['legacy','modern','hybrid'].contains(rawMode) ? rawMode : 'legacy';
         _sections=sections.whereType<Map>()
@@ -5148,11 +5367,14 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
         _loading=false;
       });
     } catch(e) {
-      if (mounted) { setState(() => _loading=false); _message('$e',error:true); }
+      if (mounted) setState(() {
+        _loading=false;
+        _loadError='تعذر جلب إعدادات الواجهة من السيرفر: $e';
+      });
     }
   }
   Future<void> _changeDisplayMode(String mode) async {
-    if (_busy || !_canCustomizeDisplay || mode == _displayMode) return;
+    if (_busy || !_canSaveDisplayMode || mode == _displayMode) return;
     setState(() => _busy=true);
     try {
       final result=await _request('POST','manager-market-display-mode',
@@ -5174,7 +5396,10 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
     final icon=TextEditingController(text:section?['icon']?.toString()??'🛒');
     final order=TextEditingController(text:section?['display_order']?.toString()??'0');
     final description=TextEditingController(text:section?['description']?.toString()??'');
-    final background=TextEditingController(text:section?['background_color']?.toString()??'#FFFFFF');
+    String backgroundHex = (section?['background_color'] ?? '#FFFFFF').toString();
+    if (!RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(backgroundHex)) {
+      backgroundHex = '#FFFFFF';
+    }
     bool featured=section?['featured']==true;
     String sectionPresentation=section?['presentation_mode']=='modern'?'modern':'legacy';
     int parentId = int.tryParse('${section?['parent'] ?? _storeId}') ?? _storeId;
@@ -5187,8 +5412,35 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
             TextField(controller:description,decoration:const InputDecoration(labelText:'الوصف الصغير أسفل العنوان')),
             TextField(controller:order,keyboardType:TextInputType.number,
                 decoration:const InputDecoration(labelText:'ترتيب ظهور القسم')),
-            TextField(controller:background,
-                decoration:const InputDecoration(labelText:'لون خلفية شريط المنتجات (مثال #FFF4D6)')),
+            const SizedBox(height: 10),
+            const Align(alignment: Alignment.centerRight,
+                child: Text('لون خلفية شريط المنتجات',
+                    style: TextStyle(fontWeight: FontWeight.w600))),
+            const SizedBox(height: 6),
+            OutlinedButton(
+              onPressed: () async {
+                final selected = await showDialog<Color>(
+                  context: ctx,
+                  builder: (_) => BeyteiMarketColorWheelDialog(
+                    initialColor: beyteiMarketColorFromHex(backgroundHex),
+                  ),
+                );
+                if (selected != null && ctx.mounted) {
+                  setDialog(() => backgroundHex = beyteiMarketColorToHex(selected));
+                }
+              },
+              child: Row(children: [
+                Container(width: 36, height: 36,
+                    decoration: BoxDecoration(
+                      color: beyteiMarketColorFromHex(backgroundHex),
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(color: Colors.black26),
+                    )),
+                const SizedBox(width: 10),
+                const Expanded(child: Text('اضغط لاختيار اللون من عجلة الألوان')),
+                const Icon(Icons.color_lens_outlined, color: Color(0xFF129AD1)),
+              ]),
+            ),
             DropdownButtonFormField<String>(
               value:sectionPresentation,
               decoration:const InputDecoration(labelText:'طريقة عرض هذا القسم'),
@@ -5215,15 +5467,10 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
           actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
             FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('حفظ'))],
         )));
-    if (confirmed!=true) { name.dispose();icon.dispose();order.dispose();description.dispose();background.dispose(); return; }
+    if (confirmed!=true) { name.dispose();icon.dispose();order.dispose();description.dispose(); return; }
     if (name.text.trim().isEmpty) {
       _message('اسم القسم مطلوب', error:true);
-      name.dispose();icon.dispose();order.dispose();description.dispose();background.dispose();
-      return;
-    }
-    if (!RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(background.text.trim())) {
-      _message('أدخل لوناً صحيحاً مثل #FFF4D6',error:true);
-      name.dispose();icon.dispose();order.dispose();description.dispose();background.dispose();
+      name.dispose();icon.dispose();order.dispose();description.dispose();
       return;
     }
     try {
@@ -5238,13 +5485,13 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
       final id=int.tryParse('${saved['term_id'] ?? saved['id'] ?? section?['id']}') ?? 0;
       if (id <= 0) throw Exception('تعذر التحقق من معرف القسم');
       await _request('POST','manager-section-style',{
-        'term_id':id, 'background_color':background.text.trim().toUpperCase(),
+        'term_id':id, 'background_color':backgroundHex.toUpperCase(),
         'featured':featured,'presentation_mode':sectionPresentation,
       });
       _message('تم حفظ القسم وتنسيقه');
       await _load();
     } catch(e) { _message('$e',error:true); }
-    finally { name.dispose();icon.dispose();order.dispose();description.dispose();background.dispose(); if(mounted)setState(()=>_busy=false); }
+    finally { name.dispose();icon.dispose();order.dispose();description.dispose(); if(mounted)setState(()=>_busy=false); }
   }
   Future<void> _deleteSection(Map<String,dynamic> section) async {
     final confirmed=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(
@@ -5333,37 +5580,64 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
       appBar:AppBar(title:const Text('إدارة الواجهة والأقسام والبنرات'),actions:[
         IconButton(onPressed:_busy?null:_load,icon:const Icon(Icons.refresh))]),
       body:_loading?const Center(child:CircularProgressIndicator())
+          : _loadError != null ? Center(child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(mainAxisSize:MainAxisSize.min,children:[
+            const Icon(Icons.warning_amber_rounded, color:Colors.deepOrange, size:40),
+            const SizedBox(height:12),
+            Text(_loadError!, textAlign:TextAlign.center),
+            const SizedBox(height:12),
+            const Text('تحقق من تحديث functions.php إلى V36 أو أحدث وتعطيل إضافة الماركت المنفصلة القديمة.',
+                textAlign:TextAlign.center),
+            const SizedBox(height:12),
+            FilledButton.icon(onPressed:_load,icon:const Icon(Icons.refresh),
+                label:const Text('إعادة المحاولة')),
+          ])))
           :RefreshIndicator(onRefresh:_load,child:ListView(padding:const EdgeInsets.all(14),children:[
         if(_busy)const LinearProgressIndicator(),
-        Text('المتجر رقم $_storeId',style:const TextStyle(color:Colors.grey)),
-        const SizedBox(height:8),
-        if (_canCustomizeDisplay) ...[
-          const Text('طريقة عرض المتجر',style:TextStyle(fontSize:17,fontWeight:FontWeight.bold)),
-          const Text('لا يغيّر هذا الاختيار نوع المتجر أو منتجاته أو طلباته.'),
-          DropdownButton<String>(
-            value:_displayMode,
-            isExpanded:true,
-            items:const [
-              DropdownMenuItem(value:'legacy',child:Text('القديم — الخضروات والمرطبات مثل السابق')),
-              DropdownMenuItem(value:'modern',child:Text('الحديث — أقسام مصورة وبنرات')),
-              DropdownMenuItem(value:'hybrid',child:Text('المختلط — القديم + قسم ماركت حديث')),
-            ],
-            onChanged:_busy?null:(value){if(value!=null)_changeDisplayMode(value);},
-          ),
-          if (_displayMode=='hybrid') const Padding(
-            padding:EdgeInsets.symmetric(vertical:8),
-            child:Text('في الوضع المختلط عدّل القسم المقصود واختر «ماركت حديث» لطريقة عرضه؛ بقية الأقسام تبقى قديمة.',
-                style:TextStyle(color:Colors.black54,fontSize:12)),
-          ),
-          const SizedBox(height:14),
-        ],
+        Text('المتجر: ${_storeName.isNotEmpty ? _storeName : 'رقم $_storeId'}',
+            style:const TextStyle(fontWeight:FontWeight.bold)),
+        const SizedBox(height:4),
+        Text('نوعه في السيرفر: $_storeType',style:const TextStyle(color:Colors.grey)),
+        const SizedBox(height:12),
+        const Text('طريقة عرض المتجر',style:TextStyle(fontSize:19,fontWeight:FontWeight.bold)),
+        const Text('يتحكم هذا الاختيار في الشكل فقط، ولا يغيّر نوع المتجر أو السلة أو الطلبات.'),
+        if (!_serverSupportsDisplayMode) const Padding(
+          padding:EdgeInsets.symmetric(vertical:12),
+          child:Text('هذه واجهة سيرفر قديمة ولا ترسل display_mode. راجع تركيب functions.php V36 وأوقف إضافة الماركت القديمة إن كانت فعّالة.',
+              style:TextStyle(color:Colors.deepOrange,fontWeight:FontWeight.bold)),
+        ),
+        if (!_canCustomizeDisplay) const Padding(
+          padding:EdgeInsets.symmetric(vertical:12),
+          child:Text('هذا المتجر ليس مصنفاً market أو grocery في السيرفر، لذلك لا يسمح بتغيير العرض. افحص «نوع المتجر» في تصنيف WordPress الرئيسي؛ لا تغيّره إلا إذا كان تصنيفاً للمرطبات أو المسواك فعلاً.',
+              style:TextStyle(color:Colors.deepOrange,fontWeight:FontWeight.bold)),
+        ),
+        DropdownButton<String>(
+          value:_displayMode,
+          isExpanded:true,
+          items:const [
+            DropdownMenuItem(value:'legacy',child:Text('القديم — الخضروات والمرطبات مثل السابق')),
+            DropdownMenuItem(value:'modern',child:Text('الحديث — أقسام مصورة وبنرات')),
+            DropdownMenuItem(value:'hybrid',child:Text('المختلط — القديم + قسم ماركت حديث')),
+          ],
+          onChanged:(_busy || !_canSaveDisplayMode) ? null :
+              (value){ if(value!=null)_changeDisplayMode(value); },
+        ),
+        if (_displayMode=='hybrid' && _canSaveDisplayMode) const Padding(
+          padding:EdgeInsets.symmetric(vertical:8),
+          child:Text('في الوضع المختلط عدّل القسم المقصود واختر «ماركت حديث»؛ بقية الأقسام تبقى قديمة.',
+              style:TextStyle(color:Colors.black54,fontSize:12)),
+        ),
+        const SizedBox(height:14),
         Row(children:[const Expanded(child:Text('الأقسام والتصنيفات',
             style:TextStyle(fontSize:17,fontWeight:FontWeight.bold))),
           IconButton(onPressed:_busy?null:()=>_saveSection(),
               icon:const Icon(Icons.add_circle,color:Colors.green))]),
         for (final sec in _sections)
           Card(child:ListTile(
-            leading:CircleAvatar(backgroundColor:const Color(0xFFF6EEE4),
+            leading:CircleAvatar(
+                backgroundColor: beyteiMarketColorFromHex(
+                    (sec['background_color'] ?? '#FFF4D6').toString()),
                 child:Text((sec['icon']??'🛒').toString())),
             title:Text((sec['name']??'').toString()),
             subtitle:Text('ترتيب ${sec['display_order']??0}'),

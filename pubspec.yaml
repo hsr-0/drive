@@ -4,7 +4,7 @@ description: OvoRide is a complete ride-sharing solution.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
 
-version: 1.0.41+73
+version: 1.0.42+74
 
 environment:
   sdk: '>=3.5.0 <4.0.0'
