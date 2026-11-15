@@ -145,7 +145,7 @@ class CustomNewRideDialog {
                         ),
                       ),
                       Text(
-                        "$currencySym${StringConverter.formatNumber(ride.payableFare.toString())}",
+                        "$currencySym${StringConverter.formatNumber(ride.amount.toString())}",
                         overflow: TextOverflow.ellipsis,
                         style: boldExtraLarge.copyWith(
                           color: MyColor.primaryColor,
@@ -203,7 +203,7 @@ class CustomNewRideDialog {
                 ),
                 child: Center(
                   child: Text(
-                    "${Get.find<ApiClient>().getCurrency(isSymbol: true)}${StringConverter.formatNumber(ride.recommendAmount.toString())}",
+                    "${Get.find<ApiClient>().getCurrency(isSymbol: true)}${StringConverter.formatNumber(ride.amount.toString())}",
                     style: boldExtraLarge.copyWith(
                       color: MyColor.primaryColor,
                       fontSize: 30,
@@ -278,13 +278,13 @@ class CustomNewRideDialog {
                   Expanded(
                     child: GetBuilder<DashBoardController>(
                       builder: (controller) => RoundedButton(
-                        text: MyStrings.bidNOW.tr,
+                        text: 'قبول الرحلة',
                         isLoading: dashboardController.isSendBidLoading,
                         press: () async {
                           // ✅ إرسال السعر الموصى به مباشرةً
                           await dashboardController.sendBid(
                             ride.id ?? '-1',
-                            amount: ride.recommendAmount.toString(),
+                            amount: ride.amount.toString(),
                             onActon: () {
                               onBidClick();
                               toastification.dismissById(holder.id);
