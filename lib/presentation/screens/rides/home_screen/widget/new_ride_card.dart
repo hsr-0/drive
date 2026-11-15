@@ -114,7 +114,7 @@ class NewRideCardWidget extends StatelessWidget {
                     ),
                     FittedBox(
                       child: Text(
-                        "$currency${StringConverter.formatNumber(ride.payableFare.toString())}",
+                        "$currency${StringConverter.formatNumber(ride.amount.toString())}",
                         overflow: TextOverflow.ellipsis,
                         style: boldLarge.copyWith(
                           fontSize: Dimensions.fontExtraLarge,
