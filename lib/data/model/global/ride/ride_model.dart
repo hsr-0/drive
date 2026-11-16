@@ -37,6 +37,8 @@ class RideModel {
   String? isRunning;
   String? amount;
   String? discountAmount;
+  String? dispatchStartedAt;
+  String? dispatchVersion;
   String? charge;
   String? appliedCouponId;
   String? status;
@@ -90,6 +92,8 @@ class RideModel {
     this.isRunning,
     this.amount,
     this.discountAmount,
+    this.dispatchStartedAt,
+    this.dispatchVersion,
     this.charge,
     this.appliedCouponId,
     this.status,
@@ -143,6 +147,8 @@ class RideModel {
         isRunning: json["is_running"].toString(),
         amount: json["amount"].toString(),
         discountAmount: json["discount_amount"]?.toString(),
+        dispatchStartedAt: json["dispatch_started_at"]?.toString(),
+        dispatchVersion: json["dispatch_version"]?.toString(),
         charge: json["charge"].toString(),
         appliedCouponId: json["applied_coupon_id"].toString(),
         status: json["status"].toString(),
@@ -195,6 +201,8 @@ class RideModel {
         "is_running": isRunning,
         "amount": amount,
         "discount_amount": discountAmount,
+        "dispatch_started_at": dispatchStartedAt,
+        "dispatch_version": dispatchVersion,
         "charge": charge,
         "applied_coupon_id": appliedCouponId,
         "status": status,
