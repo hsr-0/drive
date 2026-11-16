@@ -2,7 +2,7 @@ import 'package:get/get.dart';
 import 'package:ovoride_driver/data/model/deposit/deposit_insert_response_model.dart';
 import 'package:ovoride_driver/data/model/global/user/global_driver_model.dart';
 import 'package:ovoride_driver/data/services/push_notification_service.dart';
-import 'package:ovoride_driver/presentation/screens/Profile/profile_screen.dart';
+import 'package:ovoride_driver/presentation/screens/profile/profile_screen.dart';
 import 'package:ovoride_driver/presentation/screens/account/change-password/change_password_screen.dart';
 import 'package:ovoride_driver/presentation/screens/auth/email_verification_page/email_verification_screen.dart';
 import 'package:ovoride_driver/presentation/screens/auth/forget_password/forget_password/forget_password.dart';
