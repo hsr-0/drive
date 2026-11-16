@@ -1,3 +1,4 @@
+import 'package:ovoride_driver/data/controller/dashboard/ride_queue_manager.dart';
 import 'package:get/get.dart';
 import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
@@ -153,6 +154,8 @@ class DashBoardController extends GetxController {
     ].where((part) => part.isNotEmpty).join(', ');
   }
 
+  final Set<String> _notifiedDispatchOffers = <String>{};
+
   bool _refreshingOffers = false;
 
   /// Lightweight fallback for missed Pusher/FCM while the home page is visible.
@@ -164,9 +167,33 @@ class DashBoardController extends GetxController {
       if (response.statusCode != 200) return;
       final model = DashBoardRideResponseModel.fromJson(response.responseJson);
       if (model.status != 'success') return;
-      rideList = List<RideModel>.from(model.data?.ride?.data ?? []);
+      final current = List<RideModel>.from(model.data?.ride?.data ?? []);
+      rideList = current;
       runningRide = model.data?.runningRide;
       update();
+
+      // A missed Reverb/FCM event must still open its *targeted* V2 offer
+      // while the driver is on the home screen. Legacy-zone rides stay as
+      // list items so old-system floods do not generate extra popup sounds.
+      if (Get.currentRoute == RouteHelper.dashboard && userOnline) {
+        final manager = Get.isRegistered<RideQueueManager>()
+            ? Get.find<RideQueueManager>() : Get.put(RideQueueManager());
+        for (final ride in current) {
+          final started = ride.dispatchStartedAt;
+          if (ride.id == null || started == null || started == 'null') continue;
+          final key = (ride.id ?? '') + ':' + (ride.dispatchVersion ?? '1');
+          if (!_notifiedDispatchOffers.add(key)) continue;
+          manager.addRideToQueue(RideQueueItem(
+            ride: ride,
+            currency: currency,
+            currencySym: currencySym,
+            dashboardController: this,
+          ));
+        }
+        if (_notifiedDispatchOffers.length > 300) {
+          _notifiedDispatchOffers.clear();
+        }
+      }
     } catch (error) {
       printX('Failed to refresh assigned ride offers: ' + error.toString());
     } finally {
