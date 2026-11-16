@@ -47,7 +47,15 @@ class PusherManager {
       try { await _loading; } finally { _loading = null; }
     }
     if (_reverbMode) {
-      await _connectReverb(channelName);
+      try {
+        await _connectReverb(channelName);
+      } catch (error) {
+        // Reverb can be unreachable during phased rollout. Keep old ride
+        // channels available until connection is healthy again.
+        printX('Taxi Reverb unavailable; keeping legacy push connection: ' + error.toString());
+        _reverbMode = false;
+        await _connectLegacy(channelName);
+      }
     } else {
       await _connectLegacy(channelName);
     }
