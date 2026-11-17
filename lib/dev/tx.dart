@@ -23,7 +23,8 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart' as geolocator;
 import 'package:vibration/vibration.dart';
-import 'field_poster_delivery.dart'; // منصة بيتي: توزيع البوسترات - مستقل عن الطلبات
+import 'field_poster_delivery.dart';
+import 'order_adjustments.dart'; // منصة بيتي: توزيع البوسترات - مستقل عن الطلبات
 
 class BalanceManager {
   static int _balance = 0;
@@ -6090,6 +6091,29 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
             if (hasActiveNotes) BeyteiDeliveryItemDetailsV6.notesBanner(_currentDelivery,
                 onTap: _showOrderDetailsDialog),
             BeyteiDeliveryItemDetailsV6.choicesBanner(_currentDelivery),
+            if ((_currentDelivery['source_type'] ?? 'restaurant') == 'restaurant' &&
+                ['accepted', 'at_store'].contains(
+                    (_currentDelivery['order_status'] ?? _currentDelivery['status'] ?? '').toString()))
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    final saved = await Navigator.push<bool>(context, MaterialPageRoute(
+                      builder: (_) => DriverOrderAdjustmentPage(
+                        order: _currentDelivery,
+                        bearerToken: widget.authResult.token,
+                      ),
+                    ));
+                    if (saved == true && mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('حُفظ التعديل وصورة الإثبات في Laravel؛ المبلغ لم يتغيّر بعد.'),
+                      ));
+                    }
+                  },
+                  icon: const Icon(Icons.edit_note),
+                  label: const Text('إضافة / إزالة / تعديل سعر مع صورة الإثبات'),
+                ),
+              ),
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(30),
