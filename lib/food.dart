@@ -2778,6 +2778,24 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
   final _password = TextEditingController();
   bool _isLoading = false;
   bool _showPassword = false;
+  bool _remember = false;
+
+  @override
+  void initState() { super.initState(); _restoreSaved(); }
+
+  Future<void> _restoreSaved() async {
+    final prefs = await SharedPreferences.getInstance();
+    final remember = prefs.getBool('beytei_manager_remember') == true;
+    final u = remember ? await ManagerSessionVault.read(ManagerSessionVault.username) :
+        prefs.getString('beytei_manager_last_username');
+    final p = remember ? await ManagerSessionVault.read(ManagerSessionVault.password) : null;
+    if (!mounted) return;
+    setState(() {
+      _remember = remember;
+      if (u != null) _username.text = u;
+      if (p != null) _password.text = p;
+    });
+  }
 
   @override
   void dispose() {
@@ -2789,7 +2807,8 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
     setState(() => _isLoading = true);
     try {
       final auth = Provider.of<AuthProvider>(context, listen: false);
-      final result = await auth.login(_username.text.trim(), _password.text, 'owner')
+      final result = await auth.login(_username.text.trim(), _password.text, 'owner',
+          rememberCredentials: _remember)
           .timeout(const Duration(seconds: 22));
       if (!mounted) return;
       if (!result) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -2827,7 +2846,15 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
                     suffixIcon: IconButton(onPressed: () => setState(() => _showPassword = !_showPassword),
                         icon: Icon(_showPassword ? Icons.visibility_off : Icons.visibility))),
                 validator: (v) => (v ?? '').isEmpty ? 'كلمة المرور مطلوبة' : null),
-            const SizedBox(height: 22),
+            CheckboxListTile(
+              value: _remember,
+              onChanged: (value) => setState(() => _remember = value ?? false),
+              title: const Text('تذكر بيانات الدخول على هذا الجهاز'),
+              subtitle: const Text('تُحفظ كلمة المرور في التخزين الآمن فقط'),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+            ),
+            const SizedBox(height: 8),
             SizedBox(width: double.infinity, height: 50,
                 child: FilledButton(onPressed: _isLoading ? null : _login,
                     child: Text(_isLoading ? 'جارٍ تسجيل الدخول...' : 'تسجيل الدخول'))),
