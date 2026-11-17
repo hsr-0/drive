@@ -4958,6 +4958,25 @@ class _OrderCardState extends State<OrderCard> {
                       )
                   ),
                 ],
+                if (widget.order.driverOrderId != null &&
+                    widget.order.driverOrderId! > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        final jwt = Provider.of<AuthProvider>(context, listen: false).token;
+                        if (jwt == null) return;
+                        Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => ManagerOrderEditsV42Page(
+                            deliveryOrderId: widget.order.driverOrderId!,
+                            wpJwt: jwt,
+                          ),
+                        ));
+                      },
+                      icon: const Icon(Icons.image_search),
+                      label: const Text('تعديلات المندوب وصور الإثبات (Laravel)'),
+                    ),
+                  ),
                 if (widget.pickupCode != null && !isFinished)
                   Container(
                       margin: const EdgeInsets.only(top: 10), width: double.infinity, padding: const EdgeInsets.all(10),
@@ -5690,4 +5709,133 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
       ])),
     );
   }
+}
+
+
+// BEYTEI V42: manager proof viewer; every request goes directly to Laravel.
+// WordPress is consulted only by the EXISTING finance session token bridge.
+class ManagerOrderEditsV42Page extends StatefulWidget {
+  final int deliveryOrderId;
+  final String wpJwt;
+  const ManagerOrderEditsV42Page({
+    super.key, required this.deliveryOrderId, required this.wpJwt,
+  });
+  @override State<ManagerOrderEditsV42Page> createState() => _ManagerOrderEditsV42PageState();
+}
+
+class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
+  bool _busy = true;
+  String? _error;
+  List<Map<String, dynamic>> _edits = [];
+
+  Future<String> _scope() async => ApiService()._merchantFinanceScope(widget.wpJwt);
+  Uri get _uri => Uri.parse('https://de.beytei.com/api/beytei/manager/v41/orders/' +
+      widget.deliveryOrderId.toString() + '/edits');
+
+  @override void initState() { super.initState(); _load(); }
+  Future<void> _load() async {
+    if (mounted) setState(() { _busy = true; _error = null; });
+    try {
+      final token = await _scope();
+      final r = await http.get(_uri, headers: {
+        'Authorization':'Bearer ' + token, 'Accept':'application/json'
+      }).timeout(const Duration(seconds: 25));
+      if (r.statusCode != 200) {
+        throw StateError('رفض سيرفر Laravel (HTTP ' + r.statusCode.toString() + ')');
+      }
+      final j = jsonDecode(r.body);
+      if (j is! Map || j['success'] != true || j['items'] is! List) {
+        throw const FormatException('استجابة إثباتات غير صالحة');
+      }
+      if (mounted) setState(() { _edits = (j['items'] as List)
+          .whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList(); });
+    } catch (_) {
+      if (mounted) setState(() => _error = 'تعذر جلب الإثباتات من Laravel. تحقق من صلاحية الحساب وربط المطعم بالطلب.');
+    } finally { if (mounted) setState(() => _busy = false); }
+  }
+
+  Future<void> _proof(int editId) async {
+    try {
+      final scope = await _scope();
+      final r = await http.get(Uri.parse('https://de.beytei.com/api/beytei/manager/v41/proofs/' +
+          editId.toString()), headers: {'Authorization':'Bearer ' + scope})
+        .timeout(const Duration(seconds: 30));
+      if (r.statusCode != 200 || r.bodyBytes.isEmpty) {
+        throw const FormatException('الإثبات غير متاح أو ليس لهذا المطعم');
+      }
+      if (!mounted) return;
+      await showDialog<void>(context: context, builder: (_) => AlertDialog(
+        title: const Text('صورة إثبات المندوب'),
+        content: Image.memory(r.bodyBytes, fit: BoxFit.contain),
+        actions: [TextButton(onPressed: () => Navigator.of(context).pop(),
+            child: const Text('إغلاق'))],
+      ));
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تعذر عرض الصورة. تحقق من الاتصال والصلاحيات.')));
+    }
+  }
+
+  Future<void> _review(int editId, String status) async {
+    try {
+      final scope = await _scope();
+      final r = await http.post(
+        Uri.parse('https://de.beytei.com/api/beytei/manager/v41/edits/' +
+            editId.toString() + '/review'),
+        headers: {'Authorization':'Bearer ' + scope,
+          'Content-Type':'application/json'},
+        body: jsonEncode({'status':status}),
+      ).timeout(const Duration(seconds: 20));
+      if (r.statusCode != 200) throw StateError('HTTP ' + r.statusCode.toString());
+      await _load();
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تعذّر حفظ مراجعة الإثبات على Laravel.')));
+    }
+  }
+  String _label(String? a) {
+    if (a == 'remove_item') return 'إزالة منتج';
+    if (a == 'add_item') return 'إضافة منتج';
+    if (a == 'change_price') return 'تعديل سعر';
+    return 'تعديل';
+  }
+  @override Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('صور وتعديلات المندوب — Laravel'),
+      actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _busy ? null : _load)]),
+    body: _busy ? const Center(child: CircularProgressIndicator())
+      : _error != null ? Center(child: Padding(padding: const EdgeInsets.all(24),
+        child: Text(_error!, textAlign: TextAlign.center)))
+      : _edits.isEmpty ? const Center(child: Text('لا توجد طلبات تعديل مسجلة'))
+      : ListView.builder(
+          padding: const EdgeInsets.all(12), itemCount: _edits.length,
+          itemBuilder: (context,index) {
+            final e = _edits[index];
+            final id = int.tryParse((e['id'] ?? '').toString()) ?? 0;
+            final pending = e['status'] == 'pending_review';
+            return Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(_label(e['action']?.toString()) + ': ' +
+                    (e['item_name'] ?? 'منتج').toString(),
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text('المندوب رقم ' + (e['driver_id'] ?? '-').toString()),
+                Text('السبب: ' + (e['reason'] ?? '').toString()),
+                Text('السعر السابق: ' + (e['before_total_iqd'] ?? '-').toString() +
+                    ' د.ع — المقترح: ' +
+                    (e['proposed_total_iqd'] ?? '-').toString() + ' د.ع'),
+                Text('الحالة: ' + (e['status'] ?? '').toString()),
+                const Text('المراجعة ليست اعتماداً لتغيير مبلغ الزبون.',
+                    style: TextStyle(fontSize: 12)),
+                TextButton.icon(onPressed: id > 0 ? () => _proof(id) : null,
+                    icon: const Icon(Icons.image), label: const Text('عرض الصورة')),
+                if (pending && id > 0) Wrap(spacing: 8, children: [
+                  OutlinedButton(onPressed: () => _review(id, 'reviewed'),
+                    child: const Text('اطلعت على الإثبات')),
+                  OutlinedButton(onPressed: () => _review(id, 'rejected'),
+                    child: const Text('رفض الإثبات')),
+                ]),
+              ],
+            )));
+          },
+        ),
+  );
 }
