@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:intl/intl.dart';
 import 'dart:ui' as ui;
@@ -385,7 +386,10 @@ class AuthService {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         print("✅ [Auth] نجح الدخول، تم استلام التوكن");
-        return data['token'];
+        if (data is! Map || data['token'] is! String) return null;
+        await ManagerSessionVault.saveTokens(data['token'] as String,
+            data['refresh_token'] is String ? data['refresh_token'] as String : null);
+        return data['token'] as String;
       }
       debugPrint('فشل تسجيل الدخول: HTTP ${response.statusCode}');
       return null;
@@ -1507,74 +1511,180 @@ class ManagerOrdersPage {
   const ManagerOrdersPage({required this.orders, required this.hasMore});
 }
 
+/// Secure manager session (iOS Keychain / Android Keystore).
+/// Never stores a password or a refresh token in SharedPreferences.
+class ManagerSessionVault {
+  static const _secure = FlutterSecureStorage();
+  static const jwt = 'beytei_manager_jwt_v42';
+  static const refresh = 'beytei_manager_refresh_v42';
+  static const username = 'beytei_manager_username_v42';
+  static const password = 'beytei_manager_password_v42';
+  static Future<String?> read(String key) async {
+    try { return await _secure.read(key:key); } catch (_) { return null; }
+  }
+  static Future<void> write(String key,String v) => _secure.write(key:key,value:v);
+  static Future<void> clear(String key) => _secure.delete(key:key);
+  static Future<void> saveTokens(String token,String? rotated) async {
+    await write(jwt,token);
+    if(rotated != null && rotated.isNotEmpty) await write(refresh,rotated);
+  }
+  static DateTime? expiry(String? token) {
+    if(token==null) return null;
+    try {
+      final parts=token.split('.');
+      if(parts.length!=3) return null;
+      final data=json.decode(utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))));
+      final value=int.tryParse((data['exp'] ?? '').toString());
+      return value == null ? null :
+        DateTime.fromMillisecondsSinceEpoch(value*1000,isUtc:true);
+    } catch (_) {return null;}
+  }
+  static Future<String?> renew() async {
+    final previous=await read(refresh);
+    if(previous==null || previous.isEmpty) return null;
+    try {
+      final res=await http.post(
+        Uri.parse('https://re.beytei.com/wp-json/restaurant-app/v1/refresh-session-v39'),
+        headers:{'Content-Type':'application/json'},
+        body:json.encode({'refresh_token':previous}),
+      ).timeout(const Duration(seconds:15));
+      if(res.statusCode==401) { await clear(refresh); return null; }
+      if(res.statusCode!=200) return null; // transient issue: do not log out
+      final body=json.decode(res.body);
+      if(body is! Map || body['success']!=true ||
+          body['token'] is! String || body['refresh_token'] is! String) return null;
+      await saveTokens(body['token'] as String,body['refresh_token'] as String);
+      return body['token'] as String;
+    } catch (_) { return null; }
+  }
+  static Future<void> revoke() async {
+    final previous=await read(refresh);
+    try {
+      if(previous!=null && previous.isNotEmpty) {
+        await http.post(
+          Uri.parse('https://re.beytei.com/wp-json/restaurant-app/v1/revoke-session-v39'),
+          headers:{'Content-Type':'application/json'},
+          body:json.encode({'refresh_token':previous}),
+        ).timeout(const Duration(seconds:7));
+      }
+    } catch (_) {
+      // Even without connectivity the local logout remains effective.
+    } finally {await clear(refresh); await clear(jwt);}
+  }
+}
+
 class AuthProvider with ChangeNotifier {
   String? _token;
   String? _userRole;
-  bool _isLoading = true;
-
-  String? get token => _token;
-  String? get userRole => _userRole;
-  bool get isLoading => _isLoading;
-  bool get isLoggedIn => _token != null;
+  bool _isLoading=true;
+  Timer? _refreshTimer;
+  Future<String?>? _renewing;
+  String? get token=>_token;
+  String? get userRole=>_userRole;
+  bool get isLoading=>_isLoading;
+  bool get isLoggedIn=>_token!=null;
 
   AuthProvider() { _checkLoginStatus(); }
-
   Future<void> _checkLoginStatus() async {
-    final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString('jwt_token');
-    _userRole = prefs.getString('user_role');
-    _isLoading = false;
-    notifyListeners();
-    if (_token != null && _userRole == 'owner') {
-      RestaurantNotificationService.start(_token!).catchError(
-              (e) => debugPrint('فشل تجديد تسجيل الإشعارات: $e'));
-    }
-  }
-
-  Future<bool> login(String username, String password, String role, {String? restaurantLat, String? restaurantLng}) async {
-    final authService = AuthService();
-    _token = await authService.loginToServer(AppConstants.BEYTEI_URL, username, password);
-
-    if (_token != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('jwt_token', _token!);
-      await prefs.setString('user_role', role);
-
-      // حفظ الموقع محلياً
-      if (restaurantLat != null && restaurantLng != null) {
-        await prefs.setString('restaurant_lat', restaurantLat);
-        await prefs.setString('restaurant_lng', restaurantLng);
+    try {
+      final prefs=await SharedPreferences.getInstance();
+      _userRole=prefs.getString('user_role');
+      _token=await ManagerSessionVault.read(ManagerSessionVault.jwt);
+      final legacy=prefs.getString('jwt_token');
+      if(_token==null && legacy!=null && legacy.isNotEmpty) {
+        _token=legacy;
+        await ManagerSessionVault.write(ManagerSessionVault.jwt,legacy);
       }
-
-      // تسجيل FCM Token في الخلفية (لا ننتظر النتيجة)
-      RestaurantNotificationService.start(_token!).catchError((e) {
-        debugPrint('⚠️ [Auth] فشل تسجيل FCM: $e');
-      });
-
-      _userRole = role;
+      await prefs.remove('jwt_token');
+      if(prefs.getBool('beytei_manager_manual_logout')==true) {
+        _token=null;
+      } else {
+        final exp=ManagerSessionVault.expiry(_token);
+        if(_token==null || (exp!=null &&
+            !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:5))))) {
+          _token=await _renew();
+        }
+      }
+      if(_token!=null) _onSessionReady();
+    } finally { _isLoading=false;notifyListeners(); }
+  }
+  Future<String?> _renew() {
+    if(_renewing!=null) return _renewing!;
+    final op=_performRenew();
+    _renewing=op;
+    op.whenComplete(() => _renewing=null);
+    return op;
+  }
+  Future<String?> _performRenew() async {
+    final prefs=await SharedPreferences.getInstance();
+    if(prefs.getBool('beytei_manager_manual_logout')==true) return null;
+    String? next=await ManagerSessionVault.renew();
+    if(next==null && prefs.getBool('beytei_manager_remember')==true) {
+      final u=await ManagerSessionVault.read(ManagerSessionVault.username);
+      final p=await ManagerSessionVault.read(ManagerSessionVault.password);
+      if(u!=null && p!=null && u.isNotEmpty && p.isNotEmpty) {
+        next=await AuthService().loginToServer(AppConstants.BEYTEI_URL,u,p);
+      }
+    }
+    if(next!=null) {
+      _token=next;
+      _onSessionReady();
       notifyListeners();
-      return true;
     }
-    return false;
+    return next;
   }
-
-  Future<void> logout(BuildContext context) async {
-    final authService = AuthService();
-    RestaurantNotificationService.stop();
-    await authService.logout();
-    _token = null;
-    _userRole = null;
-
-    if (context.mounted) {
-      try {
-        Provider.of<RestaurantSettingsProvider>(context, listen: false).clearData();
-        Provider.of<RestaurantProductsProvider>(context, listen: false).clearData();
-      } catch (e) {
-        print("Note: Could not clear providers.");
+  void _onSessionReady() {
+    _refreshTimer?.cancel();
+    if(_token==null) return;
+    RestaurantNotificationService.start(_token!).catchError((Object e){});
+    _refreshTimer=Timer.periodic(const Duration(minutes:10),(_) async {
+      final exp=ManagerSessionVault.expiry(_token);
+      if(exp==null || !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:15)))) {
+        await _renew();
       }
+    });
+  }
+  Future<bool> login(String username,String password,String role,
+      {String? restaurantLat,String? restaurantLng,bool rememberCredentials=false}) async {
+    final next=await AuthService().loginToServer(AppConstants.BEYTEI_URL,username,password);
+    if(next==null) return false;
+    final prefs=await SharedPreferences.getInstance();
+    await prefs.setString('user_role',role);
+    await prefs.setBool('beytei_manager_manual_logout',false);
+    await prefs.setBool('beytei_manager_remember',rememberCredentials);
+    await prefs.setString('beytei_manager_last_username',username);
+    await prefs.remove('jwt_token');
+    if(rememberCredentials) {
+      await ManagerSessionVault.write(ManagerSessionVault.username,username);
+      await ManagerSessionVault.write(ManagerSessionVault.password,password);
+    } else {
+      await ManagerSessionVault.clear(ManagerSessionVault.username);
+      await ManagerSessionVault.clear(ManagerSessionVault.password);
+    }
+    if(restaurantLat!=null&&restaurantLng!=null) {
+      await prefs.setString('restaurant_lat',restaurantLat);
+      await prefs.setString('restaurant_lng',restaurantLng);
+    }
+    _token=next;_userRole=role;_onSessionReady();notifyListeners();
+    return true;
+  }
+  Future<void> logout(BuildContext context) async {
+    _refreshTimer?.cancel();
+    RestaurantNotificationService.stop();
+    final prefs=await SharedPreferences.getInstance();
+    await prefs.setBool('beytei_manager_manual_logout',true);
+    await ManagerSessionVault.revoke();
+    await AuthService().logout();
+    _token=null;_userRole=null;
+    if(context.mounted) {
+      try {
+        Provider.of<RestaurantSettingsProvider>(context,listen:false).clearData();
+        Provider.of<RestaurantProductsProvider>(context,listen:false).clearData();
+      } catch (_) {}
     }
     notifyListeners();
   }
+  @override void dispose(){_refreshTimer?.cancel();super.dispose();}
 }
 
 // =======================================================================
