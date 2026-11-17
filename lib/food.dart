@@ -387,8 +387,13 @@ class AuthService {
         final data = json.decode(response.body);
         print("✅ [Auth] نجح الدخول، تم استلام التوكن");
         if (data is! Map || data['token'] is! String) return null;
-        await ManagerSessionVault.saveTokens(data['token'] as String,
-            data['refresh_token'] is String ? data['refresh_token'] as String : null);
+        final fresh = data['refresh_token'] is String ?
+            data['refresh_token'] as String : null;
+        if (fresh == null || fresh.isEmpty) {
+          // Prevent a refresh token belonging to a previous account from surviving.
+          await ManagerSessionVault.clear(ManagerSessionVault.refresh);
+        }
+        await ManagerSessionVault.saveTokens(data['token'] as String, fresh);
         return data['token'] as String;
       }
       debugPrint('فشل تسجيل الدخول: HTTP ${response.statusCode}');
@@ -1600,8 +1605,8 @@ class AuthProvider with ChangeNotifier {
         _token=null;
       } else {
         final exp=ManagerSessionVault.expiry(_token);
-        if(_token==null || (exp!=null &&
-            !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:5))))) {
+        if(_token==null || exp==null ||
+          !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:5)))) {
           _token=await _renew();
         }
       }
