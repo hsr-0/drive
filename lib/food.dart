@@ -5100,8 +5100,8 @@ class _OrderCardState extends State<OrderCard> {
                       )
                   ),
                 ],
-                if (widget.order.driverOrderId != null &&
-                    widget.order.driverOrderId! > 0)
+                // Resolve the Woo order ID to the Laravel delivery order on the server.
+                if (widget.order.id > 0)
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: OutlinedButton.icon(
@@ -5110,7 +5110,7 @@ class _OrderCardState extends State<OrderCard> {
                         if (jwt == null) return;
                         Navigator.of(context).push(MaterialPageRoute(
                           builder: (_) => ManagerOrderEditsV42Page(
-                            deliveryOrderId: widget.order.driverOrderId!,
+                            sourceOrderId: widget.order.id,
                             wpJwt: jwt,
                           ),
                         ));
@@ -5857,10 +5857,10 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
 // BEYTEI V42: manager proof viewer; every request goes directly to Laravel.
 // WordPress is consulted only by the EXISTING finance session token bridge.
 class ManagerOrderEditsV42Page extends StatefulWidget {
-  final int deliveryOrderId;
+  final int sourceOrderId;
   final String wpJwt;
   const ManagerOrderEditsV42Page({
-    super.key, required this.deliveryOrderId, required this.wpJwt,
+    super.key, required this.sourceOrderId, required this.wpJwt,
   });
   @override State<ManagerOrderEditsV42Page> createState() => _ManagerOrderEditsV42PageState();
 }
@@ -5872,8 +5872,8 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
   Map<String, dynamic>? _amounts;
 
   Future<String> _scope() async => ApiService()._merchantFinanceScope(widget.wpJwt);
-  Uri get _uri => Uri.parse('https://de.beytei.com/api/beytei/manager/v41/orders/' +
-      widget.deliveryOrderId.toString() + '/edits');
+  Uri get _uri => Uri.parse('https://de.beytei.com/api/beytei/manager/v44/orders/by-source/' +
+      widget.sourceOrderId.toString() + '/edits');
 
   @override void initState() { super.initState(); _load(); }
   Future<void> _load() async {
