@@ -119,8 +119,13 @@ class _DriverOrderAdjustmentPageState extends State<DriverOrderAdjustmentPage> {
         throw StateError('رفض السيرفر حفظ الإثبات (HTTP ' + response.statusCode.toString() + ')');
       }
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('تم حفظ طلب التعديل والصورة على Laravel. المبلغ لم يتغيّر بعد.')));
+      final amounts = body['amounts'];
+      final collected = amounts is Map
+          ? amounts['total_to_collect_iqd']?.toString() : null;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(collected == null
+            ? 'تم حفظ التعديل وتحديث سعر الطلب في Laravel.'
+            : 'تم تعديل الطلب. المبلغ المطلوب الآن: ' + collected + ' د.ع')));
       Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -133,7 +138,7 @@ class _DriverOrderAdjustmentPageState extends State<DriverOrderAdjustmentPage> {
     body: _loading ? const Center(child: CircularProgressIndicator())
     : _error != null ? Center(child: Text(_error!))
     : ListView(padding: const EdgeInsets.all(16), children: [
-      const Text('التعديل مقترح للمراجعة، ولا يغيّر مبلغ الزبون تلقائياً.'),
+      const Text('تغيير السعر يُطبّق على الطلب مباشرة بعد إرسال صورة الإثبات والسبب.'),
       DropdownButtonFormField<String>(
         value: _action, decoration: const InputDecoration(labelText: 'نوع العملية'),
         items: const [
