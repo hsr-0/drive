@@ -6,7 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 
 /// Proof uploads are sent ONLY to de.beytei.com (Laravel).
-/// A submitted proposal NEVER alters the amount collected from the customer.
+/// A validated edit updates the amount collected in Laravel immediately.
 class DriverOrderAdjustmentPage extends StatefulWidget {
   final Map<String, dynamic> order;
   final String bearerToken;
