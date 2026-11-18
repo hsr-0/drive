@@ -5869,6 +5869,7 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
   bool _busy = true;
   String? _error;
   List<Map<String, dynamic>> _edits = [];
+  Map<String, dynamic>? _amounts;
 
   Future<String> _scope() async => ApiService()._merchantFinanceScope(widget.wpJwt);
   Uri get _uri => Uri.parse('https://de.beytei.com/api/beytei/manager/v41/orders/' +
@@ -5889,8 +5890,11 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
       if (j is! Map || j['success'] != true || j['items'] is! List) {
         throw const FormatException('استجابة إثباتات غير صالحة');
       }
-      if (mounted) setState(() { _edits = (j['items'] as List)
-          .whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList(); });
+      if (mounted) setState(() {
+        _edits = (j['items'] as List)
+          .whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+        _amounts = j['amounts'] is Map ? Map<String, dynamic>.from(j['amounts'] as Map) : null;
+      });
     } catch (_) {
       if (mounted) setState(() => _error = 'تعذر جلب الإثباتات من Laravel. تحقق من صلاحية الحساب وربط المطعم بالطلب.');
     } finally { if (mounted) setState(() => _busy = false); }
@@ -5931,7 +5935,14 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
       : _error != null ? Center(child: Padding(padding: const EdgeInsets.all(24),
         child: Text(_error!, textAlign: TextAlign.center)))
       : _edits.isEmpty ? const Center(child: Text('لا توجد طلبات تعديل مسجلة'))
-      : ListView.builder(
+      : Column(children: [
+          if (_amounts != null) Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text('المبلغ الحالي للتحصيل: ' +
+              (_amounts!['total_to_collect_iqd'] ?? '-').toString() + ' د.ع',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          ),
+          Expanded(child: ListView.builder(
           padding: const EdgeInsets.all(12), itemCount: _edits.length,
           itemBuilder: (context,index) {
             final e = _edits[index];
@@ -5952,6 +5963,7 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
               ],
             )));
           },
-        ),
+        )),
+        ]),
   );
 }
