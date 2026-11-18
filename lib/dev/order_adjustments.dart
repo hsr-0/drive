@@ -78,12 +78,12 @@ class _DriverOrderAdjustmentPageState extends State<DriverOrderAdjustmentPage> {
     final price = int.tryParse(_amount.text.trim());
     if (_photo == null || _reason.text.trim().length < 8 ||
         (_action != 'add_item' && _selected == null) ||
-        (_action == 'change_price' && (price == null || price < 0 || price % 250 != 0)) ||
+        (_action == 'change_price' && (price == null || price < 0)) ||
         (_action == 'add_item' && (_name.text.trim().length < 2 ||
             qty == null || qty < 1 || qty > 50 ||
-            unit == null || unit < 250 || unit % 250 != 0))) {
+            unit == null || unit < 1))) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('اختر المنتج وصورة الإثبات وسبباً واضحاً، والتزم بمضاعفات 250 دينار.')));
+        content: Text('اختر المنتج وصورة الإثبات واكتب سبباً واضحاً، وتأكد من صحة السعر.')));
       return;
     }
     _requestUuid ??= const Uuid().v4();
@@ -153,13 +153,13 @@ class _DriverOrderAdjustmentPageState extends State<DriverOrderAdjustmentPage> {
       ),
       if (_action == 'change_price') TextField(controller:_amount,
         keyboardType:TextInputType.number, decoration:const InputDecoration(
-          labelText:'السعر الجديد للسطر (مضاعفات 250)')),
+          labelText:'السعر الجديد للسطر (دينار عراقي)')),
       if (_action == 'add_item') ...[
         TextField(controller:_name,decoration:const InputDecoration(labelText:'اسم المنتج')),
         TextField(controller:_quantity,keyboardType:TextInputType.number,
           decoration:const InputDecoration(labelText:'الكمية')),
         TextField(controller:_unitPrice,keyboardType:TextInputType.number,
-          decoration:const InputDecoration(labelText:'سعر الوحدة (مضاعفات 250)')),
+          decoration:const InputDecoration(labelText:'سعر الوحدة (دينار عراقي)')),
       ],
       TextField(controller:_reason,minLines:2,maxLines:4,
         decoration:const InputDecoration(labelText:'سبب التعديل')),
