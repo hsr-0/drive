@@ -5918,23 +5918,6 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
     }
   }
 
-  Future<void> _review(int editId, String status) async {
-    try {
-      final scope = await _scope();
-      final r = await http.post(
-        Uri.parse('https://de.beytei.com/api/beytei/manager/v41/edits/' +
-            editId.toString() + '/review'),
-        headers: {'Authorization':'Bearer ' + scope,
-          'Content-Type':'application/json'},
-        body: jsonEncode({'status':status}),
-      ).timeout(const Duration(seconds: 20));
-      if (r.statusCode != 200) throw StateError('HTTP ' + r.statusCode.toString());
-      await _load();
-    } catch (_) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تعذّر حفظ مراجعة الإثبات على Laravel.')));
-    }
-  }
   String _label(String? a) {
     if (a == 'remove_item') return 'إزالة منتج';
     if (a == 'add_item') return 'إضافة منتج';
@@ -5953,7 +5936,6 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
           itemBuilder: (context,index) {
             final e = _edits[index];
             final id = int.tryParse((e['id'] ?? '').toString()) ?? 0;
-            final pending = e['status'] == 'pending_review';
             return Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(
               crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(_label(e['action']?.toString()) + ': ' +
@@ -5965,16 +5947,8 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
                     ' د.ع — المقترح: ' +
                     (e['proposed_total_iqd'] ?? '-').toString() + ' د.ع'),
                 Text('الحالة: ' + (e['status'] ?? '').toString()),
-                const Text('المراجعة ليست اعتماداً لتغيير مبلغ الزبون.',
-                    style: TextStyle(fontSize: 12)),
                 TextButton.icon(onPressed: id > 0 ? () => _proof(id) : null,
                     icon: const Icon(Icons.image), label: const Text('عرض الصورة')),
-                if (pending && id > 0) Wrap(spacing: 8, children: [
-                  OutlinedButton(onPressed: () => _review(id, 'reviewed'),
-                    child: const Text('اطلعت على الإثبات')),
-                  OutlinedButton(onPressed: () => _review(id, 'rejected'),
-                    child: const Text('رفض الإثبات')),
-                ]),
               ],
             )));
           },
