@@ -6105,8 +6105,22 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                       ),
                     ));
                     if (saved == true && mounted) {
+                      // Reload the same assigned order to show the new Laravel totals.
+                      final active = await ApiService.getMyActiveDeliveriesList(
+                        widget.authResult.token,
+                      );
+                      if (!mounted) return;
+                      for (final entry in active) {
+                        if (entry is Map &&
+                            entry['id']?.toString() == _currentDelivery['id']?.toString()) {
+                          setState(() => _currentDelivery =
+                            BeyteiDeliveryItemDetailsV6.preserveDetails(
+                              Map<String, dynamic>.from(entry), _currentDelivery));
+                          break;
+                        }
+                      }
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text('حُفظ التعديل وصورة الإثبات في Laravel؛ المبلغ لم يتغيّر بعد.'),
+                        content: Text('تم تطبيق السعر الجديد وحفظ صورة الإثبات في Laravel.'),
                       ));
                     }
                   },
