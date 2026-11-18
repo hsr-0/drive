@@ -5955,7 +5955,7 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
                 Text('المندوب رقم ' + (e['driver_id'] ?? '-').toString()),
                 Text('السبب: ' + (e['reason'] ?? '').toString()),
                 Text('السعر السابق: ' + (e['before_total_iqd'] ?? '-').toString() +
-                    ' د.ع — المقترح: ' +
+                    ' د.ع — السعر الجديد: ' +
                     (e['proposed_total_iqd'] ?? '-').toString() + ' د.ع'),
                 Text('الحالة: ' + (e['status'] ?? '').toString()),
                 TextButton.icon(onPressed: id > 0 ? () => _proof(id) : null,
