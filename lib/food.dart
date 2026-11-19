@@ -1620,6 +1620,21 @@ class AuthProvider with ChangeNotifier {
     op.whenComplete(() => _renewing=null);
     return op;
   }
+
+  // A WP JWT is renewed silently when needed. A temporary network outage
+  // never triggers logout, but an expired JWT must not be reused for API calls.
+  Future<String?> accessTokenForRequest({bool forceRenew = false}) async {
+    final now=DateTime.now().toUtc();
+    final exp=ManagerSessionVault.expiry(_token);
+    if (!forceRenew && _token!=null && exp!=null &&
+        exp.isAfter(now.add(const Duration(minutes:2)))) return _token;
+    final renewed=await _renew();
+    if (renewed!=null) return renewed;
+    final stillValidExpiry=ManagerSessionVault.expiry(_token);
+    return _token!=null && stillValidExpiry!=null &&
+        stillValidExpiry.isAfter(DateTime.now().toUtc().add(const Duration(seconds:15)))
+        ? _token : null;
+  }
   Future<String?> _performRenew() async {
     final prefs=await SharedPreferences.getInstance();
     if(prefs.getBool('beytei_manager_manual_logout')==true) return null;
@@ -5873,8 +5888,26 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
 
   // The user's WP login remains unchanged. The separate 10-minute finance
   // scope is acquired transparently and renewed once on HTTP 401.
-  Future<String> _scope({bool forceRenew = false}) async =>
-      ApiService()._merchantFinanceScope(widget.wpJwt, forceRenew: forceRenew);
+  Future<String> _scope({bool forceRenew = false}) async {
+    // Never reuse the JWT captured when this page was first opened. V39 may
+    // already have rotated the WP JWT while the page remained on-screen.
+    final auth=Provider.of<AuthProvider>(context, listen:false);
+    final wpToken=await auth.accessTokenForRequest(forceRenew: forceRenew);
+    if (wpToken==null || wpToken.isEmpty) {
+      throw StateError('تعذر تجديد جلسة مدير المطعم حالياً؛ أعد المحاولة عند توفر الاتصال.');
+    }
+    try {
+      return await ApiService()._merchantFinanceScope(
+        wpToken, forceRenew: forceRenew);
+    } catch (_) {
+      // If WP rejected the previously valid JWT, refresh its V39 session and
+      // retry the finance scope once. Do not call logout on transient failures.
+      if (forceRenew) rethrow;
+      final fresh=await auth.accessTokenForRequest(forceRenew: true);
+      if(fresh==null || fresh.isEmpty) rethrow;
+      return ApiService()._merchantFinanceScope(fresh, forceRenew: true);
+    }
+  }
   Uri get _uri => Uri.parse('https://de.beytei.com/api/beytei/manager/v44/orders/by-source/' +
       widget.sourceOrderId.toString() + '/edits');
 
