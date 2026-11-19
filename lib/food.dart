@@ -5871,18 +5871,32 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
   List<Map<String, dynamic>> _edits = [];
   Map<String, dynamic>? _amounts;
 
-  Future<String> _scope() async => ApiService()._merchantFinanceScope(widget.wpJwt);
+  // The user's WP login remains unchanged. The separate 10-minute finance
+  // scope is acquired transparently and renewed once on HTTP 401.
+  Future<String> _scope({bool forceRenew = false}) async =>
+      ApiService()._merchantFinanceScope(widget.wpJwt, forceRenew: forceRenew);
   Uri get _uri => Uri.parse('https://de.beytei.com/api/beytei/manager/v44/orders/by-source/' +
       widget.sourceOrderId.toString() + '/edits');
+
+  Future<http.Response> _authorizedGet(Uri uri, {Duration timeout = const Duration(seconds: 30)}) async {
+    var scope = await _scope();
+    var response = await http.get(uri, headers: {
+      'Authorization': 'Bearer ' + scope, 'Accept': '*/*',
+    }).timeout(timeout);
+    if (response.statusCode == 401) {
+      scope = await _scope(forceRenew: true);
+      response = await http.get(uri, headers: {
+        'Authorization': 'Bearer ' + scope, 'Accept': '*/*',
+      }).timeout(timeout);
+    }
+    return response;
+  }
 
   @override void initState() { super.initState(); _load(); }
   Future<void> _load() async {
     if (mounted) setState(() { _busy = true; _error = null; });
     try {
-      final token = await _scope();
-      final r = await http.get(_uri, headers: {
-        'Authorization':'Bearer ' + token, 'Accept':'application/json'
-      }).timeout(const Duration(seconds: 25));
+      final r = await _authorizedGet(_uri, timeout: const Duration(seconds: 25));
       if (r.statusCode != 200) {
         throw StateError('رفض سيرفر Laravel (HTTP ' + r.statusCode.toString() + ')');
       }
@@ -5902,10 +5916,11 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
 
   Future<void> _proof(int editId) async {
     try {
-      final scope = await _scope();
-      final r = await http.get(Uri.parse('https://de.beytei.com/api/beytei/manager/v41/proofs/' +
-          editId.toString()), headers: {'Authorization':'Bearer ' + scope})
-        .timeout(const Duration(seconds: 30));
+      final r = await _authorizedGet(
+        Uri.parse('https://de.beytei.com/api/beytei/manager/v41/proofs/' +
+          editId.toString()),
+        timeout: const Duration(seconds: 30),
+      );
       if (r.statusCode != 200 || r.bodyBytes.isEmpty) {
         throw const FormatException('الإثبات غير متاح أو ليس لهذا المطعم');
       }
