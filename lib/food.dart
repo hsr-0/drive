@@ -1607,7 +1607,10 @@ class AuthProvider with ChangeNotifier {
         final exp=ManagerSessionVault.expiry(_token);
         if(_token==null || exp==null ||
           !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:5)))) {
-          _token=await _renew();
+          // Keep the local signed-in state during temporary network outages.
+          // API requests still refuse to reuse an expired JWT and retry V39.
+          final renewed=await _renew();
+          if(renewed!=null) _token=renewed;
         }
       }
       if(_token!=null) _onSessionReady();
@@ -1656,7 +1659,10 @@ class AuthProvider with ChangeNotifier {
   void _onSessionReady() {
     _refreshTimer?.cancel();
     if(_token==null) return;
-    RestaurantNotificationService.start(_token!).catchError((Object e){});
+    final exp=ManagerSessionVault.expiry(_token);
+    if(exp!=null && exp.isAfter(DateTime.now().toUtc())) {
+      RestaurantNotificationService.start(_token!).catchError((Object e){});
+    }
     _refreshTimer=Timer.periodic(const Duration(minutes:10),(_) async {
       final exp=ManagerSessionVault.expiry(_token);
       if(exp==null || !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:15)))) {
