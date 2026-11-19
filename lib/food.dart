@@ -1578,7 +1578,7 @@ class ManagerSessionVault {
   }
 }
 
-class AuthProvider with ChangeNotifier {
+class AuthProvider with ChangeNotifier, WidgetsBindingObserver {
   String? _token;
   String? _userRole;
   bool _isLoading=true;
@@ -1589,7 +1589,18 @@ class AuthProvider with ChangeNotifier {
   bool get isLoading=>_isLoading;
   bool get isLoggedIn=>_token!=null;
 
-  AuthProvider() { _checkLoginStatus(); }
+  AuthProvider() {
+    WidgetsBinding.instance.addObserver(this);
+    _checkLoginStatus();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if(state==AppLifecycleState.resumed && _token!=null) {
+      // Android/iOS may suspend Dart timers in background. Refresh on resume.
+      accessTokenForRequest().catchError((Object _) => null);
+    }
+  }
   Future<void> _checkLoginStatus() async {
     try {
       final prefs=await SharedPreferences.getInstance();
@@ -1710,7 +1721,11 @@ class AuthProvider with ChangeNotifier {
     }
     notifyListeners();
   }
-  @override void dispose(){_refreshTimer?.cancel();super.dispose();}
+  @override void dispose(){
+    WidgetsBinding.instance.removeObserver(this);
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
 }
 
 // =======================================================================
