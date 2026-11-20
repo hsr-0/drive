@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:intl/intl.dart';
 import 'dart:ui' as ui;
@@ -385,7 +386,15 @@ class AuthService {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         print("✅ [Auth] نجح الدخول، تم استلام التوكن");
-        return data['token'];
+        if (data is! Map || data['token'] is! String) return null;
+        final fresh = data['refresh_token'] is String ?
+            data['refresh_token'] as String : null;
+        if (fresh == null || fresh.isEmpty) {
+          // Prevent a refresh token belonging to a previous account from surviving.
+          await ManagerSessionVault.clear(ManagerSessionVault.refresh);
+        }
+        await ManagerSessionVault.saveTokens(data['token'] as String, fresh);
+        return data['token'] as String;
       }
       debugPrint('فشل تسجيل الدخول: HTTP ${response.statusCode}');
       return null;
@@ -1507,73 +1516,215 @@ class ManagerOrdersPage {
   const ManagerOrdersPage({required this.orders, required this.hasMore});
 }
 
-class AuthProvider with ChangeNotifier {
+/// Secure manager session (iOS Keychain / Android Keystore).
+/// Never stores a password or a refresh token in SharedPreferences.
+class ManagerSessionVault {
+  static const _secure = FlutterSecureStorage();
+  static const jwt = 'beytei_manager_jwt_v42';
+  static const refresh = 'beytei_manager_refresh_v42';
+  static const username = 'beytei_manager_username_v42';
+  static const password = 'beytei_manager_password_v42';
+  static Future<String?> read(String key) async {
+    try { return await _secure.read(key:key); } catch (_) { return null; }
+  }
+  static Future<void> write(String key,String v) => _secure.write(key:key,value:v);
+  static Future<void> clear(String key) => _secure.delete(key:key);
+  static Future<void> saveTokens(String token,String? rotated) async {
+    await write(jwt,token);
+    if(rotated != null && rotated.isNotEmpty) await write(refresh,rotated);
+  }
+  static DateTime? expiry(String? token) {
+    if(token==null) return null;
+    try {
+      final parts=token.split('.');
+      if(parts.length!=3) return null;
+      final data=json.decode(utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))));
+      final value=int.tryParse((data['exp'] ?? '').toString());
+      return value == null ? null :
+        DateTime.fromMillisecondsSinceEpoch(value*1000,isUtc:true);
+    } catch (_) {return null;}
+  }
+  static Future<String?> renew() async {
+    final previous=await read(refresh);
+    if(previous==null || previous.isEmpty) return null;
+    try {
+      final res=await http.post(
+        Uri.parse('https://re.beytei.com/wp-json/restaurant-app/v1/refresh-session-v39'),
+        headers:{'Content-Type':'application/json'},
+        body:json.encode({'refresh_token':previous}),
+      ).timeout(const Duration(seconds:15));
+      if(res.statusCode==401) { await clear(refresh); return null; }
+      if(res.statusCode!=200) return null; // transient issue: do not log out
+      final body=json.decode(res.body);
+      if(body is! Map || body['success']!=true ||
+          body['token'] is! String || body['refresh_token'] is! String) return null;
+      await saveTokens(body['token'] as String,body['refresh_token'] as String);
+      return body['token'] as String;
+    } catch (_) { return null; }
+  }
+  static Future<void> revoke() async {
+    final previous=await read(refresh);
+    try {
+      if(previous!=null && previous.isNotEmpty) {
+        await http.post(
+          Uri.parse('https://re.beytei.com/wp-json/restaurant-app/v1/revoke-session-v39'),
+          headers:{'Content-Type':'application/json'},
+          body:json.encode({'refresh_token':previous}),
+        ).timeout(const Duration(seconds:7));
+      }
+    } catch (_) {
+      // Even without connectivity the local logout remains effective.
+    } finally {await clear(refresh); await clear(jwt);}
+  }
+}
+
+class AuthProvider with ChangeNotifier, WidgetsBindingObserver {
   String? _token;
   String? _userRole;
-  bool _isLoading = true;
+  bool _isLoading=true;
+  Timer? _refreshTimer;
+  Future<String?>? _renewing;
+  String? get token=>_token;
+  String? get userRole=>_userRole;
+  bool get isLoading=>_isLoading;
+  bool get isLoggedIn=>_token!=null;
 
-  String? get token => _token;
-  String? get userRole => _userRole;
-  bool get isLoading => _isLoading;
-  bool get isLoggedIn => _token != null;
+  AuthProvider() {
+    WidgetsBinding.instance.addObserver(this);
+    _checkLoginStatus();
+  }
 
-  AuthProvider() { _checkLoginStatus(); }
-
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if(state==AppLifecycleState.resumed && _token!=null) {
+      // Android/iOS may suspend Dart timers in background. Refresh on resume.
+      accessTokenForRequest().catchError((Object _) => null);
+    }
+  }
   Future<void> _checkLoginStatus() async {
-    final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString('jwt_token');
-    _userRole = prefs.getString('user_role');
-    _isLoading = false;
-    notifyListeners();
-    if (_token != null && _userRole == 'owner') {
-      RestaurantNotificationService.start(_token!).catchError(
-              (e) => debugPrint('فشل تجديد تسجيل الإشعارات: $e'));
-    }
+    try {
+      final prefs=await SharedPreferences.getInstance();
+      _userRole=prefs.getString('user_role');
+      _token=await ManagerSessionVault.read(ManagerSessionVault.jwt);
+      final legacy=prefs.getString('jwt_token');
+      if(_token==null && legacy!=null && legacy.isNotEmpty) {
+        _token=legacy;
+        await ManagerSessionVault.write(ManagerSessionVault.jwt,legacy);
+      }
+      await prefs.remove('jwt_token');
+      if(prefs.getBool('beytei_manager_manual_logout')==true) {
+        _token=null;
+      } else {
+        final exp=ManagerSessionVault.expiry(_token);
+        if(_token==null || exp==null ||
+          !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:5)))) {
+          // Keep the local signed-in state during temporary network outages.
+          // API requests still refuse to reuse an expired JWT and retry V39.
+          final renewed=await _renew();
+          if(renewed!=null) _token=renewed;
+        }
+      }
+      if(_token!=null) _onSessionReady();
+    } finally { _isLoading=false;notifyListeners(); }
+  }
+  Future<String?> _renew() {
+    if(_renewing!=null) return _renewing!;
+    final op=_performRenew();
+    _renewing=op;
+    op.whenComplete(() => _renewing=null);
+    return op;
   }
 
-  Future<bool> login(String username, String password, String role, {String? restaurantLat, String? restaurantLng}) async {
-    final authService = AuthService();
-    _token = await authService.loginToServer(AppConstants.BEYTEI_URL, username, password);
-
-    if (_token != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('jwt_token', _token!);
-      await prefs.setString('user_role', role);
-
-      // حفظ الموقع محلياً
-      if (restaurantLat != null && restaurantLng != null) {
-        await prefs.setString('restaurant_lat', restaurantLat);
-        await prefs.setString('restaurant_lng', restaurantLng);
+  // A WP JWT is renewed silently when needed. A temporary network outage
+  // never triggers logout, but an expired JWT must not be reused for API calls.
+  Future<String?> accessTokenForRequest({bool forceRenew = false}) async {
+    final now=DateTime.now().toUtc();
+    final exp=ManagerSessionVault.expiry(_token);
+    if (!forceRenew && _token!=null && exp!=null &&
+        exp.isAfter(now.add(const Duration(minutes:2)))) return _token;
+    final renewed=await _renew();
+    if (renewed!=null) return renewed;
+    final stillValidExpiry=ManagerSessionVault.expiry(_token);
+    return _token!=null && stillValidExpiry!=null &&
+        stillValidExpiry.isAfter(DateTime.now().toUtc().add(const Duration(seconds:15)))
+        ? _token : null;
+  }
+  Future<String?> _performRenew() async {
+    final prefs=await SharedPreferences.getInstance();
+    if(prefs.getBool('beytei_manager_manual_logout')==true) return null;
+    String? next=await ManagerSessionVault.renew();
+    if(next==null && prefs.getBool('beytei_manager_remember')==true) {
+      final u=await ManagerSessionVault.read(ManagerSessionVault.username);
+      final p=await ManagerSessionVault.read(ManagerSessionVault.password);
+      if(u!=null && p!=null && u.isNotEmpty && p.isNotEmpty) {
+        next=await AuthService().loginToServer(AppConstants.BEYTEI_URL,u,p);
       }
-
-      // تسجيل FCM Token في الخلفية (لا ننتظر النتيجة)
-      RestaurantNotificationService.start(_token!).catchError((e) {
-        debugPrint('⚠️ [Auth] فشل تسجيل FCM: $e');
-      });
-
-      _userRole = role;
+    }
+    if(next!=null) {
+      _token=next;
+      _onSessionReady();
       notifyListeners();
-      return true;
     }
-    return false;
+    return next;
   }
-
-  Future<void> logout(BuildContext context) async {
-    final authService = AuthService();
-    RestaurantNotificationService.stop();
-    await authService.logout();
-    _token = null;
-    _userRole = null;
-
-    if (context.mounted) {
-      try {
-        Provider.of<RestaurantSettingsProvider>(context, listen: false).clearData();
-        Provider.of<RestaurantProductsProvider>(context, listen: false).clearData();
-      } catch (e) {
-        print("Note: Could not clear providers.");
+  void _onSessionReady() {
+    _refreshTimer?.cancel();
+    if(_token==null) return;
+    final exp=ManagerSessionVault.expiry(_token);
+    if(exp!=null && exp.isAfter(DateTime.now().toUtc())) {
+      RestaurantNotificationService.start(_token!).catchError((Object e){});
+    }
+    _refreshTimer=Timer.periodic(const Duration(minutes:10),(_) async {
+      final exp=ManagerSessionVault.expiry(_token);
+      if(exp==null || !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:15)))) {
+        await _renew();
       }
+    });
+  }
+  Future<bool> login(String username,String password,String role,
+      {String? restaurantLat,String? restaurantLng,bool rememberCredentials=false}) async {
+    final next=await AuthService().loginToServer(AppConstants.BEYTEI_URL,username,password);
+    if(next==null) return false;
+    final prefs=await SharedPreferences.getInstance();
+    await prefs.setString('user_role',role);
+    await prefs.setBool('beytei_manager_manual_logout',false);
+    await prefs.setBool('beytei_manager_remember',rememberCredentials);
+    await prefs.setString('beytei_manager_last_username',username);
+    await prefs.remove('jwt_token');
+    if(rememberCredentials) {
+      await ManagerSessionVault.write(ManagerSessionVault.username,username);
+      await ManagerSessionVault.write(ManagerSessionVault.password,password);
+    } else {
+      await ManagerSessionVault.clear(ManagerSessionVault.username);
+      await ManagerSessionVault.clear(ManagerSessionVault.password);
+    }
+    if(restaurantLat!=null&&restaurantLng!=null) {
+      await prefs.setString('restaurant_lat',restaurantLat);
+      await prefs.setString('restaurant_lng',restaurantLng);
+    }
+    _token=next;_userRole=role;_onSessionReady();notifyListeners();
+    return true;
+  }
+  Future<void> logout(BuildContext context) async {
+    _refreshTimer?.cancel();
+    RestaurantNotificationService.stop();
+    final prefs=await SharedPreferences.getInstance();
+    await prefs.setBool('beytei_manager_manual_logout',true);
+    await ManagerSessionVault.revoke();
+    await AuthService().logout();
+    _token=null;_userRole=null;
+    if(context.mounted) {
+      try {
+        Provider.of<RestaurantSettingsProvider>(context,listen:false).clearData();
+        Provider.of<RestaurantProductsProvider>(context,listen:false).clearData();
+      } catch (_) {}
     }
     notifyListeners();
+  }
+  @override void dispose(){
+    WidgetsBinding.instance.removeObserver(this);
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 }
 
@@ -2668,6 +2819,24 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
   final _password = TextEditingController();
   bool _isLoading = false;
   bool _showPassword = false;
+  bool _remember = false;
+
+  @override
+  void initState() { super.initState(); _restoreSaved(); }
+
+  Future<void> _restoreSaved() async {
+    final prefs = await SharedPreferences.getInstance();
+    final remember = prefs.getBool('beytei_manager_remember') == true;
+    final u = remember ? await ManagerSessionVault.read(ManagerSessionVault.username) :
+        prefs.getString('beytei_manager_last_username');
+    final p = remember ? await ManagerSessionVault.read(ManagerSessionVault.password) : null;
+    if (!mounted) return;
+    setState(() {
+      _remember = remember;
+      if (u != null) _username.text = u;
+      if (p != null) _password.text = p;
+    });
+  }
 
   @override
   void dispose() {
@@ -2679,7 +2848,8 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
     setState(() => _isLoading = true);
     try {
       final auth = Provider.of<AuthProvider>(context, listen: false);
-      final result = await auth.login(_username.text.trim(), _password.text, 'owner')
+      final result = await auth.login(_username.text.trim(), _password.text, 'owner',
+          rememberCredentials: _remember)
           .timeout(const Duration(seconds: 22));
       if (!mounted) return;
       if (!result) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -2717,7 +2887,15 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
                     suffixIcon: IconButton(onPressed: () => setState(() => _showPassword = !_showPassword),
                         icon: Icon(_showPassword ? Icons.visibility_off : Icons.visibility))),
                 validator: (v) => (v ?? '').isEmpty ? 'كلمة المرور مطلوبة' : null),
-            const SizedBox(height: 22),
+            CheckboxListTile(
+              value: _remember,
+              onChanged: (value) => setState(() => _remember = value ?? false),
+              title: const Text('تذكر بيانات الدخول على هذا الجهاز'),
+              subtitle: const Text('تُحفظ كلمة المرور في التخزين الآمن فقط'),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+            ),
+            const SizedBox(height: 8),
             SizedBox(width: double.infinity, height: 50,
                 child: FilledButton(onPressed: _isLoading ? null : _login,
                     child: Text(_isLoading ? 'جارٍ تسجيل الدخول...' : 'تسجيل الدخول'))),
@@ -4958,6 +5136,25 @@ class _OrderCardState extends State<OrderCard> {
                       )
                   ),
                 ],
+                // Resolve the Woo order ID to the Laravel delivery order on the server.
+                if (widget.order.id > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        final jwt = Provider.of<AuthProvider>(context, listen: false).token;
+                        if (jwt == null) return;
+                        Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => ManagerOrderEditsV42Page(
+                            sourceOrderId: widget.order.id,
+                            wpJwt: jwt,
+                          ),
+                        ));
+                      },
+                      icon: const Icon(Icons.image_search),
+                      label: const Text('تعديلات المندوب وصور الإثبات (Laravel)'),
+                    ),
+                  ),
                 if (widget.pickupCode != null && !isFinished)
                   Container(
                       margin: const EdgeInsets.only(top: 10), width: double.infinity, padding: const EdgeInsets.all(10),
@@ -5690,4 +5887,152 @@ class _BeyteiMarketManagerScreenState extends State<BeyteiMarketManagerScreen> {
       ])),
     );
   }
+}
+
+
+// BEYTEI V42: manager proof viewer; every request goes directly to Laravel.
+// WordPress is consulted only by the EXISTING finance session token bridge.
+class ManagerOrderEditsV42Page extends StatefulWidget {
+  final int sourceOrderId;
+  final String wpJwt;
+  const ManagerOrderEditsV42Page({
+    super.key, required this.sourceOrderId, required this.wpJwt,
+  });
+  @override State<ManagerOrderEditsV42Page> createState() => _ManagerOrderEditsV42PageState();
+}
+
+class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
+  bool _busy = true;
+  String? _error;
+  List<Map<String, dynamic>> _edits = [];
+  Map<String, dynamic>? _amounts;
+
+  // The user's WP login remains unchanged. The separate 10-minute finance
+  // scope is acquired transparently and renewed once on HTTP 401.
+  Future<String> _scope({bool forceRenew = false}) async {
+    // Never reuse the JWT captured when this page was first opened. V39 may
+    // already have rotated the WP JWT while the page remained on-screen.
+    final auth=Provider.of<AuthProvider>(context, listen:false);
+    final wpToken=await auth.accessTokenForRequest(forceRenew: forceRenew);
+    if (wpToken==null || wpToken.isEmpty) {
+      throw StateError('تعذر تجديد جلسة مدير المطعم حالياً؛ أعد المحاولة عند توفر الاتصال.');
+    }
+    try {
+      return await ApiService()._merchantFinanceScope(
+        wpToken, forceRenew: forceRenew);
+    } catch (_) {
+      // If WP rejected the previously valid JWT, refresh its V39 session and
+      // retry the finance scope once. Do not call logout on transient failures.
+      if (forceRenew) rethrow;
+      final fresh=await auth.accessTokenForRequest(forceRenew: true);
+      if(fresh==null || fresh.isEmpty) rethrow;
+      return ApiService()._merchantFinanceScope(fresh, forceRenew: true);
+    }
+  }
+  Uri get _uri => Uri.parse('https://de.beytei.com/api/beytei/manager/v44/orders/by-source/' +
+      widget.sourceOrderId.toString() + '/edits');
+
+  Future<http.Response> _authorizedGet(Uri uri, {Duration timeout = const Duration(seconds: 30)}) async {
+    var scope = await _scope();
+    var response = await http.get(uri, headers: {
+      'Authorization': 'Bearer ' + scope, 'Accept': '*/*',
+    }).timeout(timeout);
+    if (response.statusCode == 401) {
+      scope = await _scope(forceRenew: true);
+      response = await http.get(uri, headers: {
+        'Authorization': 'Bearer ' + scope, 'Accept': '*/*',
+      }).timeout(timeout);
+    }
+    return response;
+  }
+
+  @override void initState() { super.initState(); _load(); }
+  Future<void> _load() async {
+    if (mounted) setState(() { _busy = true; _error = null; });
+    try {
+      final r = await _authorizedGet(_uri, timeout: const Duration(seconds: 25));
+      if (r.statusCode != 200) {
+        throw StateError('رفض سيرفر Laravel (HTTP ' + r.statusCode.toString() + ')');
+      }
+      final j = jsonDecode(r.body);
+      if (j is! Map || j['success'] != true || j['items'] is! List) {
+        throw const FormatException('استجابة إثباتات غير صالحة');
+      }
+      if (mounted) setState(() {
+        _edits = (j['items'] as List)
+          .whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+        _amounts = j['amounts'] is Map ? Map<String, dynamic>.from(j['amounts'] as Map) : null;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _error = 'تعذر جلب الإثباتات من Laravel. تحقق من صلاحية الحساب وربط المطعم بالطلب.');
+    } finally { if (mounted) setState(() => _busy = false); }
+  }
+
+  Future<void> _proof(int editId) async {
+    try {
+      final r = await _authorizedGet(
+        Uri.parse('https://de.beytei.com/api/beytei/manager/v41/proofs/' +
+          editId.toString()),
+        timeout: const Duration(seconds: 30),
+      );
+      if (r.statusCode != 200 || r.bodyBytes.isEmpty) {
+        throw const FormatException('الإثبات غير متاح أو ليس لهذا المطعم');
+      }
+      if (!mounted) return;
+      await showDialog<void>(context: context, builder: (_) => AlertDialog(
+        title: const Text('صورة إثبات المندوب'),
+        content: Image.memory(r.bodyBytes, fit: BoxFit.contain),
+        actions: [TextButton(onPressed: () => Navigator.of(context).pop(),
+            child: const Text('إغلاق'))],
+      ));
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تعذر عرض الصورة. تحقق من الاتصال والصلاحيات.')));
+    }
+  }
+
+  String _label(String? a) {
+    if (a == 'remove_item') return 'إزالة منتج';
+    if (a == 'add_item') return 'إضافة منتج';
+    if (a == 'change_price') return 'تعديل سعر';
+    return 'تعديل';
+  }
+  @override Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('صور وتعديلات المندوب — Laravel'),
+      actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _busy ? null : _load)]),
+    body: _busy ? const Center(child: CircularProgressIndicator())
+      : _error != null ? Center(child: Padding(padding: const EdgeInsets.all(24),
+        child: Text(_error!, textAlign: TextAlign.center)))
+      : _edits.isEmpty ? const Center(child: Text('لا توجد طلبات تعديل مسجلة'))
+      : Column(children: [
+          if (_amounts != null) Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text('المبلغ الحالي للتحصيل: ' +
+              (_amounts!['total_to_collect_iqd'] ?? '-').toString() + ' د.ع',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          ),
+          Expanded(child: ListView.builder(
+          padding: const EdgeInsets.all(12), itemCount: _edits.length,
+          itemBuilder: (context,index) {
+            final e = _edits[index];
+            final id = int.tryParse((e['id'] ?? '').toString()) ?? 0;
+            return Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(_label(e['action']?.toString()) + ': ' +
+                    (e['item_name'] ?? 'منتج').toString(),
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text('المندوب رقم ' + (e['driver_id'] ?? '-').toString()),
+                Text('السبب: ' + (e['reason'] ?? '').toString()),
+                Text('السعر السابق: ' + (e['before_total_iqd'] ?? '-').toString() +
+                    ' د.ع — السعر الجديد: ' +
+                    (e['proposed_total_iqd'] ?? '-').toString() + ' د.ع'),
+                Text('الحالة: ' + (e['status'] ?? '').toString()),
+                TextButton.icon(onPressed: id > 0 ? () => _proof(id) : null,
+                    icon: const Icon(Icons.image), label: const Text('عرض الصورة')),
+              ],
+            )));
+          },
+        )),
+        ]),
+  );
 }
