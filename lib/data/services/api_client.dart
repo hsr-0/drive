@@ -23,6 +23,7 @@ class ApiClient extends LocalStorageService {
     _dio.options.headers = {
       "Accept": "application/json",
       "dev-token": Environment.devToken,
+      'X-Beytei-Taxi-Protocol': '2',
     };
     _dio.options.followRedirects = false;
     _dio.options.validateStatus = (status) {

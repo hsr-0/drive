@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:ovoride_driver/core/route/route.dart';
@@ -8,7 +9,6 @@ import 'package:ovoride_driver/core/utils/style.dart';
 import 'package:ovoride_driver/data/controller/dashboard/dashboard_controller.dart';
 import 'package:ovoride_driver/presentation/components/bottom-sheet/custom_bottom_sheet.dart';
 import 'package:ovoride_driver/presentation/components/divider/custom_spacer.dart';
-import 'package:ovoride_driver/presentation/components/no_data.dart';
 import 'package:ovoride_driver/presentation/components/shimmer/ride_shimmer.dart';
 import 'package:ovoride_driver/presentation/screens/dashboard/dashboard_background.dart';
 import 'package:ovoride_driver/presentation/screens/dashboard/widgets/driver_kyc_warning_section.dart';
@@ -19,6 +19,7 @@ import 'package:ovoride_driver/presentation/screens/rides/home_screen/widget/off
 import '../../../../core/helper/string_format_helper.dart';
 import 'contest_details_screen.dart';
 import 'widget/new_ride_card.dart';
+import 'widget/driver_standby_map.dart';
 
 // 🛑 تأكد من تعديل هذا المسار ليتطابق مع مكان حفظك للملف الجديد
 
@@ -34,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
   double appBarSize = 90.0;
 
   ScrollController scrollController = ScrollController();
+  Timer? _offerPoller;
   void scrollListener() {
     if (scrollController.position.pixels == scrollController.position.maxScrollExtent) {
       if (Get.find<DashBoardController>().hasNext()) {
@@ -49,7 +51,17 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
       Get.find<DashBoardController>().initialData(shouldLoad: true);
       scrollController.addListener(scrollListener);
+      _offerPoller = Timer.periodic(const Duration(seconds: 10), (_) {
+        if (mounted) Get.find<DashBoardController>().refreshActiveOffers();
+      });
     });
+  }
+
+  @override
+  void dispose() {
+    _offerPoller?.cancel();
+    scrollController.dispose();
+    super.dispose();
   }
 
   @override
@@ -175,10 +187,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ] else if (controller.isLoading == false && controller.rideList.isEmpty) ...[
                         SliverToBoxAdapter(
-                          child: NoDataWidget(
-                            text: MyStrings.noRideFoundInYourArea.tr,
-                            isRide: true,
-                            margin: controller.runningRide?.id != "-1" ? 4 : 8,
+                          child: DriverStandbyMap(
+                            position: controller.currentPosition,
+                            online: controller.userOnline,
                           ),
                         ),
                       ] else ...[

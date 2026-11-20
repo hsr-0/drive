@@ -12,9 +12,13 @@ class RideQueueManager extends GetxController {
 
   // Flag to check if a dialog is currently showing
   bool _isDialogShowing = false;
+  String? _activeRideId;
+  final Set<String> _queuedIds = <String>{};
 
   // Add ride to queue
   void addRideToQueue(RideQueueItem item) {
+    final id = item.ride.id ?? '-1';
+    if (id == '-1' || !_queuedIds.add(id)) return;
     _rideQueue.add(item);
     printX("Ride added to queue id: ${item.ride.id} . Queue size: ${_rideQueue.length} ");
 
@@ -32,6 +36,7 @@ class RideQueueManager extends GetxController {
 
     _isDialogShowing = true;
     final rideItem = _rideQueue.first;
+    _activeRideId = rideItem.ride.id;
 
     CustomNewRideDialog.newRide(
       ride: rideItem.ride,
@@ -39,26 +44,30 @@ class RideQueueManager extends GetxController {
       currencySym: rideItem.currencySym,
       dashboardController: rideItem.dashboardController,
       onBidClick: () async {
-        _onDialogDismissed();
+        _onDialogDismissed(rideItem.ride.id);
       },
       onCancel: () {
-        _onDialogDismissed();
+        rideItem.dashboardController.declineOffer(rideItem.ride.id ?? '-1');
+        _onDialogDismissed(rideItem.ride.id);
       },
       onDispose: () {
-        _onDialogDismissed();
+        _onDialogDismissed(rideItem.ride.id);
       },
     );
   }
 
   // Handle dialog dismissal
-  void _onDialogDismissed() {
+  void _onDialogDismissed(String? rideId) {
+    if (_activeRideId != rideId || !_isDialogShowing) return;
     // Remove the current ride from queue
     if (_rideQueue.isNotEmpty) {
+      _queuedIds.remove(_rideQueue.first.ride.id);
       _rideQueue.removeFirst();
       printX("Ride removed from queue. Remaining: ${_rideQueue.length}");
     }
 
     _isDialogShowing = false;
+    _activeRideId = null;
 
     // Show next ride after 2 seconds if queue is not empty
     if (_rideQueue.isNotEmpty) {
@@ -71,6 +80,7 @@ class RideQueueManager extends GetxController {
   // Clear all pending rides
   void clearQueue() {
     _rideQueue.clear();
+    _queuedIds.clear();
     printX("Queue cleared");
   }
 

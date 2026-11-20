@@ -42,6 +42,11 @@ class GlobalPusherController extends GetxController {
       if (event.data == null || event.eventName == "" || event.data.toString() == "{}") return;
 
       final eventName = event.eventName.toLowerCase();
+      if (eventName == 'beytei:reconnected') {
+        dashBoardController.refreshActiveOffers();
+        return;
+      }
+
 
       //Dashbaod New Ride Popup and Rides Management
       if (eventName == "new_ride" && !isRideDetailsPage()) {

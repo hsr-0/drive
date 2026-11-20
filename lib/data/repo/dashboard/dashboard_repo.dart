@@ -101,6 +101,12 @@ class DashBoardRepo {
   }
   // ===========================================================================
 
+  Future<ResponseModel> declineOffer(String rideId) async {
+    return apiClient.request(
+      '${UrlContainer.baseUrl}driver/bid/decline/$rideId',
+      Method.postMethod, <String, dynamic>{}, passHeader: true);
+  }
+
   Future<ResponseModel> createBid({
     required String amount,
     required String id,

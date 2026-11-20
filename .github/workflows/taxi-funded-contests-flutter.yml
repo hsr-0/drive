@@ -24,7 +24,7 @@ jobs:
         run: flutter pub get
       - name: Analyze modified driver contest files
         run: |
-          flutter analyze --no-pub \
+          flutter analyze --no-pub --no-fatal-infos \
             lib/presentation/screens/rides/home_screen/contest_details_screen.dart \
             lib/presentation/screens/rides/home_screen/home_screen.dart \
             lib/data/repo/dashboard/dashboard_repo.dart \

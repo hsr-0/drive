@@ -1,0 +1,48 @@
+name: Beytei hybrid taxi Android debug APK
+on:
+  pull_request:
+    paths:
+      - 'lib/**'
+      - 'android/**'
+      - '.github/workflows/hybrid-dispatch-debug-apk.yml'
+jobs:
+  android-test-apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.9'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Create required local Android SDK and Flutter path settings
+        run: |
+          printf 'sdk.dir=%s\nflutter.sdk=%s\n' "$ANDROID_HOME" "$FLUTTER_ROOT" > android/local.properties
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Generate Gradle wrapper outside the Flutter project (avoid premature plugin resolution)
+        run: |
+          mkdir -p "$RUNNER_TEMP/beytei-gradle-wrapper"
+          cd "$RUNNER_TEMP/beytei-gradle-wrapper"
+          printf 'plugins { id "base" }\n' > build.gradle
+          gradle wrapper --gradle-version 8.13 --distribution-type bin
+          cp gradlew "$GITHUB_WORKSPACE/android/gradlew"
+          cp -R gradle/wrapper/. "$GITHUB_WORKSPACE/android/gradle/wrapper/"
+          chmod +x "$GITHUB_WORKSPACE/android/gradlew"
+      - name: Accept Android SDK licences and install requested NDK
+        run: |
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.14033849"
+      - run: flutter build apk --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 'beytei-driver-hybrid-debug-apk'
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
