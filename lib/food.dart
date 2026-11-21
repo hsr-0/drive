@@ -10,7 +10,11 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:intl/intl.dart';
 import 'dart:ui' as ui;
+import 'package:flutter/services.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:image_picker/image_picker.dart';
+import 'dev/beytei_evidence_camera.dart';
 import 'package:flutter_rating_bar/flutter_rating_bar.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -19,6 +23,71 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart' as geolocator;
 import 'package:fluttertoast/fluttertoast.dart';
+
+/// Product photos use the same adaptive JPEG compression approach as the
+/// driver's order-editing evidence. Keep file bytes small BEFORE base64 JSON
+/// upload to the existing WordPress create/update-product endpoints.
+class BeyteiProductPhotoProcessor {
+  static const int targetBytes = 500 * 1024;
+  // The WordPress JSON payload includes base64 overhead, so keep a lower cap
+  // than the driver's 3 MiB Laravel multipart evidence limit.
+  static const int maxBytes = 2 * 1024 * 1024;
+
+  static Future<File> prepare(XFile picked) async {
+    final source = File(picked.path);
+    if (!await source.exists() || await source.length() == 0) {
+      throw const FormatException('الصورة المختارة غير موجودة. حاول مرة ثانية.');
+    }
+    final cache = await getTemporaryDirectory();
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final destination = File('${cache.path}/beytei_product_$stamp.jpg');
+    // Same 5 compression attempts used by the driver proof workflow:
+    // stop at the first JPEG <= 500 KiB, but keep a clearer photo up to 2 MiB
+    // when the image has detailed text or a complex background.
+    const variants = <(int, int)>[
+      (1600, 78), (1440, 72), (1280, 66), (1152, 60), (1024, 55),
+    ];
+    List<int>? bestBytes;
+    try {
+      for (final (edge, quality) in variants) {
+        final candidate = await FlutterImageCompress.compressWithFile(
+          source.absolute.path,
+          minWidth: edge,
+          minHeight: edge,
+          quality: quality,
+          keepExif: false,
+          format: CompressFormat.jpeg,
+        );
+        if (candidate == null || candidate.isEmpty) continue;
+        if (bestBytes == null || candidate.length < bestBytes.length) {
+          bestBytes = candidate;
+        }
+        if (candidate.length <= targetBytes) {
+          bestBytes = candidate;
+          break;
+        }
+      }
+    } catch (_) {
+      // Some devices cannot decode an unusual source format. Check the
+      // original format/size below, never send unsupported HEIC by mistake.
+    }
+    if (bestBytes != null && bestBytes.length <= maxBytes) {
+      await destination.writeAsBytes(bestBytes, flush: true);
+      if (await destination.length() > 0) return destination;
+    }
+
+    // A fallback is safe only when the original is already small and uses a
+    // WordPress-friendly format. JPEG is preferred whenever conversion works.
+    final extension = picked.path.split('.').last.toLowerCase();
+    const supported = {'jpg', 'jpeg', 'png', 'webp'};
+    if (!supported.contains(extension) ||
+        await source.length() > maxBytes) {
+      throw const FormatException(
+          'تعذر ضغط الصورة إلى حجم مناسب (بحد أقصى 2 ميغابايت). اختر صورة أخرى أو أعد التصوير.');
+    }
+    return source.copy('${cache.path}/beytei_product_$stamp.$extension');
+  }
+}
 
 // =======================================================================
 // 🔷 القسم 1: الثوابت (Constants)
@@ -388,7 +457,7 @@ class AuthService {
         print("✅ [Auth] نجح الدخول، تم استلام التوكن");
         if (data is! Map || data['token'] is! String) return null;
         final fresh = data['refresh_token'] is String ?
-            data['refresh_token'] as String : null;
+        data['refresh_token'] as String : null;
         if (fresh == null || fresh.isEmpty) {
           // Prevent a refresh token belonging to a previous account from surviving.
           await ManagerSessionVault.clear(ManagerSessionVault.refresh);
@@ -1541,7 +1610,7 @@ class ManagerSessionVault {
       final data=json.decode(utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))));
       final value=int.tryParse((data['exp'] ?? '').toString());
       return value == null ? null :
-        DateTime.fromMillisecondsSinceEpoch(value*1000,isUtc:true);
+      DateTime.fromMillisecondsSinceEpoch(value*1000,isUtc:true);
     } catch (_) {return null;}
   }
   static Future<String?> renew() async {
@@ -1617,7 +1686,7 @@ class AuthProvider with ChangeNotifier, WidgetsBindingObserver {
       } else {
         final exp=ManagerSessionVault.expiry(_token);
         if(_token==null || exp==null ||
-          !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:5)))) {
+            !exp.isAfter(DateTime.now().toUtc().add(const Duration(minutes:5)))) {
           // Keep the local signed-in state during temporary network outages.
           // API requests still refuse to reuse an expired JWT and retry V39.
           final renewed=await _renew();
@@ -2558,7 +2627,7 @@ void showBeyteiCompletedDriverOrder(BuildContext context, Map<String, dynamic> o
                   final jwt = Provider.of<AuthProvider>(buttonContext, listen: false).token;
                   if (jwt == null || jwt.isEmpty) {
                     ScaffoldMessenger.of(buttonContext).showSnackBar(
-                      const SnackBar(content: Text('يرجى تجديد تسجيل الدخول')));
+                        const SnackBar(content: Text('يرجى تجديد تسجيل الدخول')));
                     return;
                   }
                   Navigator.of(buttonContext).push(MaterialPageRoute(
@@ -2651,8 +2720,8 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
         if (!mounted || _status != selected || version != _requestVersion) return;
         final rows = (result['orders'] is List)
             ? (result['orders'] as List)
-                .whereType<Map>()
-                .map((e) => Map<String, dynamic>.from(e)).toList()
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e)).toList()
             : <Map<String, dynamic>>[];
         setState(() {
           if (selected == 'completed') {
@@ -2853,7 +2922,7 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
               onPressed: _loading || _searching ? null : _findNumber,
               child: _searching
                   ? const SizedBox(width: 18, height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2))
+                  child: CircularProgressIndicator(strokeWidth: 2))
                   : const Text('بحث'),
             ),
           ]),
@@ -2861,7 +2930,7 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
         if (_searchMessage.isNotEmpty) Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
           child: Align(alignment: Alignment.centerRight,
-            child: Text(_searchMessage, style: const TextStyle(fontSize: 12))),
+              child: Text(_searchMessage, style: const TextStyle(fontSize: 12))),
         ),
         Expanded(child: RefreshIndicator(
           onRefresh: () => _load(reset: true),
@@ -2870,7 +2939,7 @@ class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen>
             children: [
               if (_loading && _orders.isEmpty && _completedRows.isEmpty)
                 const Padding(padding: EdgeInsets.all(40),
-                  child: Center(child: CircularProgressIndicator())),
+                    child: Center(child: CircularProgressIndicator())),
               if (_error != null) Padding(
                 padding: const EdgeInsets.all(12),
                 child: Text(_error!, style: const TextStyle(color: Colors.deepOrange)),
@@ -3068,7 +3137,7 @@ class _RestaurantLoginScreenState extends State<RestaurantLoginScreen> {
     final prefs = await SharedPreferences.getInstance();
     final remember = prefs.getBool('beytei_manager_remember') == true;
     final u = remember ? await ManagerSessionVault.read(ManagerSessionVault.username) :
-        prefs.getString('beytei_manager_last_username');
+    prefs.getString('beytei_manager_last_username');
     final p = remember ? await ManagerSessionVault.read(ManagerSessionVault.password) : null;
     if (!mounted) return;
     setState(() {
@@ -4556,7 +4625,7 @@ class ProductEditorScreen extends StatefulWidget {
   State<ProductEditorScreen> createState() => _ProductEditorScreenState();
 }
 
-class _ProductEditorScreenState extends State<ProductEditorScreen> {
+class _ProductEditorScreenState extends State<ProductEditorScreen> with WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   final _api = ApiService();
   final ImagePicker _imagePicker = ImagePicker();
@@ -4576,6 +4645,10 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
   }
   int? _category;
   File? _image;
+  int? _imageBytes;
+  bool _pickingImage = false;
+  bool _preparingImage = false;
+  bool _recoveringImage = false;
   bool _saving = false;
   bool _fetchingOptions = false;
   bool _localDraft = false;
@@ -4588,6 +4661,9 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Android may recreate the app while its system gallery picker is open.
+    unawaited(_recoverLostProductImage());
     final p = widget.product;
     _name = TextEditingController(text: p?.name ?? '');
     _description = TextEditingController(text: p?.description ?? '');
@@ -4611,8 +4687,16 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
   }
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _name.dispose(); _description.dispose(); _price.dispose(); _salePrice.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_pickingImage) {
+      unawaited(_recoverLostProductImage());
+    }
   }
 
   Future<void> _loadOptions(int productId) async {
@@ -4634,14 +4718,120 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
       if (mounted) setState(() => _fetchingOptions = false);
     }
   }
-  Future<void> _pickImage() async {
+  bool get _photoBusy => _saving || _pickingImage || _preparingImage;
+
+  void _photoError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(message), duration: const Duration(seconds: 5),
+    ));
+  }
+
+  // Recover Android system gallery results after an activity/process restart,
+  // matching the driver's evidence picker safeguards.
+  Future<void> _recoverLostProductImage() async {
+    if (_recoveringImage || _pickingImage || _saving || _preparingImage) return;
+    _recoveringImage = true;
     try {
-      final file = await _imagePicker.pickImage(source: ImageSource.gallery, imageQuality: 72,
-          maxWidth: 1200, maxHeight: 1200);
-      if (file != null && mounted) setState(() => _image = File(file.path));
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('تعذر اختيار الصورة: $e')));
+      final lost = await _imagePicker.retrieveLostData();
+      if (lost.isEmpty) return;
+      if (lost.exception != null) {
+        _photoError('تعذر استرجاع الصورة من المعرض. حاول اختيارها مرة ثانية.');
+      } else if (lost.files != null && lost.files!.isNotEmpty) {
+        await _prepareSelectedImage(lost.files!.first);
+      } else if (lost.file != null) {
+        await _prepareSelectedImage(lost.file!);
+      }
+    } catch (_) {
+      // No lost-data state on some devices/iOS gallery implementations.
+    } finally {
+      _recoveringImage = false;
     }
+  }
+
+  Future<void> _prepareSelectedImage(XFile file) async {
+    if (_preparingImage || _saving) return;
+    if (mounted) setState(() => _preparingImage = true);
+    try {
+      final compressed = await BeyteiProductPhotoProcessor.prepare(file);
+      final bytes = await compressed.length();
+      if (!mounted) return;
+      setState(() {
+        _image = compressed;
+        _imageBytes = bytes;
+      });
+    } on FormatException catch (e) {
+      _photoError(e.message);
+    } catch (_) {
+      _photoError('تعذر تجهيز الصورة وضغطها. أعد التصوير أو اختر صورة أخرى.');
+    } finally {
+      if (mounted) setState(() => _preparingImage = false);
+    }
+  }
+
+  // Keep the driver flow: IN-APP camera with preview/retake/confirm, or the
+  // native photo gallery. Both choices share the same adaptive compression.
+  Future<void> _pickImage(ImageSource source) async {
+    if (_photoBusy) return;
+    FocusScope.of(context).unfocus();
+    setState(() => _pickingImage = true);
+    bool recoverGallery = false;
+    try {
+      final XFile? picked;
+      if (source == ImageSource.camera) {
+        picked = await Navigator.of(context).push<XFile>(
+          MaterialPageRoute<XFile>(
+            builder: (_) => const BeyteiEvidenceCameraPage(),
+          ),
+        );
+      } else {
+        picked = await _imagePicker.pickImage(
+          source: ImageSource.gallery,
+          maxWidth: 1600,
+          maxHeight: 1600,
+          imageQuality: 85,
+        );
+      }
+      if (picked != null) {
+        await _prepareSelectedImage(picked);
+      } else if (source == ImageSource.gallery) {
+        recoverGallery = true;
+      }
+    } on PlatformException catch (_) {
+      _photoError('تعذر فتح الكاميرا أو المعرض. تحقق من صلاحية الكاميرا والصور.');
+    } catch (_) {
+      _photoError('تعذر التقاط الصورة أو اختيارها. حاول مرة ثانية.');
+    } finally {
+      if (mounted) setState(() => _pickingImage = false);
+      if (recoverGallery && mounted) await _recoverLostProductImage();
+    }
+  }
+
+  Future<void> _chooseImageSource() async {
+    if (_photoBusy) return;
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const ListTile(title: Text('إضافة صورة المنتج',
+              style: TextStyle(fontWeight: FontWeight.bold))),
+          ListTile(
+            leading: const Icon(Icons.camera_alt_outlined),
+            title: const Text('التقاط صورة بالكاميرا'),
+            onTap: () => Navigator.pop(ctx, ImageSource.camera),
+          ),
+          ListTile(
+            leading: const Icon(Icons.photo_library_outlined),
+            title: const Text('اختيار صورة من المعرض'),
+            onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+          ),
+          const SizedBox(height: 12),
+        ],
+      )),
+    );
+    if (source != null && mounted) await _pickImage(source);
   }
   Future<void> _editGroup({int? index}) async {
     final group = await Navigator.push<MenuOptionGroup>(context, MaterialPageRoute(
@@ -4675,7 +4865,7 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
     return null;
   }
   Future<void> _save() async {
-    if (_saving || !_formKey.currentState!.validate()) return;
+    if (_photoBusy || !_formKey.currentState!.validate()) return;
     if (_creationUncertain && _currentId == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('تحقق من قائمة الوجبات قبل إعادة الإضافة؛ قد يكون السيرفر حفظ الوجبة بالفعل.')));
@@ -4778,20 +4968,60 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
     }
   }
 
-  Widget _productImage() => InkWell(onTap: _saving ? null : _pickImage,
-      borderRadius: BorderRadius.circular(18), child: Container(
-        height: 165, width: double.infinity, decoration: BoxDecoration(
-          color: const Color(0xFFEFF5F1), borderRadius: BorderRadius.circular(18)),
-        child: ClipRRect(borderRadius: BorderRadius.circular(18), child: _image != null
-            ? Image.file(_image!, fit: BoxFit.cover)
-            : widget.product != null && widget.product!.imageUrl.isNotEmpty
-            ? CachedNetworkImage(imageUrl: widget.product!.imageUrl, fit: BoxFit.cover,
-            errorWidget: (_, __, ___) => const Icon(Icons.add_a_photo_outlined, size: 48))
-            : const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(Icons.add_a_photo_outlined, size: 45, color: const Color(0xFF168EC7)),
-          SizedBox(height: 8), Text('اضغط لإضافة صورة (اختياري)'),
-        ])),
-      ));
+  Widget _productImage() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      InkWell(
+        onTap: _photoBusy ? null : _chooseImageSource,
+        borderRadius: BorderRadius.circular(18),
+        child: Container(
+          height: 165, width: double.infinity,
+          decoration: BoxDecoration(color: const Color(0xFFEFF5F1),
+              borderRadius: BorderRadius.circular(18)),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: _preparingImage
+                ? const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              CircularProgressIndicator(), SizedBox(height: 10),
+              Text('جارٍ ضغط صورة المنتج...'),
+            ]))
+                : _image != null
+                ? Image.file(_image!, fit: BoxFit.cover)
+                : widget.product != null && widget.product!.imageUrl.isNotEmpty
+                ? CachedNetworkImage(imageUrl: widget.product!.imageUrl,
+                fit: BoxFit.cover,
+                errorWidget: (_, __, ___) => const Icon(Icons.add_a_photo_outlined, size: 48))
+                : const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.add_a_photo_outlined, size: 45,
+                  color: Color(0xFF168EC7)),
+              SizedBox(height: 8), Text('أضف صورة للمنتج (اختياري)'),
+            ]),
+          ),
+        ),
+      ),
+      const SizedBox(height: 10),
+      Row(children: [
+        Expanded(child: OutlinedButton.icon(
+          onPressed: _photoBusy ? null : () => _pickImage(ImageSource.camera),
+          icon: const Icon(Icons.camera_alt_outlined),
+          label: const Text('التصوير بالكاميرا'),
+        )),
+        const SizedBox(width: 10),
+        Expanded(child: OutlinedButton.icon(
+          onPressed: _photoBusy ? null : () => _pickImage(ImageSource.gallery),
+          icon: const Icon(Icons.photo_library_outlined),
+          label: const Text('معرض الصور'),
+        )),
+      ]),
+      if (_imageBytes != null) Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Text('الصورة جاهزة للرفع، حجمها بعد الضغط: '
+            '${(_imageBytes! / 1024).toStringAsFixed(0)} كيلوبايت',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: Colors.black54)),
+      ),
+    ],
+  );
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -4875,7 +5105,7 @@ class _ProductEditorScreenState extends State<ProductEditorScreen> {
             'إذا لم يدعم السيرفر الخيارات بعد، تُحفظ مسودة على هذا الجهاز ونحاول إخفاء الوجبة تلقائياً لمنع بيعها بدون الخيارات.'),
       ),
       const SizedBox(height: 28),
-      FilledButton.icon(onPressed: _saving ? null : _save, icon: const Icon(Icons.save_outlined),
+      FilledButton.icon(onPressed: _photoBusy ? null : _save, icon: const Icon(Icons.save_outlined),
           label: Padding(padding: const EdgeInsets.symmetric(vertical: 12),
               child: Text(_saving ? 'جارٍ الحفظ...' : (_isEditing ? 'حفظ التغييرات' : 'إضافة الوجبة')))),
       const SizedBox(height: 30),
@@ -6162,7 +6392,7 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
     }
     try {
       return await ApiService()._merchantFinanceScope(
-        wpToken, forceRenew: forceRenew);
+          wpToken, forceRenew: forceRenew);
     } catch (_) {
       // If WP rejected the previously valid JWT, refresh its V39 session and
       // retry the finance scope once. Do not call logout on transient failures.
@@ -6203,7 +6433,7 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
       }
       if (mounted) setState(() {
         _edits = (j['items'] as List)
-          .whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+            .whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
         _amounts = j['amounts'] is Map ? Map<String, dynamic>.from(j['amounts'] as Map) : null;
       });
     } catch (_) {
@@ -6215,7 +6445,7 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
     try {
       final r = await _authorizedGet(
         Uri.parse('https://de.beytei.com/api/beytei/manager/v41/proofs/' +
-          editId.toString()),
+            editId.toString()),
         timeout: const Duration(seconds: 30),
       );
       if (r.statusCode != 200 || r.bodyBytes.isEmpty) {
@@ -6230,7 +6460,7 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
       ));
     } catch (_) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تعذر عرض الصورة. تحقق من الاتصال والصلاحيات.')));
+          const SnackBar(content: Text('تعذر عرض الصورة. تحقق من الاتصال والصلاحيات.')));
     }
   }
 
@@ -6242,40 +6472,40 @@ class _ManagerOrderEditsV42PageState extends State<ManagerOrderEditsV42Page> {
   }
   @override Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('صور وتعديلات المندوب — Laravel'),
-      actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _busy ? null : _load)]),
+        actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _busy ? null : _load)]),
     body: _busy ? const Center(child: CircularProgressIndicator())
-      : _error != null ? Center(child: Padding(padding: const EdgeInsets.all(24),
+        : _error != null ? Center(child: Padding(padding: const EdgeInsets.all(24),
         child: Text(_error!, textAlign: TextAlign.center)))
-      : _edits.isEmpty ? const Center(child: Text('لا توجد طلبات تعديل مسجلة'))
-      : Column(children: [
-          if (_amounts != null) Padding(
-            padding: const EdgeInsets.all(12),
-            child: Text('المبلغ الحالي للتحصيل: ' +
-              (_amounts!['total_to_collect_iqd'] ?? '-').toString() + ' د.ع',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-          ),
-          Expanded(child: ListView.builder(
-          padding: const EdgeInsets.all(12), itemCount: _edits.length,
-          itemBuilder: (context,index) {
-            final e = _edits[index];
-            final id = int.tryParse((e['id'] ?? '').toString()) ?? 0;
-            return Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(_label(e['action']?.toString()) + ': ' +
-                    (e['item_name'] ?? 'منتج').toString(),
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
-                Text('المندوب رقم ' + (e['driver_id'] ?? '-').toString()),
-                Text('السبب: ' + (e['reason'] ?? '').toString()),
-                Text('السعر السابق: ' + (e['before_total_iqd'] ?? '-').toString() +
-                    ' د.ع — السعر الجديد: ' +
-                    (e['proposed_total_iqd'] ?? '-').toString() + ' د.ع'),
-                Text('الحالة: ' + (e['status'] ?? '').toString()),
-                TextButton.icon(onPressed: id > 0 ? () => _proof(id) : null,
-                    icon: const Icon(Icons.image), label: const Text('عرض الصورة')),
-              ],
-            )));
-          },
-        )),
-        ]),
+        : _edits.isEmpty ? const Center(child: Text('لا توجد طلبات تعديل مسجلة'))
+        : Column(children: [
+      if (_amounts != null) Padding(
+        padding: const EdgeInsets.all(12),
+        child: Text('المبلغ الحالي للتحصيل: ' +
+            (_amounts!['total_to_collect_iqd'] ?? '-').toString() + ' د.ع',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+      ),
+      Expanded(child: ListView.builder(
+        padding: const EdgeInsets.all(12), itemCount: _edits.length,
+        itemBuilder: (context,index) {
+          final e = _edits[index];
+          final id = int.tryParse((e['id'] ?? '').toString()) ?? 0;
+          return Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(_label(e['action']?.toString()) + ': ' +
+                (e['item_name'] ?? 'منتج').toString(),
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            Text('المندوب رقم ' + (e['driver_id'] ?? '-').toString()),
+            Text('السبب: ' + (e['reason'] ?? '').toString()),
+            Text('السعر السابق: ' + (e['before_total_iqd'] ?? '-').toString() +
+                ' د.ع — السعر الجديد: ' +
+                (e['proposed_total_iqd'] ?? '-').toString() + ' د.ع'),
+            Text('الحالة: ' + (e['status'] ?? '').toString()),
+            TextButton.icon(onPressed: id > 0 ? () => _proof(id) : null,
+                icon: const Icon(Icons.image), label: const Text('عرض الصورة')),
+          ],
+          )));
+        },
+      )),
+    ]),
   );
 }
