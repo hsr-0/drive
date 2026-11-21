@@ -1496,6 +1496,11 @@ class BeyteiDeliveryItemDetailsV6 {
     for (final key in const [
       'line_items', 'items', 'notes', 'customer_note', 'order_note',
       'order_items', 'items_description', 'source_type',
+      // V48.1: keep the server's signed display amounts in partial accept responses.
+      'v47_promotion_campaign_id', 'v47_original_food_iqd',
+      'v47_platform_food_discount_iqd', 'v47_merchant_food_discount_iqd',
+      'v47_platform_delivery_subsidy_iqd', 'v47_merchant_delivery_subsidy_iqd',
+      'v47_restaurant_payable_iqd', 'v47_customer_total_iqd',
     ]) {
       final value = result[key];
       if (value == null || (value is String && value.trim().isEmpty) ||
@@ -4305,13 +4310,14 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
               ],
             ),
             const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(height: 1)),
-            Row(
-              children: [
-                const Icon(Icons.location_on, size: 18, color: Colors.redAccent),
-                const SizedBox(width: 8),
-                Expanded(child: Text(address, style: const TextStyle(fontSize: 14, color: Colors.black87), maxLines: 2)),
-              ],
-            ),
+            if (widget.activeOrdersCount > 0)
+              Row(
+                children: [
+                  const Icon(Icons.location_on, size: 18, color: Colors.redAccent),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(address, style: const TextStyle(fontSize: 14, color: Colors.black87), maxLines: 2)),
+                ],
+              ),
 
             // Visible before the driver opens details: actual customer remarks.
             if (hasNotes)
@@ -4391,6 +4397,22 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
     final double orderTotal = double.tryParse(order['order_total']?.toString() ?? '0') ?? 0;
     final double totalToCollect = double.tryParse(order['total_to_collect']?.toString() ?? '0') ?? 0;
 
+    // BEYTEI_V48_1_DRIVER_FINANCIAL_BREAKDOWN — عرض فقط، دون حساب نسب الخصم.
+    double v48PendingMoney(String key) =>
+        double.tryParse(order[key]?.toString() ?? '0') ?? 0;
+    final bool isV48Pending =
+        (int.tryParse(order['v47_promotion_campaign_id']?.toString() ?? '') ?? 0) > 0 &&
+            order['v47_restaurant_payable_iqd'] != null &&
+            order['v47_customer_total_iqd'] != null;
+    final double pendingFoodGross = v48PendingMoney('v47_original_food_iqd');
+    final double pendingRestaurantDiscount = v48PendingMoney('v47_merchant_food_discount_iqd');
+    final double pendingRestaurantDelivery = v48PendingMoney('v47_merchant_delivery_subsidy_iqd');
+    final double pendingPlatformDelivery = v48PendingMoney('v47_platform_delivery_subsidy_iqd');
+    final double pendingRestaurantPayable = v48PendingMoney('v47_restaurant_payable_iqd');
+    final double pendingPlatformCredit = v48PendingMoney('discount_amount');
+    final double pendingCustomerPayable = v48PendingMoney('v47_customer_total_iqd');
+
+
     double finalItemsPrice = orderTotal > 0 ? orderTotal : (totalToCollect > deliveryFee ? totalToCollect - deliveryFee : 0);
     double finalGrandTotal = totalToCollect > 0 ? totalToCollect : (finalItemsPrice + deliveryFee);
 
@@ -4436,11 +4458,23 @@ class _DriverAvailableDeliveriesV3ScreenState extends State<DriverAvailableDeliv
 
                 const Divider(height: 30, color: Colors.black12),
 
-                _summaryRow("سعر الطلب:", finalItemsPrice),
+                _summaryRow(isV48Pending ? "قيمة الوجبات الأصلية:" : "سعر الطلب:",
+                    isV48Pending ? pendingFoodGross : finalItemsPrice),
+                if (isV48Pending) ...[
+                  _summaryRow("خصم المطعم:", pendingRestaurantDiscount),
+                  if (pendingRestaurantDelivery > 0)
+                    _summaryRow("مساهمة المطعم في التوصيل:", pendingRestaurantDelivery),
+                  _summaryRow("المطلوب دفعه للمطعم:", pendingRestaurantPayable, isBold: true),
+                  _summaryRow("خصم بيتي للمحفظة:", pendingPlatformCredit),
+                  if (pendingPlatformDelivery > 0)
+                    _summaryRow("من تعويض بيتي للتوصيل:", pendingPlatformDelivery),
+                ],
                 const SizedBox(height: 12),
                 _summaryRow("سعر التوصيل:", deliveryFee),
                 const Padding(padding: EdgeInsets.symmetric(vertical: 15), child: Divider(color: Colors.black12)),
-                _summaryRow("الإجمالي الكلي:", finalGrandTotal, isBold: true, color: Colors.green.shade700, size: 18),
+                _summaryRow(isV48Pending ? "المطلوب من الزبون:" : "الإجمالي الكلي:",
+                    isV48Pending ? pendingCustomerPayable : finalGrandTotal,
+                    isBold: true, color: Colors.green.shade700, size: 18),
 
                 const SizedBox(height: 30),
                 SizedBox(
@@ -4805,6 +4839,21 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     final double discountAmount = double.tryParse(_currentDelivery['discount_amount']?.toString() ?? '0') ?? 0;
     final double finalOrderTotal = double.tryParse(_currentDelivery['final_order_total']?.toString() ?? '0') ?? 0;
 
+    // V48.1 — إظهار مبالغ WordPress الموثقة والمخزنة في Laravel كما هي.
+    double v48ActiveMoney(String key) =>
+        double.tryParse(_currentDelivery[key]?.toString() ?? '0') ?? 0;
+    final bool isV48Active =
+        (int.tryParse(_currentDelivery['v47_promotion_campaign_id']?.toString() ?? '') ?? 0) > 0 &&
+            _currentDelivery['v47_restaurant_payable_iqd'] != null &&
+            _currentDelivery['v47_customer_total_iqd'] != null;
+    final double activeFoodGross = v48ActiveMoney('v47_original_food_iqd');
+    final double activeRestaurantDiscount = v48ActiveMoney('v47_merchant_food_discount_iqd');
+    final double activeRestaurantDelivery = v48ActiveMoney('v47_merchant_delivery_subsidy_iqd');
+    final double activePlatformDelivery = v48ActiveMoney('v47_platform_delivery_subsidy_iqd');
+    final double activeRestaurantPayable = v48ActiveMoney('v47_restaurant_payable_iqd');
+    final double activeCustomerPayable = v48ActiveMoney('v47_customer_total_iqd');
+
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
@@ -4860,12 +4909,33 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                       )
                   ),
                 const Divider(height: 30),
-                _buildSummaryRow("سعر الطلبات الأصلي (يُدفع للمطعم):", orderTotal),
-                if (discountAmount > 0) ...[
+                if (isV48Active) ...[
+                  _buildSummaryRow("قيمة الوجبات الأصلية:", activeFoodGross),
                   const SizedBox(height: 8),
-                  _buildSummaryRow("قيمة الخصم (ستُضاف لمحفظتك):", discountAmount, color: Colors.red.shade700),
+                  _buildSummaryRow("خصم المطعم:", activeRestaurantDiscount,
+                      color: Colors.orange.shade700),
+                  if (activeRestaurantDelivery > 0) ...[
+                    const SizedBox(height: 8),
+                    _buildSummaryRow("مساهمة المطعم في التوصيل:", activeRestaurantDelivery,
+                        color: Colors.orange.shade700),
+                  ],
                   const SizedBox(height: 8),
-                  _buildSummaryRow("سعر الطلبات بعد الخصم:", finalOrderTotal, isBold: true),
+                  _buildSummaryRow("المطلوب دفعه للمطعم:", activeRestaurantPayable,
+                      isBold: true, color: Colors.black87),
+                ] else
+                  _buildSummaryRow("سعر الطلبات الأصلي (يُدفع للمطعم):", orderTotal),
+                if (isV48Active || discountAmount > 0) ...[
+                  const SizedBox(height: 8),
+                  _buildSummaryRow(isV48Active ? "خصم بيتي (تعويض محفظتك):" : "قيمة الخصم (ستُضاف لمحفظتك):",
+                      discountAmount, color: Colors.red.shade700),
+                  if (isV48Active && activePlatformDelivery > 0) ...[
+                    const SizedBox(height: 8),
+                    _buildSummaryRow("من تعويض بيتي للتوصيل:", activePlatformDelivery,
+                        color: Colors.red.shade700),
+                  ],
+                  const SizedBox(height: 8),
+                  if (!isV48Active)
+                    _buildSummaryRow("سعر الطلبات بعد الخصم:", finalOrderTotal, isBold: true),
                 ],
                 const SizedBox(height: 12),
                 _buildSummaryRow("أجرة التوصيل:", deliveryFee),
@@ -4873,7 +4943,9 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   padding: EdgeInsets.symmetric(vertical: 15),
                   child: Divider(),
                 ),
-                _buildSummaryRow("المطلوب من الزبون الكلي:", totalToCollect, isBold: true, color: Colors.green.shade700, size: 18),
+                _buildSummaryRow("المطلوب من الزبون الكلي:",
+                    isV48Active ? activeCustomerPayable : totalToCollect,
+                    isBold: true, color: Colors.green.shade700, size: 18),
                 const SizedBox(height: 10),
                 Text("هذا هو المبلغ الذي يجب أن تستلمه من الزبون بالكامل.", style: TextStyle(fontSize: 12, color: Colors.grey.shade600), textAlign: TextAlign.center),
                 const SizedBox(height: 30),
@@ -6054,6 +6126,7 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
     }
 
     final restaurantName = _currentDelivery['pickup_location_name']?.toString() ?? '';
+    final customerAddress = (_currentDelivery['destination_address'] ?? '').toString().trim();
     final restaurantData = _findRestaurantInDirectory(restaurantName);
     final bool hasRestaurantPhone = restaurantData?['phone']?.toString().isNotEmpty ?? false;
 
@@ -6096,36 +6169,65 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                     (_currentDelivery['order_status'] ?? _currentDelivery['status'] ?? '').toString()))
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8),
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    final saved = await Navigator.push<bool>(context, MaterialPageRoute(
-                      builder: (_) => DriverOrderAdjustmentPage(
-                        order: _currentDelivery,
-                        bearerToken: widget.authResult.token,
-                      ),
-                    ));
-                    if (saved == true && mounted) {
-                      // Reload the same assigned order to show the new Laravel totals.
-                      final active = await ApiService.getMyActiveDeliveriesList(
-                        widget.authResult.token,
-                      );
-                      if (!mounted) return;
-                      for (final entry in active) {
-                        if (entry is Map &&
-                            entry['id']?.toString() == _currentDelivery['id']?.toString()) {
-                          setState(() => _currentDelivery =
-                            BeyteiDeliveryItemDetailsV6.preserveDetails(
-                              Map<String, dynamic>.from(entry), _currentDelivery));
-                          break;
-                        }
-                      }
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text('تم تطبيق السعر الجديد وحفظ صورة الإثبات في Laravel.'),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      backgroundColor: const Color(0xFFE8F4FD),
+                      foregroundColor: const Color(0xFF0876C9),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                      side: const BorderSide(color: Color(0xFFB8DDF6)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
+                    ),
+                    onPressed: () async {
+                      final saved = await Navigator.push<bool>(context, MaterialPageRoute(
+                        builder: (_) => DriverOrderAdjustmentPage(
+                          order: _currentDelivery,
+                          bearerToken: widget.authResult.token,
+                        ),
                       ));
-                    }
-                  },
-                  icon: const Icon(Icons.edit_note),
-                  label: const Text('إضافة / إزالة / تعديل سعر مع صورة الإثبات'),
+                      if (saved != true || !mounted) return;
+                      try {
+                        final active = await ApiService.getMyActiveDeliveriesList(
+                          widget.authResult.token,
+                        );
+                        if (!mounted) return;
+                        for (final entry in active) {
+                          if (entry is Map &&
+                              entry['id']?.toString() == _currentDelivery['id']?.toString()) {
+                            setState(() => _currentDelivery =
+                                BeyteiDeliveryItemDetailsV6.preserveDetails(
+                                    Map<String, dynamic>.from(entry), _currentDelivery));
+                            break;
+                          }
+                        }
+                      } catch (_) {
+                        // The edit was already saved; a refresh failure must not
+                        // hide the current order or blank the driver's screen.
+                      }
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                          content: Text('تم حفظ التعديل بنجاح'),
+                        ));
+                      }
+                    },
+                    child: const Row(children: [
+                      Icon(Icons.edit_note, size: 26),
+                      SizedBox(width: 10),
+                      Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('تعديل محتويات الطلب',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                          SizedBox(height: 3),
+                          Text('إزالة غير المتوفر · تعديل السعر · إضافة منتج',
+                              style: TextStyle(fontSize: 12)),
+                        ],
+                      )),
+                      Icon(Icons.chevron_left, size: 22),
+                    ]),
+                  ),
                 ),
               ),
             Container(
@@ -6145,6 +6247,40 @@ class _DriverCurrentDeliveryScreenState extends State<DriverCurrentDeliveryScree
                   Text("المسافة المتبقية", style: TextStyle(color: Colors.grey[600], fontSize: 14)),
                   const Divider(height: 30),
                   Text(locationText, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  if ((status == 'accepted' || status == 'at_store') &&
+                      customerAddress.isNotEmpty &&
+                      customerAddress != 'العنوان' &&
+                      customerAddress != 'غير معروف')
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(top: 14),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEDF7FF),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFFBFDFF8)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Row(children: [
+                            Icon(Icons.location_on_outlined, size: 19, color: Color(0xFF0876C9)),
+                            SizedBox(width: 7),
+                            Text('عنوان الزبون', style: TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0876C9))),
+                          ]),
+                          const SizedBox(height: 7),
+                          Text(customerAddress,
+                            textDirection: ui.TextDirection.rtl,
+                            textAlign: TextAlign.right,
+                            maxLines: 5,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 15, height: 1.45,
+                                fontWeight: FontWeight.w600, color: Color(0xFF172D44)),
+                          ),
+                        ],
+                      ),
+                    ),
                   if (restaurantData != null) ...[
                     const SizedBox(height: 15),
                     Container(
@@ -7381,6 +7517,15 @@ class HistoryTabV3 extends StatelessWidget {
                 'order_total': o['order_total'] ?? 0,
                 'final_order_total': o['final_order_total'] ?? 0,
                 'discount_amount': o['discount_amount'] ?? 0,
+                // V48.1: تمرير قيم سيرفر السائقين مباشرة دون تغييرها.
+                'v47_promotion_campaign_id': o['v47_promotion_campaign_id'],
+                'v47_original_food_iqd': o['v47_original_food_iqd'],
+                'v47_platform_food_discount_iqd': o['v47_platform_food_discount_iqd'],
+                'v47_merchant_food_discount_iqd': o['v47_merchant_food_discount_iqd'],
+                'v47_platform_delivery_subsidy_iqd': o['v47_platform_delivery_subsidy_iqd'],
+                'v47_merchant_delivery_subsidy_iqd': o['v47_merchant_delivery_subsidy_iqd'],
+                'v47_restaurant_payable_iqd': o['v47_restaurant_payable_iqd'],
+                'v47_customer_total_iqd': o['v47_customer_total_iqd'],
                 'platform_markup': o['platform_markup'] ?? 0,
                 'total_to_collect': o['total_to_collect'] ?? 0,
                 'source_type': o['source_type'] ?? 'restaurant',

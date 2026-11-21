@@ -2369,7 +2369,7 @@ class _UnifiedOrdersScreenState extends State<UnifiedOrdersScreen> {
                   accent: BeyteiManagerPalette.blue,
                   onTap: () => _viewOrders('active')),
               BeyteiManagerQuickAction(
-                  title: 'سجل الطلبات', subtitle: 'الطلبات المكتملة',
+                  title: 'سجل الطلبات', subtitle: 'المكتملة والملغية والبحث',
                   icon: Icons.history_rounded,
                   accent: BeyteiManagerPalette.green,
                   onTap: () => _viewOrders()),
@@ -2506,7 +2506,7 @@ void showBeyteiCompletedDriverOrder(BuildContext context, Map<String, dynamic> o
     builder: (sheetContext) => SafeArea(child: FractionallySizedBox(
       heightFactor: 0.76,
       child: ListView(padding: const EdgeInsets.all(16), children: [
-        Text('تفاصيل الطلب #${display(order['id'])}',
+        Text('تفاصيل الطلب #${display(order['source_order_id'], display(order['id']))}',
             style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
         const SizedBox(height: 10),
         ListTile(title: const Text('الحالة'),
@@ -2541,134 +2541,374 @@ void showBeyteiCompletedDriverOrder(BuildContext context, Map<String, dynamic> o
           const SizedBox(height: 8),
           Text('ملاحظات الطلب: $note'),
         ],
+        // BEYTEI_MANAGER_V46_COMPLETED_PROOF
+        Builder(builder: (buttonContext) {
+          final sourceId = int.tryParse('${order['source_order_id'] ?? ''}') ?? 0;
+          if (sourceId < 1) {
+            return const SizedBox.shrink();
+          }
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.image_search),
+                label: const Text('تعديلات المندوب وصور الإثبات'),
+                onPressed: () {
+                  final jwt = Provider.of<AuthProvider>(buttonContext, listen: false).token;
+                  if (jwt == null || jwt.isEmpty) {
+                    ScaffoldMessenger.of(buttonContext).showSnackBar(
+                      const SnackBar(content: Text('يرجى تجديد تسجيل الدخول')));
+                    return;
+                  }
+                  Navigator.of(buttonContext).push(MaterialPageRoute(
+                    builder: (_) => ManagerOrderEditsV42Page(
+                      sourceOrderId: sourceId,
+                      wpJwt: jwt,
+                    ),
+                  ));
+                },
+              ),
+            ),
+          );
+        }),
         const SizedBox(height: 20),
       ]),
     )),
   );
 }
 
-// Independently paginated list: shows both current and completed orders as cards.
+// BEYTEI_MANAGER_HISTORY_V46
+// Full cards for active, completed and cancelled orders; source Woo ID retained.
+// Search scans the selected status using existing paginated read-only APIs.
 class ManagerOrdersHistoryScreen extends StatefulWidget {
   final String initialStatus;
   const ManagerOrdersHistoryScreen({super.key, this.initialStatus = 'completed'});
+
   @override
   State<ManagerOrdersHistoryScreen> createState() => _ManagerOrdersHistoryScreenState();
 }
+
 class _ManagerOrdersHistoryScreenState extends State<ManagerOrdersHistoryScreen> {
   late String _status;
-  List<Order> _items = [];
-  List<Map<String, dynamic>> _completedDriverOrders = [];
+  final TextEditingController _orderSearch = TextEditingController();
+  List<Order> _orders = <Order>[];
+  List<Map<String, dynamic>> _completedRows = <Map<String, dynamic>>[];
   int _nextPage = 1;
   bool _hasMore = true;
   bool _loading = false;
+  bool _searching = false;
   String? _error;
+  String _searchMessage = '';
+  int _requestVersion = 0;
 
   @override
   void initState() {
     super.initState();
-    _status = widget.initialStatus;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _load(reset: true));
+    const supported = <String>['active', 'completed', 'cancelled'];
+    _status = supported.contains(widget.initialStatus) ? widget.initialStatus : 'completed';
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _load(reset: true);
+    });
   }
+
+  @override
+  void dispose() {
+    _requestVersion++;
+    _orderSearch.dispose();
+    super.dispose();
+  }
+
   Future<void> _load({bool reset = false}) async {
-    if (_loading || !mounted) return;
+    if (!mounted || _loading) return;
     if (!reset && !_hasMore) return;
     final selected = _status;
+    if (reset) {
+      _requestVersion++;
+    }
+    final version = _requestVersion;
     setState(() {
-      _loading = true; _error = null;
-      if (reset) { _nextPage = 1; _items = []; _completedDriverOrders = []; _hasMore = true; }
+      _loading = true;
+      _error = null;
+      if (reset) {
+        _orders = <Order>[];
+        _completedRows = <Map<String, dynamic>>[];
+        _nextPage = 1;
+        _hasMore = true;
+        _searchMessage = '';
+      }
     });
     try {
-      final token = Provider.of<AuthProvider>(context, listen: false).token;
-      if (token == null) throw Exception('يرجى تسجيل الدخول');
-      if (selected == 'completed') {
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      final token = await auth.accessTokenForRequest();
+      if (token == null || token.isEmpty) {
+        throw StateError('يرجى تجديد تسجيل الدخول إلى مدير المطعم');
+      }
+
+      if (selected == 'completed' || selected == 'active') {
         final result = await ApiService().getLaravelManagerOrders(token,
-            status: 'completed', page: _nextPage, perPage: 20);
-        if (!mounted || _status != selected) return;
+            status: selected, page: _nextPage, perPage: 20);
+        if (!mounted || _status != selected || version != _requestVersion) return;
         final rows = (result['orders'] is List)
-            ? (result['orders'] as List).whereType<Map>()
-            .map((e) => Map<String, dynamic>.from(e)).toList()
+            ? (result['orders'] as List)
+                .whereType<Map>()
+                .map((e) => Map<String, dynamic>.from(e)).toList()
             : <Map<String, dynamic>>[];
-        final existing = _completedDriverOrders.map((e) => '${e['id']}').toSet();
         setState(() {
-          _completedDriverOrders.addAll(rows.where((e) => existing.add('${e['id']}')));
+          if (selected == 'completed') {
+            final existing = _completedRows.map((e) => '${e['id']}').toSet();
+            _completedRows.addAll(rows.where((e) => existing.add('${e['id']}')));
+          } else {
+            final existing = _orders.map((e) => '${e.driverOrderId ?? e.id}').toSet();
+            _orders.addAll(rows.map(ApiService.mapDriverOrderToCard)
+                .where((e) => existing.add('${e.driverOrderId ?? e.id}')));
+          }
           _hasMore = result['has_more'] == true;
           _nextPage++;
         });
       } else {
-        final result = await ApiService().getLaravelManagerOrders(token,
-            status: 'active', page: _nextPage, perPage: 20);
-        final activeOrders = (result['orders'] as List)
-            .whereType<Map>()
-            .map((e) => ApiService.mapDriverOrderToCard(Map<String, dynamic>.from(e)))
-            .toList();
-        if (!mounted || _status != selected) return;
-        final seen = _items.map((e) => e.id).toSet();
+        // WooCommerce uses the status 'cancelled' (two Ls).
+        // This endpoint must allow cancelled in manager-orders-v22.
+        ManagerOrdersPage page;
+        try {
+          page = await ApiService().getManagerOrdersPage(
+              status: 'cancelled', token: token, page: _nextPage, perPage: 20);
+        } catch (e) {
+          // Renew WordPress JWT once on 401 without logging the manager out.
+          if (!e.toString().contains('401')) rethrow;
+          final fresh = await auth.accessTokenForRequest(forceRenew: true);
+          if (fresh == null || fresh.isEmpty) rethrow;
+          page = await ApiService().getManagerOrdersPage(
+              status: 'cancelled', token: fresh, page: _nextPage, perPage: 20);
+        }
+        if (!mounted || _status != selected || version != _requestVersion) return;
         setState(() {
-          _items.addAll(activeOrders.where((e) => seen.add(e.id)));
-          _hasMore = result['has_more'] == true;
+          final existing = _orders.map((e) => e.id).toSet();
+          _orders.addAll(page.orders.where((e) => existing.add(e.id)));
+          _hasMore = page.hasMore;
           _nextPage++;
         });
       }
     } catch (e) {
-      if (mounted && _status == selected) setState(() => _error = '$e');
+      if (mounted && _status == selected && version == _requestVersion) {
+        setState(() {
+          _error = selected == 'cancelled'
+              ? 'تعذر تحميل الملغية. تحقق أن manager-orders-v22 يسمح بالحالة cancelled. التفاصيل: $e'
+              : 'تعذر تحميل الطلبات: $e';
+        });
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && version == _requestVersion) {
+        setState(() => _loading = false);
+      }
     }
   }
-  void _select(String value) {
-    if (_status == value || _loading) return;
-    setState(() => _status = value);
+
+  void _select(String next) {
+    if (next == _status || _loading || _searching) return;
+    setState(() {
+      _status = next;
+      _orderSearch.clear();
+      _searchMessage = '';
+    });
     _load(reset: true);
   }
+
+  String get _needle => _orderSearch.text.replaceAll(RegExp(r'[^0-9]'), '');
+
+  bool _numberMatches(dynamic id) {
+    final needle = _needle;
+    if (needle.isEmpty || id == null) return false;
+    final value = id.toString().trim();
+    return value == needle || (num.tryParse(value)?.toInt().toString() == needle);
+  }
+
+  bool _matchesOrder(Order o) {
+    if (_needle.isEmpty) return true;
+    return _numberMatches(o.id) || _numberMatches(o.driverOrderId);
+  }
+
+  bool _matchesCompleted(Map<String, dynamic> row) {
+    if (_needle.isEmpty) return true;
+    return _numberMatches(row['id']) || _numberMatches(row['source_order_id']);
+  }
+
+  bool get _hasSearchMatch {
+    if (_status == 'completed') {
+      return _completedRows.any(_matchesCompleted);
+    }
+    return _orders.any(_matchesOrder);
+  }
+
+  Future<void> _findNumber() async {
+    if (_loading || _searching) return;
+    if (_needle.isEmpty) {
+      setState(() => _searchMessage = 'أدخل رقم الطلب للبحث.');
+      return;
+    }
+    // Does not invent a server-side search parameter. Scan the paginated
+    // authenticated endpoint with a cap to protect the live API and phone.
+    setState(() {
+      _searching = true;
+      _searchMessage = 'جارٍ البحث في طلبات القسم المحدد...';
+    });
+    try {
+      var extraPages = 0;
+      while (mounted && !_hasSearchMatch && _hasMore && _error == null && extraPages < 15) {
+        await _load();
+        extraPages++;
+      }
+      if (!mounted) return;
+      setState(() {
+        if (_hasSearchMatch) {
+          _searchMessage = 'تم العثور على الطلب.';
+        } else if (_error != null) {
+          _searchMessage = 'تعذر إكمال البحث بسبب خطأ في الاتصال.';
+        } else if (_hasMore) {
+          _searchMessage = 'لم يظهر الطلب ضمن الصفحات المفحوصة. اضغط بحث مجدداً لمتابعة الصفحات التالية.';
+        } else {
+          _searchMessage = 'لا يوجد طلب بهذا الرقم في هذا القسم.';
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _searching = false);
+    }
+  }
+
+  Widget _buildCompletedCard(Map<String, dynamic> row) {
+    // Convert through the existing mapper to reuse EXACTLY the same OrderCard
+    // as active orders (including the Laravel edit/proof button).
+    final order = ApiService.mapDriverOrderToCard(row);
+    return OrderCard(
+      key: ValueKey('completed_${order.driverOrderId ?? order.id}'),
+      order: order,
+      isCompleted: true,
+      onStatusChanged: () => _load(reset: true),
+    );
+  }
+
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('مشاهدة طلبات المطعم'),
-        actions: [IconButton(onPressed: _loading ? null : () => _load(reset: true),
-            icon: const Icon(Icons.refresh), tooltip: 'تحديث')]),
-    body: Column(children: [
-      Padding(padding: const EdgeInsets.all(12), child: Wrap(spacing: 8, runSpacing: 8, children: [
-        ChoiceChip(label: const Text('الطلبات الجارية'),
-            selected: _status == 'active', onSelected: (_) => _select('active')),
-        const SizedBox(width: 10),
-        ChoiceChip(label: const Text('الطلبات المكتملة'),
-            selected: _status == 'completed', onSelected: (_) => _select('completed')),
-      ])),
-      Expanded(child: RefreshIndicator(
-        onRefresh: () => _load(reset: true),
-        child: ListView(padding: const EdgeInsets.fromLTRB(12, 4, 12, 32), children: [
-          if (_loading && _items.isEmpty && _completedDriverOrders.isEmpty)
-            const Center(child: CircularProgressIndicator()),
-          if (_error != null) Padding(padding: const EdgeInsets.all(12),
-              child: Text('تعذر تحميل الطلبات: $_error',
-                  style: const TextStyle(color: Colors.deepOrange))),
-          if (!_loading && (_status == 'completed' ? _completedDriverOrders.isEmpty : _items.isEmpty)
-              && _error == null)
-            const Padding(padding: EdgeInsets.all(30),
-                child: Center(child: Text('لا توجد طلبات في هذا القسم'))),
-          if (_status == 'completed')
-            ..._completedDriverOrders.map((o) => Card(child: ListTile(
-              onTap: () => showBeyteiCompletedDriverOrder(context, o),
-              leading: const Icon(Icons.check_circle, color: Colors.green),
-              title: Text('طلب السائقين #${o['id'] ?? '-'}'),
-              subtitle: Text('مكتمل — ${o['delivered_at'] ?? '-'}'),
-              trailing: Text('${NumberFormat('#,##0').format(num.tryParse('${o['order_total']}') ?? 0)} د.ع',
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
-            )))
-          else
-            ..._items.map((order) => OrderCard(order: order,
-                isCompleted: false,
-                onStatusChanged: () => _load(reset: true))),
-          if (_loading && (_items.isNotEmpty || _completedDriverOrders.isNotEmpty))
-            const Center(child: CircularProgressIndicator()),
-          if (!_loading && _hasMore) OutlinedButton.icon(
-              onPressed: () => _load(), icon: const Icon(Icons.expand_more),
-              label: const Text('تحميل المزيد من الطلبات')),
-          if (!_loading && _error != null) TextButton(
-              onPressed: () => _load(), child: const Text('إعادة المحاولة')),
-        ]),
-      )),
-    ]),
-  );
+  Widget build(BuildContext context) {
+    final completed = _completedRows.where(_matchesCompleted).toList();
+    final ordinary = _orders.where(_matchesOrder).toList();
+    final empty = _status == 'completed' ? completed.isEmpty : ordinary.isEmpty;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('طلبات المطعم'),
+        actions: [
+          IconButton(
+            onPressed: _loading || _searching ? null : () => _load(reset: true),
+            icon: const Icon(Icons.refresh),
+            tooltip: 'تحديث الطلبات',
+          ),
+        ],
+      ),
+      body: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+          child: Wrap(spacing: 6, runSpacing: 6, children: [
+            ChoiceChip(
+              label: const Text('الجارية'),
+              selected: _status == 'active',
+              onSelected: (_) => _select('active'),
+            ),
+            ChoiceChip(
+              label: const Text('المكتملة'),
+              selected: _status == 'completed',
+              onSelected: (_) => _select('completed'),
+            ),
+            ChoiceChip(
+              label: const Text('الملغية'),
+              selected: _status == 'cancelled',
+              onSelected: (_) => _select('cancelled'),
+            ),
+          ]),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+          child: Row(children: [
+            Expanded(child: TextField(
+              controller: _orderSearch,
+              keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.search,
+              onChanged: (_) => setState(() => _searchMessage = ''),
+              onSubmitted: (_) => _findNumber(),
+              decoration: InputDecoration(
+                isDense: true,
+                prefixIcon: const Icon(Icons.search),
+                hintText: 'رقم الطلب (المطعم أو التوصيل)',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                suffixIcon: IconButton(
+                  tooltip: 'مسح البحث',
+                  icon: const Icon(Icons.close),
+                  onPressed: () => setState(() {
+                    _orderSearch.clear();
+                    _searchMessage = '';
+                  }),
+                ),
+              ),
+            )),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _loading || _searching ? null : _findNumber,
+              child: _searching
+                  ? const SizedBox(width: 18, height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('بحث'),
+            ),
+          ]),
+        ),
+        if (_searchMessage.isNotEmpty) Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+          child: Align(alignment: Alignment.centerRight,
+            child: Text(_searchMessage, style: const TextStyle(fontSize: 12))),
+        ),
+        Expanded(child: RefreshIndicator(
+          onRefresh: () => _load(reset: true),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 32),
+            children: [
+              if (_loading && _orders.isEmpty && _completedRows.isEmpty)
+                const Padding(padding: EdgeInsets.all(40),
+                  child: Center(child: CircularProgressIndicator())),
+              if (_error != null) Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(_error!, style: const TextStyle(color: Colors.deepOrange)),
+              ),
+              if (!_loading && empty && _error == null)
+                Padding(
+                  padding: const EdgeInsets.all(30),
+                  child: Center(child: Text(_needle.isEmpty
+                      ? 'لا توجد طلبات في هذا القسم'
+                      : 'لم يظهر طلب بهذا الرقم في النتائج المحملة')),
+                ),
+              if (_status == 'completed')
+                ...completed.map(_buildCompletedCard)
+              else
+                ...ordinary.map((order) => OrderCard(
+                  key: ValueKey('${_status}_${order.driverOrderId ?? order.id}'),
+                  order: order,
+                  isCompleted: _status == 'cancelled',
+                  onStatusChanged: () => _load(reset: true),
+                )),
+              if (_loading && (_orders.isNotEmpty || _completedRows.isNotEmpty))
+                const Center(child: CircularProgressIndicator()),
+              if (!_loading && _hasMore && !_searching) OutlinedButton.icon(
+                onPressed: () => _load(),
+                icon: const Icon(Icons.expand_more),
+                label: const Text('تحميل المزيد من الطلبات'),
+              ),
+              if (!_loading && _error != null) TextButton.icon(
+                onPressed: () => _load(reset: true),
+                icon: const Icon(Icons.refresh),
+                label: const Text('إعادة المحاولة'),
+              ),
+            ],
+          ),
+        )),
+      ]),
+    );
+  }
 }
 
 class DashboardProvider with ChangeNotifier {
@@ -5082,7 +5322,7 @@ class _OrderCardState extends State<OrderCard> {
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                           decoration: BoxDecoration(color: const Color(0xFF159FD9), borderRadius: BorderRadius.circular(8)),
                           child: Text(widget.order.driverOrderId == null
-                              ? "الرقم غير متاح" : "#${widget.order.driverOrderId}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
+                              ? (widget.order.id > 0 ? "#${widget.order.id}" : "الرقم غير متاح") : "#${widget.order.driverOrderId}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
                       ),
                       Text(formattedDate, style: const TextStyle(fontSize: 12, color: Colors.grey)),
                     ]
@@ -5090,6 +5330,9 @@ class _OrderCardState extends State<OrderCard> {
                 const SizedBox(height: 8),
                 Text('حالة الطلب: ${restaurantOrderStatusLabel(widget.order.status)}',
                     style: const TextStyle(fontWeight: FontWeight.w600, color: const Color(0xFF168EC7))),
+                if (widget.order.id > 0)
+                  Text('رقم طلب المطعم: #${widget.order.id}',
+                      style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
                 if (widget.isCompleted && widget.order.dateCompleted != null)
                   Text('تاريخ الإنهاء: $formattedDate', style: const TextStyle(fontSize: 12, color: Colors.grey)),
                 const Divider(height: 25),
